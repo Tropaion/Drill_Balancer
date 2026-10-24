@@ -1,0 +1,45 @@
+# BLE: NimBLE peripheral (components/ble). Option names checked against
+# ESP-IDF 5.5.1 components/bt/Kconfig and host/nimble/Kconfig.in.
+
+# Bluetooth with the NimBLE host (smaller than Bluedroid)
+CONFIG_BT_ENABLED=y
+# NimBLE host instead of Bluedroid
+CONFIG_BT_NIMBLE_ENABLED=y
+# Peripheral only: no central role (also drops the GATT client)
+CONFIG_BT_NIMBLE_ROLE_CENTRAL=n
+# No scanning
+CONFIG_BT_NIMBLE_ROLE_OBSERVER=n
+# Peripheral role (GATT server)
+CONFIG_BT_NIMBLE_ROLE_PERIPHERAL=y
+# Advertising needs the broadcaster role
+CONFIG_BT_NIMBLE_ROLE_BROADCASTER=y
+# One phone or PC at a time
+CONFIG_BT_NIMBLE_MAX_CONNECTIONS=1
+# Bonds survive reboots and deep sleep (stored in the default NVS partition)
+CONFIG_BT_NIMBLE_NVS_PERSIST=y
+# Security manager on
+CONFIG_BT_NIMBLE_SECURITY_ENABLE=y
+# LE Secure Connections (passkey with MITM protection)
+CONFIG_BT_NIMBLE_SM_SC=y
+# No legacy pairing: its passkey can be cracked from a sniffed exchange
+CONFIG_BT_NIMBLE_SM_LEGACY=n
+# MTU 247: 244-byte notifications / OTA writes, fits a 251-byte LL packet
+CONFIG_BT_NIMBLE_ATT_PREFERRED_MTU=247
+# The host task runs cJSON, NVS writes and esp_ota_write (default 4096)
+CONFIG_BT_NIMBLE_HOST_TASK_STACK_SIZE=6144
+# BLE 5 features, needed for the 2M PHY
+CONFIG_BT_NIMBLE_50_FEATURE_SUPPORT=y
+# 2M PHY (requested after connect, roughly doubles OTA throughput)
+CONFIG_BT_NIMBLE_LL_CFG_FEAT_LE_2M_PHY=y
+# Coded PHY not used
+CONFIG_BT_NIMBLE_LL_CFG_FEAT_LE_CODED_PHY=n
+# Legacy advertising is enough (name + UUID fit in adv data + scan response)
+CONFIG_BT_NIMBLE_EXT_ADV=n
+# DIS and BAS are defined in ble_service.c's GATT table, not NimBLE's
+CONFIG_BT_NIMBLE_DIS_SERVICE=n
+# See above
+CONFIG_BT_NIMBLE_BAS_SERVICE=n
+# Placeholder; ble_service_init() sets DrillBalancer-XXXX
+CONFIG_BT_NIMBLE_SVC_GAP_DEVICE_NAME="DrillBalancer"
+# NimBLE logs warnings and errors only (INFO is very chatty)
+CONFIG_BT_NIMBLE_LOG_LEVEL_WARNING=y

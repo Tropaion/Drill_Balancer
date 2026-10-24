@@ -1,0 +1,3 @@
+# XPowersLib against the new i2c_master driver (the default, pinned here): the
+# legacy driver/i2c.h it would use otherwise cannot coexist with the BSP's bus.
+CONFIG_XPOWERS_ESP_IDF_NEW_API=y

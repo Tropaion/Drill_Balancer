@@ -1,0 +1,8 @@
+# UI (components/ui). Montserrat 16/24/48 are enabled in sdkconfig.defaults;
+# the big digits are a generated 112 px font in the component.
+# Widgets and layout the UI uses (LVGL defaults today, stated explicitly).
+CONFIG_LV_USE_ARC=y
+CONFIG_LV_USE_LABEL=y
+CONFIG_LV_USE_BUTTON=y
+CONFIG_LV_USE_SWITCH=y
+CONFIG_LV_USE_FLEX=y

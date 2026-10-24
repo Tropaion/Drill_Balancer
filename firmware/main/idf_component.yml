@@ -1,0 +1,7 @@
+dependencies:
+  idf: ">=5.5"
+  waveshare/esp32_s3_touch_amoled_1_75: "3.0.1"
+  lvgl/lvgl: "9.4.*"
+  xpowerslib:
+    git: https://github.com/lewisxhe/XPowersLib.git
+    version: v0.3.3
