@@ -136,6 +136,38 @@ class FirmwareViewModelTest {
     }
 
     @Test
+    fun unansweredReflashOfTheSameVersionIsNotConfirmed() = runTest(main.dispatcher) {
+        // The device runs 0.1.0 and rejects a rebuilt 0.1.0: it comes back with 0.1.0,
+        // which must not read as "now runs firmware 0.1.0".
+        val (fake, _, vm) = setUp()
+        fake.otaReplyLost = true
+        fake.otaFailure = OtaStatus.HASH_MISMATCH
+        vm.onFile("drillbalancer.bin", FirmwareImage.parse(firmwareBytes("0.1.0")))
+        vm.start()
+        advanceTimeBy(1_450)
+        fake.connect("F4:12:FA:00:1A:2B")
+        val s = vm.state.value
+        assertEquals(Phase.DONE, s.phase)
+        assertEquals("0.1.0", s.newVersion)
+        assertEquals(FirmwareUiState.Outcome.UNKNOWN, s.outcome)
+    }
+
+    @Test
+    fun outcomes() {
+        fun outcome(new: String?, unconfirmed: Boolean, before: String? = "0.1.0", expected: String = "0.2.0") =
+            FirmwareUiState.outcomeOf(new, expected, unconfirmed, before)
+        assertEquals(FirmwareUiState.Outcome.INSTALLED, outcome("0.2.0", unconfirmed = false))
+        assertEquals(FirmwareUiState.Outcome.INSTALLED, outcome("0.2.0", unconfirmed = true))
+        assertEquals(FirmwareUiState.Outcome.RESTARTED, outcome(null, unconfirmed = false))
+        assertEquals(FirmwareUiState.Outcome.UNKNOWN, outcome(null, unconfirmed = true))
+        assertEquals(FirmwareUiState.Outcome.ROLLED_BACK, outcome("0.1.0", unconfirmed = false))
+        assertEquals(FirmwareUiState.Outcome.NOT_INSTALLED, outcome("0.1.0", unconfirmed = true))
+        // Same version as before: only a confirmed FINISH tells it was installed.
+        assertEquals(FirmwareUiState.Outcome.INSTALLED, outcome("0.2.0", unconfirmed = false, before = "0.2.0"))
+        assertEquals(FirmwareUiState.Outcome.UNKNOWN, outcome("0.2.0", unconfirmed = true, before = "0.2.0"))
+    }
+
+    @Test
     fun unansweredFinishWithoutReconnectIsNotConfirmed() = runTest(main.dispatcher) {
         val (fake, _, vm) = setUp()
         fake.otaReplyLost = true

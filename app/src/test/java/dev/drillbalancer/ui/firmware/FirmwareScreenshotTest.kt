@@ -77,6 +77,9 @@ class FirmwareScreenshotTest {
     fun done() = shot(picked.copy(deviceVersion = "0.2.0", phase = Phase.DONE, newVersion = "0.2.0"))
 
     @Test
+    fun rolledBack() = shot(picked.copy(phase = Phase.DONE, newVersion = "0.1.0"))
+
+    @Test
     fun hashMismatch() = shot(
         picked.copy(
             phase = Phase.FAILED,

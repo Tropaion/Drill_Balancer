@@ -10,6 +10,7 @@ import dev.drillbalancer.protocol.SettingsUpdate
 import no.nordicsemi.android.ble.callback.FailCallback
 import no.nordicsemi.android.ble.observer.ConnectionObserver
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -106,6 +107,28 @@ class GattErrorsTest {
             DisconnectReason.NOT_SUPPORTED,
             (err(FailCallback.REASON_DEVICE_NOT_SUPPORTED, GattOp.CONNECT, linkUp = false) as DeviceError.Link).reason,
         )
+    }
+
+    @Test
+    fun failedWritesThatMayHaveArrived() {
+        // The FINISH of a firmware update: only these leave the outcome to the device.
+        fun may(status: Int, linkUp: Boolean = true) = GattErrors.mayHaveArrived(err(status, GattOp.OTA, linkUp, bonded = true))
+        assertTrue(may(FailCallback.REASON_DEVICE_DISCONNECTED, linkUp = false))
+        assertTrue(may(0x08, linkUp = false))   // supervision timeout as the drop reason
+        assertTrue(may(FailCallback.REASON_TIMEOUT))
+        assertTrue(may(FailCallback.REASON_BLUETOOTH_DISABLED))
+        assertTrue(GattErrors.mayHaveArrived(IllegalStateException("unknown")))
+        // Android ends a write in flight with 133 as the link drops, before the session
+        // sees the drop; other stack codes are no surer.
+        assertTrue(may(GattErrors.GATT_ERROR))
+        assertTrue(may(0x99))
+        assertTrue(may(FailCallback.REASON_REQUEST_FAILED))
+
+        // Never sent, or answered by the device with an error.
+        assertFalse(GattErrors.mayHaveArrived(DeviceError.NotConnected()))
+        assertFalse(may(AttError.UNAVAILABLE.code))
+        assertFalse(may(AttError.INSUFFICIENT_ENCRYPTION.code))   // stale bond
+        assertFalse(may(FailCallback.REASON_NULL_ATTRIBUTE))
     }
 
     @Test

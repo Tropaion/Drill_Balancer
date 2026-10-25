@@ -146,9 +146,11 @@ app, and run the tests.
 None of this could be checked without a phone and a board.
 
 1. **Permissions and switches**: the permission request, "denied for good"
-   leading to app settings, the enable-Bluetooth dialog, location services
-   on Android 8–11, and the screen updating when Bluetooth is switched in
-   the quick settings.
+   leading to app settings (Android answers a permanent denial within
+   0.5 s, `PermissionOutcome.ANSWERED_WITHOUT_ASKING_MS`; a dismissed
+   dialog twice in a row still offers *Allow*), the enable-Bluetooth
+   dialog, location services on Android 8–11, and the screen updating when
+   Bluetooth is switched in the quick settings.
 2. **Scan**: the device is found by name or by the service UUID in the scan
    response, the list ages out devices after 10 s, and scanning stops when
    the app goes to the background or a connection starts.
@@ -184,8 +186,8 @@ None of this could be checked without a phone and a board.
     the image checks, throughput (KB/s), cancel (ABORT), the screen staying
     on, the reboot and the reconnect with the new version shown, a link
     drop while the device checks the image (the app decides from the
-    version after the reconnect), and a failed update leaving the old
-    firmware running.
+    version after the reconnect, and the reconnect sees the new GATT
+    table), and a failed update leaving the old firmware running.
 13. **Reconnect**: walk out of range and back. The tabs stay with a
     "Reconnecting…" bar while the session retries (backoff 1, 2, 4, 8, 15 s)
     and switch to the connect screen once it gives up. After the device

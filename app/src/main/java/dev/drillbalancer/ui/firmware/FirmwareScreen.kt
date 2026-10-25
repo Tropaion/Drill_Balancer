@@ -23,6 +23,8 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -189,8 +191,8 @@ private fun Rebooting(unconfirmed: Boolean) {
     ) {
         Text(
             if (unconfirmed) {
-                "The connection dropped while the device checked the image. The app reconnects by itself and " +
-                    "checks which firmware the device runs."
+                "The device's answer was lost while it checked the image. The app waits for the device to come back " +
+                    "and checks which firmware it runs."
             } else {
                 "The image was checked and installed. The device restarts with it and the app reconnects by itself."
             },
@@ -199,25 +201,40 @@ private fun Rebooting(unconfirmed: Boolean) {
     }
 }
 
+// The Done panel: border and icon colour, icon (none: nothing is known), title, text.
+private data class DoneLook(val color: Color, val icon: ImageVector?, val title: String, val text: String)
+
 @Composable
 private fun Done(state: FirmwareUiState, onDone: () -> Unit) {
     val v = state.newVersion
-    val (border, text) = when (state.outcome) {
-        Outcome.UNKNOWN ->
-            Blue to "The connection dropped while the device checked the image. Connect again to check its version."
-        Outcome.RESTARTED -> Green to "The device restarted with the new firmware. Connect again to check its version."
-        Outcome.INSTALLED -> Green to "The device now runs firmware $v."
+    val look = when (state.outcome) {
+        Outcome.UNKNOWN -> DoneLook(
+            Blue, null, "Update not confirmed",
+            if (v == null) {
+                "The device's answer was lost while it checked the image, and the device did not come back. " +
+                    "Connect again to check its version."
+            } else {
+                "The device runs firmware $v, as before the update, so the app cannot tell whether the image " +
+                    "was installed. Install it again to be sure."
+            },
+        )
+        Outcome.RESTARTED -> DoneLook(
+            Green, DbIcons.Check, "Update complete",
+            "The device restarted with the new firmware. Connect again to check its version.",
+        )
+        Outcome.INSTALLED -> DoneLook(Green, DbIcons.Check, "Update complete", "The device now runs firmware $v.")
         // The VM shows NOT_INSTALLED as a failure; listed for completeness
-        Outcome.ROLLED_BACK, Outcome.NOT_INSTALLED ->
-            Red to "The device reports firmware $v, not ${state.image?.version}. It may have rolled back to the old image."
+        Outcome.ROLLED_BACK, Outcome.NOT_INSTALLED -> DoneLook(
+            Red, DbIcons.Warning, "Update not applied",
+            "The device reports firmware $v, not ${state.image?.version}. It may have rolled back to the old image.",
+        )
     }
-    val unknown = state.outcome == Outcome.UNKNOWN
-    Panel(border = border) {
+    Panel(border = look.color) {
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            if (!unknown) Icon(DbIcons.Check, contentDescription = null, tint = Green, modifier = Modifier.size(32.dp))
-            Text(if (unknown) "Update not confirmed" else "Update complete", style = MaterialTheme.typography.titleLarge)
+            look.icon?.let { Icon(it, contentDescription = null, tint = look.color, modifier = Modifier.size(32.dp)) }
+            Text(look.title, style = MaterialTheme.typography.titleLarge)
         }
-        Text(text, style = MaterialTheme.typography.bodyLarge)
+        Text(look.text, style = MaterialTheme.typography.bodyLarge)
     }
     ActionButton("Done", onDone, Modifier.fillMaxWidth())
 }

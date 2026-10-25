@@ -30,6 +30,13 @@ interface OtaTransport {
     /** Write with response to ota_ctrl. Throws if the write fails (e.g. ATT 0x05, 0x87). */
     suspend fun writeCtrl(value: ByteArray)
 
+    /**
+     * Whether a [writeCtrl] that threw [error] may still have reached the device: the link
+     * dropped, or no answer came in time. False when it certainly did not: never sent, or
+     * answered by the device with an error. Unknown errors count as delivered.
+     */
+    fun mayHaveArrived(error: Exception): Boolean = true
+
     /** Write without response to ota_data; returns once the stack took it. */
     suspend fun writeData(value: ByteArray)
 
@@ -54,8 +61,8 @@ data class OtaProgress(
 
 /**
  * The update failed; [status] is the device's, if it reported one. [unconfirmed]: FINISH
- * went out but its answer was lost with the link, so the device may have installed the
- * image; the version it reports after the reconnect tells.
+ * may have reached the device but its answer was lost (with the link, or never came), so
+ * the device may have installed the image; the version it reports afterwards tells.
  */
 class OtaException(
     message: String,
@@ -69,9 +76,11 @@ class OtaException(
  * START -> stream chunks at most 2 * ack_every ahead of the last ACK, rewinding to a
  * NACK's expected_seq or, when the device goes quiet, to the last ACK -> FINISH. On any
  * failure or cancellation it sends ABORT (best effort); a lost link fails the transfer at
- * once, until FINISH goes out. After that a lost link or a failed FINISH write ends in an
- * unconfirmed OtaException, without ABORT. After a successful FINISH the device reboots
- * into the new image.
+ * once, until FINISH goes out. After that only a definite answer fails the update: a
+ * status from the device, or a FINISH write that certainly did not reach it
+ * ([OtaTransport.mayHaveArrived]). A lost link, a FINISH write that may have arrived or a
+ * missing reply ends in an unconfirmed OtaException, without ABORT. After a successful
+ * FINISH the device reboots into the new image.
  */
 class OtaClient(
     private val transport: OtaTransport,
@@ -214,29 +223,35 @@ class OtaClient(
         val rate = size / (t0.elapsedNow().inWholeMilliseconds.coerceAtLeast(1) / 1000f)
         onProgress(OtaProgress(OtaProgress.Phase.VERIFYING, size, size, rate))
         beforeFinish()
-        try {
+        val failed = try {
             transport.writeCtrl(OtaMessage.encodeFinish())
+            null
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            // The device verifies the image before it answers the write: a write that
-            // failed with the link may still have arrived.
-            throw OtaException(UNCONFIRMED, unconfirmed = true, cause = e)
+            e
         }
-        val fin = awaitReply(inbox, OtaOp.FINISH, finishTimeout)
+        if (failed != null && !transport.mayHaveArrived(failed)) {
+            throw OtaException("The device did not get the request to install the image: ${failed.message}", cause = failed)
+        }
+        // The device verifies the image before it answers the write and indicates its reply
+        // before that answer: after a failed write that may have arrived, the reply may be
+        // here already.
+        val fin = withTimeoutOrNull(if (failed == null) finishTimeout else LOST_REPLY_GRACE) { nextReply(inbox, OtaOp.FINISH) }
+            ?: throw OtaException(UNCONFIRMED, unconfirmed = true, cause = failed)
         if (fin.status != OtaStatus.OK.code) {
             throw OtaException("FINISH failed: ${OtaStatus.messageFor(fin.status)}", OtaStatus.fromCode(fin.status))
         }
         onProgress(OtaProgress(OtaProgress.Phase.DONE, size, size, rate))
     }
 
-    // The next reply to op; ACKs and NACKs in between are skipped.
     private suspend fun awaitReply(inbox: Channel<OtaMessage>, op: Int, timeout: Duration): OtaMessage.Reply =
-        withTimeoutOrNull(timeout) {
-            var reply: OtaMessage.Reply? = null
-            while (reply == null) reply = (inbox.receive() as? OtaMessage.Reply)?.takeIf { it.op == op }
-            reply
-        } ?: throw OtaException("Timed out waiting for the device.")
+        withTimeoutOrNull(timeout) { nextReply(inbox, op) } ?: throw OtaException("Timed out waiting for the device.")
+
+    // The next reply to op; ACKs and NACKs in between are skipped.
+    private suspend fun nextReply(inbox: Channel<OtaMessage>, op: Int): OtaMessage.Reply {
+        while (true) (inbox.receive() as? OtaMessage.Reply)?.takeIf { it.op == op }?.let { return it }
+    }
 
     companion object {
         // NACK BAD_REQUEST for the same chunk this many times in a row: give up instead
@@ -244,7 +259,7 @@ class OtaClient(
         const val MAX_BAD_REQUESTS = 3
         const val LINK_LOST = "The connection dropped during the transfer, so the device stopped the update. " +
             "Start it again once the app has reconnected."
-        const val UNCONFIRMED = "The connection dropped while the device checked the image, so the app could not " +
+        const val UNCONFIRMED = "The device's answer was lost while it checked the image, so the app could not " +
             "confirm the update."
         private val ABORT_TIMEOUT = 2.seconds
         private val LOST_REPLY_GRACE = 1.seconds

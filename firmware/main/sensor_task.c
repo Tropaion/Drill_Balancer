@@ -68,7 +68,10 @@ static vib_detector_t s_vib;
 // running motor shaking the gyro is not, so it never re-arms the power FSM's
 // vibration hold. Restarts at rest with the fusion.
 static turn_detector_t s_turn;
-static float s_win_max_rate;   // largest low-passed turn rate in the open window, for the log
+// Largest low-passed turn rate in the open vibration window, for the debug
+// log. Raised per batch, so it can include up to one batch (20 ms) after
+// the window closes.
+static float s_win_max_rate;
 
 static void lock(void)
 {
@@ -203,6 +206,7 @@ static void sensor_task(void *arg)
             s_fusion_ready = false;
             unlock();
             vib_reset(&s_vib);
+            s_win_max_rate = 0.0f;   // the open window is dropped with it
             last_pub = now;
             publish_no_imu(now);
             continue;

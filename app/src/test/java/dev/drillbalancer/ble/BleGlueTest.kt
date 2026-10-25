@@ -285,11 +285,36 @@ class BleGlueTest {
         assertEquals("Bluetooth is turned off.", e.message)
     }
 
+    @Test
+    @Config(shadows = [AdapterTurnedOffScanner::class])
+    fun failedStartsDoNotCountAgainstTheScanLimit() = runTest {
+        // Android never saw them: the next real scan starts at once, not 30 s later.
+        grant(Manifest.permission.BLUETOOTH_SCAN, Manifest.permission.BLUETOOTH_CONNECT)
+        shadowOf(adapter).setEnabled(true)
+        val scanner = DeviceScanner(app)
+        repeat(5) { assertTrue(expectError { scanner.scan().collect {} } is ScanException) }
+        AdapterTurnedOffScanner.off = false
+        try {
+            backgroundScope.launch { scanner.scan().collect {} }
+            runCurrent()
+            assertEquals(1, shadowOf(adapter.bluetoothLeScanner).scanCallbacks.size)
+            scanner.stop()
+            runCurrent()
+        } finally {
+            AdapterTurnedOffScanner.off = true
+        }
+    }
+
     @Implements(BluetoothLeScanner::class)
     class AdapterTurnedOffScanner : ShadowBluetoothLeScanner() {
         @Implementation
         public override fun startScan(filters: MutableList<ScanFilter>?, settings: ScanSettings?, callback: ScanCallback?) {
-            throw IllegalStateException("BT Adapter is not turned ON")
+            if (off) throw IllegalStateException("BT Adapter is not turned ON")
+            super.startScan(filters, settings, callback)
+        }
+
+        companion object {
+            @Volatile var off = true   // false: a working scanner
         }
     }
 

@@ -285,8 +285,8 @@ static void test_hyperboloid_fails_fit(void)
 
 // --- stillness window (accel_cal_collector_add_sample) ---
 
-#define DT (1.0f / 448.4f)
-// Samples in one ACCEL_CAL_WINDOW_S window: the first n with n * DT >= 0.5 s.
+// Samples in one ACCEL_CAL_WINDOW_S window: the first n with
+// n * TEST_IMU_DT >= 0.5 s (a ceiling, so not TEST_SAMPLES(0.5f) = 224).
 #define WINDOW_N 225u
 
 // Feeds n samples of raw + alternating +-jitter on every axis; returns how
@@ -297,7 +297,7 @@ static unsigned feed_still(vec3_t raw, float jitter, float gyro, unsigned n)
     for (unsigned i = 0; i < n; i++) {
         float j = (i & 1u) ? jitter : -jitter;
         vec3_t v = {raw.x + j, raw.y - j, raw.z + j};
-        kept += accel_cal_collector_add_sample(&col, v, gyro, DT) ? 1u : 0u;
+        kept += accel_cal_collector_add_sample(&col, v, gyro, TEST_IMU_DT) ? 1u : 0u;
     }
     return kept;
 }

@@ -38,7 +38,7 @@ class OtaClientTest {
     private fun TestScope.client(dev: OtaTransport, stall: Long = 3000, maxStalls: Int = 5) =
         OtaClient(dev, stallTimeout = stall.milliseconds, maxStalls = maxStalls, timeSource = testScheduler.timeSource)
 
-    private suspend fun TestScope.expectFailure(dev: FakeOtaDevice, img: ByteArray, stall: Long = 3000, maxStalls: Int = 5): OtaException {
+    private suspend fun TestScope.expectFailure(dev: OtaTransport, img: ByteArray, stall: Long = 3000, maxStalls: Int = 5): OtaException {
         try {
             client(dev, stall, maxStalls).send(img)
         } catch (e: OtaException) {
@@ -304,24 +304,80 @@ class OtaClientTest {
         assertEquals(OtaOp.FINISH, dev.ctrlWrites.last()[0].toInt())
     }
 
+    // FINISH reaches the device, then the link drops before the write's answer; [replyLost]:
+    // the reply indication goes with it.
+    private fun lostAfterFinish(dev: FakeOtaDevice, replyLost: Boolean) = object : OtaTransport by dev {
+        var gone = false
+        override val ctrlIndications: Flow<ByteArray> = dev.ctrlIndications.filter { !gone }
+        override suspend fun writeCtrl(value: ByteArray) {
+            if (value[0].toInt() != OtaOp.FINISH) return dev.writeCtrl(value)
+            gone = replyLost
+            dev.writeCtrl(value)
+            dev.loseLink()
+            throw IOException("The connection was lost during the firmware update.")
+        }
+    }
+
     @Test
     fun finishWriteFailedWithTheLinkIsUnconfirmed() = runTest {
-        // The link drops before the write's answer: the device may have the FINISH anyway.
+        // The device may have the FINISH anyway.
+        val dev = device()
+        val e = expectUnconfirmed(lostAfterFinish(dev, replyLost = true), image(1000))
+        assertTrue(e.cause is IOException)
+        assertTrue(testScheduler.currentTime.toString(), testScheduler.currentTime <= 1_000)
+        assertEquals(FakeOtaDevice.State.DONE, dev.state)
+        assertEquals(OtaOp.FINISH, dev.ctrlWrites.last()[0].toInt())
+    }
+
+    @Test
+    fun replyIndicatedBeforeTheFailedFinishWriteCounts() = runTest {
+        // The firmware indicates its reply inside the write callback, before the write's
+        // answer: a drop in between leaves the reply here, and it confirms the update.
+        val dev = device()
+        val img = image(1000)
+        val phases = client(lostAfterFinish(dev, replyLost = false)).upload(img).toList().map { it.phase }.distinct()
+        assertEquals(OtaProgress.Phase.DONE, phases.last())
+        assertEquals(OtaMessage.Reply(OtaOp.FINISH, 0), dev.sent.last())
+        assertEquals(OtaOp.FINISH, dev.ctrlWrites.last()[0].toInt())
+        dev.assertReceived(img)
+    }
+
+    @Test
+    fun finishWriteRefusedOnALiveLinkFails() = runTest {
+        // Certainly not installing (e.g. never sent, or the device answered with an error): a
+        // plain failure, at once, and ABORT, instead of waiting for a reboot that cannot come.
         val dev = device()
         val link = object : OtaTransport by dev {
             override suspend fun writeCtrl(value: ByteArray) {
+                if (value[0].toInt() == OtaOp.FINISH) throw IOException("The firmware update was refused.")
                 dev.writeCtrl(value)
-                if (value[0].toInt() == OtaOp.FINISH) {
-                    dev.loseLink()
-                    throw IOException("The connection was lost during the firmware update.")
-                }
+            }
+            override fun mayHaveArrived(error: Exception) = false
+        }
+        val e = expectFailure(link, image(1000))
+        assertTrue(e.message!!, !e.unconfirmed && "refused" in e.message!!)
+        assertEquals(0, testScheduler.currentTime)
+        assertArrayEquals(OtaMessage.encodeAbort(), dev.ctrlWrites.last())
+        assertEquals(FakeOtaDevice.State.IDLE, dev.state)
+    }
+
+    @Test
+    fun finishWithoutReplyIsUnconfirmed() = runTest {
+        // The device took the FINISH write but its reply never came: it may install the
+        // image, so no ABORT and no "failed".
+        val dev = device()
+        var finished = false
+        val link = object : OtaTransport by dev {
+            override val ctrlIndications: Flow<ByteArray> = dev.ctrlIndications.filter { !finished }
+            override suspend fun writeCtrl(value: ByteArray) {
+                finished = finished || value[0].toInt() == OtaOp.FINISH
+                dev.writeCtrl(value)
             }
         }
-        val e = expectUnconfirmed(link, image(1000))
-        assertTrue(e.cause is IOException)
-        assertEquals(0, testScheduler.currentTime)
-        assertEquals(FakeOtaDevice.State.DONE, dev.state)
+        expectUnconfirmed(link, image(1000))
+        assertEquals(30_000, testScheduler.currentTime)
         assertEquals(OtaOp.FINISH, dev.ctrlWrites.last()[0].toInt())
+        assertEquals(FakeOtaDevice.State.DONE, dev.state)
     }
 
     private suspend fun TestScope.expectUnconfirmed(link: OtaTransport, img: ByteArray): OtaException {

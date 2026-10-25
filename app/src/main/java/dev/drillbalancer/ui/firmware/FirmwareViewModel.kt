@@ -30,6 +30,7 @@ data class FirmwareUiState(
     val progress: OtaProgress? = null,
     val error: OtaError? = null,
     val newVersion: String? = null,      // DONE: what the device reports after the reboot
+    val versionBefore: String? = null,   // what the device ran when the update started
     val unconfirmed: Boolean = false,    // FINISH went out, its answer was lost: the reconnect decides
 ) {
     enum class Phase { IDLE, TRANSFERRING, REBOOTING, DONE, FAILED }
@@ -38,7 +39,7 @@ data class FirmwareUiState(
     enum class Outcome {
         INSTALLED,      // it runs the image's version
         RESTARTED,      // FINISH answered, but the device did not come back to say which version
-        UNKNOWN,        // FINISH not answered and the device did not come back: nothing is known
+        UNKNOWN,        // FINISH not answered, and the device did not come back or runs the same version as before
         ROLLED_BACK,    // FINISH answered, another version came back (rolled back, or not bumped)
         NOT_INSTALLED,  // FINISH not answered, another version came back: the update failed
     }
@@ -50,7 +51,7 @@ data class FirmwareUiState(
     val sameVersion: Boolean get() = image != null && image.version == deviceVersion
 
     /** DONE: the outcome shown. */
-    val outcome: Outcome get() = outcomeOf(newVersion, image?.version, unconfirmed)
+    val outcome: Outcome get() = outcomeOf(newVersion, image?.version, unconfirmed, versionBefore)
 
     /** Until FINISH goes out: after it the device installs the image whatever the app does. */
     val canCancel: Boolean
@@ -66,9 +67,11 @@ data class FirmwareUiState(
         }
 
     companion object {
-        fun outcomeOf(newVersion: String?, expected: String?, unconfirmed: Boolean): Outcome = when {
+        /** [before]: the version the device ran when the update started. */
+        fun outcomeOf(newVersion: String?, expected: String?, unconfirmed: Boolean, before: String?): Outcome = when {
             newVersion == null -> if (unconfirmed) Outcome.UNKNOWN else Outcome.RESTARTED
-            newVersion == expected -> Outcome.INSTALLED
+            // Unanswered, and the image's version is the old one: a rejected image looks the same.
+            newVersion == expected -> if (unconfirmed && expected == before) Outcome.UNKNOWN else Outcome.INSTALLED
             unconfirmed -> Outcome.NOT_INSTALLED
             else -> Outcome.ROLLED_BACK
         }
@@ -114,9 +117,14 @@ class FirmwareViewModel(
         val s = _state.value
         val image = s.image ?: return
         if (!s.canStart) return
+        // deviceVersion follows the session, so after the reboot it is the new one.
+        val before = s.deviceVersion
         job = viewModelScope.launch {
             _state.update {
-                it.copy(phase = FirmwareUiState.Phase.TRANSFERRING, progress = null, error = null, newVersion = null, unconfirmed = false)
+                it.copy(
+                    phase = FirmwareUiState.Phase.TRANSFERRING, progress = null, error = null, newVersion = null,
+                    versionBefore = before, unconfirmed = false,
+                )
             }
             // A stopped transfer may still be sending ABORT: the session starts this one after it.
             var unconfirmed = false
@@ -137,8 +145,8 @@ class FirmwareViewModel(
             }
             _state.update { it.copy(phase = FirmwareUiState.Phase.REBOOTING, unconfirmed = unconfirmed) }
             val version = awaitNewVersion()
-            if (FirmwareUiState.outcomeOf(version, image.version, unconfirmed) == FirmwareUiState.Outcome.NOT_INSTALLED) {
-                val text = "The connection dropped while the device checked the image. It came back with firmware $version, " +
+            if (FirmwareUiState.outcomeOf(version, image.version, unconfirmed, before) == FirmwareUiState.Outcome.NOT_INSTALLED) {
+                val text = "The device's answer was lost while it checked the image. It now reports firmware $version, " +
                     "so the update did not go through."
                 fail(FirmwareUiState.OtaError("Update failed", text))
                 return@launch

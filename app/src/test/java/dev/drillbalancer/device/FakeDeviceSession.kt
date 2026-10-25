@@ -227,7 +227,8 @@ class FakeDeviceSession(
         if (otaReplyLost) {
             // The device installs the image unless its check fails; the app cannot tell.
             if (otaFailure == null) deviceInfo = deviceInfo.copy(firmwareRevision = image.version)
-            dropLink(DeviceError.Link(DisconnectReason.LINK_LOSS), reconnecting = true)
+            // Like BleDeviceSession: the reboot is announced once FINISH is out.
+            dropLink(DeviceError.Link(DisconnectReason.FIRMWARE_UPDATED), reconnecting = true)
             throw OtaException(OtaClient.UNCONFIRMED, unconfirmed = true)
         }
         otaFailure?.let { throw OtaException("FINISH failed: ${it.message}", it) }

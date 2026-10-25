@@ -281,8 +281,8 @@ class VibrationHoldTest(PowerEvents, DeviceTest):
     def test_pick_up_right_after_motion_wake_arms(self):
         t_boot = self.sleep_and_wake_by_pick_up()
         self.assertEqual([d["reason"] for _, d in self.names("boot")][-1], "motion")
-        # A short twist before the first 0.5 s window closes: counted when
-        # that window closes calm, then the drill runs.
+        # A short twist right after the motion wake, before the first 0.5 s
+        # window closes, counts as activity at once, then the drill runs.
         self.settle(100)
         self.dev.physics.pick_up(duration_s=0.25, height_m=0.0, wobble_deg=4.0)
         self.until(t_boot + 1000)

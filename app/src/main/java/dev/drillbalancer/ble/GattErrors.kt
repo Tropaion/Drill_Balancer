@@ -86,6 +86,22 @@ object GattErrors {
     }
 
     /**
+     * Whether a write that failed with [error] (from [requestError] or the session's own
+     * checks) may still have reached the device. Certainly not only when it was never sent
+     * (NotConnected, a missing characteristic) or the device answered it with an error (an
+     * ATT error, a stale bond or failed pairing). A Link error may have: besides a drop or
+     * Bluetooth going off, Android can end a write in flight with 133 (GATT_ERROR) as the
+     * link drops, before the session sees the drop, and other stack codes are no surer.
+     * Timeouts and unknown exceptions count as delivered too.
+     */
+    fun mayHaveArrived(error: Throwable): Boolean = when (error) {
+        is DeviceError.Link -> error.reason != DisconnectReason.NOT_SUPPORTED
+        is DeviceError.Timeout -> true
+        is DeviceError -> false
+        else -> true
+    }
+
+    /**
      * A failed connect. [keysLost]: the device asked to pair although the phone holds a bond
      * for it, so it no longer has its half (factory reset). Android 15+ then shows its own
      * "pair again" dialog and holds GATT back until the connect, or a request of the set-up

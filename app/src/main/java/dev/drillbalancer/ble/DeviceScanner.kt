@@ -107,11 +107,12 @@ class DeviceScanner(context: Context) {
             .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
             .setCallbackType(ScanSettings.CALLBACK_TYPE_ALL_MATCHES)
             .build()
-        synchronized(lock) { throttle.recordStart(now()) }
         // No ScanFilter: see isDrillBalancer(). Fine while the screen is on, which a
         // visible scan screen implies.
         try {
             scanner.startScan(null, settings, callback)
+            // Only a start that reached the stack counts against its limit.
+            synchronized(lock) { throttle.recordStart(now()) }
         } catch (_: IllegalStateException) {
             throw ScanException("Bluetooth is turned off.")   // since the check above (Android 8 to 14)
         }
