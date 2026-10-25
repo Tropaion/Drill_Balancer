@@ -54,10 +54,11 @@ count). Otherwise the bootloader goes back to the previous image.
 ## Host tests
 
 The hardware-independent code (level math, fusion, mount and sensor
-calibration, settings and JSON, the power state machine, OTA protocol, BLE
-codec, PMU and IMU decoding, UI logic) is tested on the PC with Unity (and,
-for the OTA hash, mbedtls) from the IDF tree. `test_host/stubs` stands in for
-the few ESP-IDF headers the driver code includes:
+calibration, vibration detection, settings and JSON, the power state
+machine, OTA protocol, BLE codec, PMU and IMU decoding, UI logic) is tested
+on the PC with Unity (and, for the OTA hash, mbedtls) from the IDF tree.
+`test_host/stubs` stands in for the few ESP-IDF headers the driver code
+includes:
 
 ```sh
 export PATH=$HOME/.espressif/tools/cmake/3.30.2/bin:$HOME/.espressif/tools/ninja/1.12.1:$PATH
@@ -111,7 +112,7 @@ Tasks:
 
 | Task | Priority / core | Job |
 |---|---|---|
-| `sensor` (main/sensor_task.c) | 10, core 1 | Every 20 ms (50 Hz): drains the IMU FIFO, applies the accel calibration, runs fusion, computes the level reading and publishes it; feeds the calibration collectors. |
+| `sensor` (main/sensor_task.c) | 10, core 1 | Every 20 ms (50 Hz): drains the IMU FIFO, applies the accel calibration, runs fusion, computes the level reading and publishes it; feeds the calibration collectors and the vibration detector, and notes motion as activity. |
 | LVGL (esp_lvgl_adapter) | 6 | The UI. Reads `app_state` snapshots about 15 times a second. |
 | `control` (main/control.c) | 5 | Executes app commands (from the UI and BLE). Polls the AXP2101 every 200 and 500 ms. Runs the power policy. |
 | NimBLE host | IDF default, core 0 | GATT, pairing, OTA writes |
@@ -145,12 +146,17 @@ are described above.
 - `accel_cal`: a six-position ellipsoid fit for the accelerometer bias and
   gain on each axis, and the stillness window that turns raw samples into
   poses.
+- `vibration`: the running-motor detector on the raw accelerometer. A
+  2nd-order high-pass (6 Hz) removes gravity and handling; a 0.5 s window is
+  shaking when at least half its samples exceed 0.05 g. Three shaking windows
+  in a row read RUNNING, four calm ones QUIET.
 
 **app_core**: the shared snapshot. Each producer has one setter, and every
 consumer gets a consistent copy. The control task also publishes which
 calibrations the stored settings hold, so BLE never reads the settings for
-its status packet. Also the command queue, the activity timestamp and the
-common millisecond clock. Thread-safe, never used from an ISR.
+its status packet. The motion part carries `vibrating`, the detector's
+verdict. Also the command queue, the activity timestamp and the common
+millisecond clock. Thread-safe, never used from an ISR.
 
 **settings**: `settings_t` with defaults, validation (the `SETTINGS_*` limits
 in `settings.h`, which the UI steppers share), a JSON form for the BLE
@@ -190,9 +196,10 @@ LPF, FIFO in stream mode.
 
 **power**:
 - `power_fsm`: the pure ACTIVE / DIM / SLEEP / OFF state machine,
-  host-tested. It takes the activity timestamp as an input, arms the
-  low-battery power-off 5 s after it starts, and provides the idle time the
-  calibration timeout uses too.
+  host-tested. It takes the activity timestamp and the vibration flag as
+  inputs (vibration counts for at most 3 min after the last other activity),
+  arms the low-battery power-off 5 s after it starts, and provides the idle
+  time the calibration timeout uses too.
 - `power.c`: applies the states. Brightness goes through the BSP, under the
   display lock. Before deep sleep or power-off the touch controller gets its
   sleep command. Deep sleep is entered with IMU wake-on-motion on ext1 and an
@@ -315,10 +322,32 @@ IMU re-initialisation, the yaw reads invalid until you zero again.
 
 | State | Entered when | Behaviour |
 |---|---|---|
-| ACTIVE | Boot, or any activity: touch, BLE write, turning the device faster than 0.3 rad/s, USB plugged in or out, PWR key | Brightness `bright` (default 100 %) |
+| ACTIVE | Boot, or any activity: touch, BLE write, turning the device faster than 0.3 rad/s while it does not vibrate, USB plugged in or out, PWR key; a running drill (vibration) within 3 min of the last other activity | Brightness `bright` (default 100 %) |
 | DIM | No activity for `dim_s` (default 30 s) | Brightness `dim_bright` (default 20 %); the UI keeps running |
 | SLEEP | No activity for `sleep_s` (default 120 s), and no OTA, calibration, authenticated BLE link with a write in the last 10 min, or USB power | BLE off, display at brightness 0, unused rails off, IMU wake-on-motion (150 mg), ESP32 deep sleep. Motion wakes the device (it reboots). After `off_min` (default 60 min) a timer wake powers it off. |
 | OFF | Battery below 5 %, not charging and no USB power, even if the charger pauses (armed 5 s after start-up); a PWR key long press; or the BLE power-off command | AXP2101 power-off. The PWR key turns the device on again. |
+
+A running drill held still keeps the screen on. The sensor task's vibration
+detector flags steady vibration, and the power FSM counts it as activity for
+at most 3 min (`VIB_HOLD_MS` in `control.c`) after the last other activity.
+A vibration credit does not extend that hold, so vibration alone never keeps
+the device awake: put away in a running van, it dims at most 3 min + `dim_s`
+and sleeps at most 3 min + `sleep_s` after it was last touched or moved.
+- Turning only counts while the accelerometer is calm, since a running motor
+  can shake the gyro past 0.3 rad/s: its own 20 ms batch and its 0.5 s
+  window must both stay below the detector's duty (`vib_calm()`). The
+  detector's running/quiet state is not used for this, so moving to the next
+  hole counts from the first calm window after the motor stops, not 2 s
+  later. A turn whose window is not decided yet (right after the motor
+  stopped, after start-up or an IMU restart) is counted when that window
+  closes calm and dropped if it shook.
+- A turn while the device lies calm is real activity, also a vehicle
+  turning at a stop. A van that stops and turns every few minutes can
+  therefore keep it awake; step 14 measures this.
+- A wake on motion is a reboot and not activity, so it never arms the hold.
+  Woken straight into drilling, the screen can still dim once; a tap fixes
+  it.
+- The low-battery power-off is checked first and is never delayed.
 
 PWR key:
 - A short press puts the device to sleep at once.
@@ -404,8 +433,37 @@ Every `TODO(hw)` in the tree is covered below, with its file. Grep for
 13. **Partial FIFO read** (`imu.c`). Check that the samples left unread stay
     queued. This only happens if the 64-sample batch is smaller than the
     FIFO content, for example after a stall.
-14. **LPF** (`imu.c`, gyro 24 Hz / accel 12 Hz). Tune it on a running drill:
-    the reading should stay steady without lagging too much.
+14. **LPF and vibration detector** (`imu.c`, gyro 24 Hz / accel 12 Hz;
+    `components/level/src/vibration.c`, hp_hz 6 Hz / amp_g 0.05 g;
+    `main/sensor_task.c`, ACTIVITY_GYRO_RAD_S). Tune the LPF first, on a
+    running drill: the reading should stay steady without lagging too much.
+    The detector only sees what the accel LPF passes, so tune it after the
+    LPF, and again whenever the LPF changes:
+    - The sensor task logs `vibration running/quiet, duty NN %` on every
+      change, and each 0.5 s window's duty and largest gyro rate
+      (`vibration duty NN %, gyro max X.XX rad/s`) at debug level
+      (`CONFIG_LOG_MAXIMUM_LEVEL_DEBUG`, then
+      `esp_log_level_set("sensor", ESP_LOG_DEBUG)`).
+    - Record the duty for: the drill held still at its lowest and highest
+      speed, in wood and in masonry; idle on a bench; on a bench next to
+      another running machine; picking it up, turning it, walking with it;
+      hammering on the bench; a car ride in a toolbox.
+    - Set amp_g so that the drill at its lowest speed gives a duty of at
+      least 0.8 in nearly every window, and handling, walking and the bench
+      0.2 or less. Keep hp_hz at 4 Hz or more (walking).
+    - Too little drill signal: lower amp_g first (bench and handling still
+      at 0.2 or less), then raise the aLPF one step if the steadiness still
+      holds. A gyro channel would be a separate change.
+    - In calm windows (duty below 50 %) in the car, next to a running
+      machine and while the motor starts and stops, the gyro maximum must
+      stay below 0.3 rad/s.
+    - Release the trigger and move straight to the next hole: the move must
+      count (no dim 3 min + `dim_s` later). Note the drill's spin-down time;
+      a move counts only from the first calm window after it.
+    - End to end: a 60 s hole held still does not dim; put away in a running
+      vehicle, the device sleeps within 3 min + `sleep_s`. On a drive with
+      stops and turns, note whether and when it sleeps (a turn at a stop is
+      real activity) and how often wake-on-motion wakes it.
 15. **Gyro offset for the sensor calibration** (`accel_cal.h`,
     ACCEL_CAL_MAX_GYRO_RAD_S). Every pose of the six-side calibration must be
     accepted. If a pose never turns green, raise the limit.

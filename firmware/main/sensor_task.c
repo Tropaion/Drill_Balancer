@@ -7,6 +7,7 @@
 #include "freertos/task.h"
 #include "fusion.h"
 #include "imu.h"
+#include "vibration.h"
 
 static const char *TAG = "sensor";
 
@@ -32,6 +33,13 @@ static const char *TAG = "sensor";
 
 // Turning the device faster than this (after gyro bias) counts as user
 // activity for the power policy; a drill lying on a bench stays far below.
+// It only counts when the accelerometer is calm, in the batch itself and in
+// its 0.5 s window (vib_calm()): a running motor can shake the gyro past it,
+// and that must not re-arm the power FSM's vibration hold.
+// TODO(hw): watch the debug log's gyro maximum of calm windows on a
+// vibrating surface (a car, a bench next to a running machine) and while
+// the motor starts and stops; it must stay below this, or vibration could
+// still count as activity.
 #define ACTIVITY_GYRO_RAD_S 0.3f
 
 // No new samples for this long (failed reads, or reads that stay empty: a
@@ -65,6 +73,13 @@ static accel_cal_collector_t s_collector;
 
 // --- sensor task only ---
 static imu_sample_t s_buf[FIFO_BATCH];
+static vib_detector_t s_vib;
+// A turn in a calm batch while the window was not calm yet (before the first
+// window after a start or an IMU restart, e.g. picking the drill up out of
+// deep sleep, or right after the motor stopped): decided when its window
+// closes, counted if that window was calm, dropped if it shook.
+static bool s_arm_pending;
+static float s_win_max_rate;   // largest batch rate in the open window, for the log
 
 static void lock(void)
 {
@@ -139,7 +154,7 @@ static void publish_no_imu(uint32_t now)
                          .yaw_status = LEVEL_STATUS_OFF};
     bool zero_set = s_level.zero_set;
     unlock();
-    app_state_set_motion(false, quat_identity(), false, zero_set, &r, now);
+    app_state_set_motion(false, quat_identity(), false, false, zero_set, &r, now);
 }
 
 static bool try_imu_init(void)
@@ -196,6 +211,8 @@ static void sensor_task(void *arg)
             // fails until then.
             s_fusion_ready = false;
             unlock();
+            vib_reset(&s_vib);
+            s_arm_pending = false;
             last_pub = now;
             publish_no_imu(now);
             continue;
@@ -226,11 +243,41 @@ static void sensor_task(void *arg)
         }
         unlock();
 
-        if (max_rate > ACTIVITY_GYRO_RAD_S) {
-            app_note_activity();
+        vib_state_t was = vib_state(&s_vib);
+        bool closed = false;
+        size_t above = 0;
+        s_win_max_rate = fmaxf(s_win_max_rate, max_rate);
+        for (size_t i = 0; i < n; i++) {
+            bool window_closed = vib_add_sample(&s_vib, s_buf[i].accel_g, dt);
+            above += s_vib.above;
+            if (window_closed) {
+                closed = true;
+                ESP_LOGD(TAG, "vibration duty %d %%, gyro max %.2f rad/s",
+                         (int)(s_vib.last_duty * 100.0f + 0.5f), (double)s_win_max_rate);
+                s_win_max_rate = 0.0f;
+            }
+        }
+        vib_state_t vib = vib_state(&s_vib);
+        if (vib != was) {
+            ESP_LOGI(TAG, "vibration %s, duty %d %%", vib == VIB_RUNNING ? "running" : "quiet",
+                     (int)(s_vib.last_duty * 100.0f + 0.5f));
+        }
+        // Turning counts only while calm (see ACTIVITY_GYRO_RAD_S).
+        if (s_arm_pending && closed) {
+            s_arm_pending = false;
+            if (s_vib.last_calm) {
+                app_note_activity();
+            }
+        }
+        if (max_rate > ACTIVITY_GYRO_RAD_S && (float)above < s_vib.cfg.duty * (float)n) {
+            if (vib_calm(&s_vib)) {
+                app_note_activity();
+            } else {
+                s_arm_pending = true;
+            }
         }
         if (ready) {
-            app_state_set_motion(true, q, still, zero_set, &reading, now);
+            app_state_set_motion(true, q, still, vib == VIB_RUNNING, zero_set, &reading, now);
         }
     }
 
@@ -248,6 +295,10 @@ esp_err_t sensor_start(const settings_t *s, bool imu_ok)
 
     s_fusion_cfg = fusion_default_config();
     s_fusion_ready = false;
+    vib_config_t vib_cfg = vib_default_config();
+    vib_init(&s_vib, &vib_cfg);
+    s_arm_pending = false;
+    s_win_max_rate = 0.0f;
     level_config_t cfg = settings_level_config(s);
     level_init(&s_level, &cfg);
     level_set_mode(&s_level, s->mode);   // an invalid stored mode stays WALL

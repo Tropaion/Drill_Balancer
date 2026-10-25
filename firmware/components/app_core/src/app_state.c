@@ -34,13 +34,14 @@ void app_state_get(app_snapshot_t *out)
     LOCKED(*out = s_state);
 }
 
-void app_state_set_motion(bool imu_ok, quat_t q, bool still, bool zero_set,
+void app_state_set_motion(bool imu_ok, quat_t q, bool still, bool vibrating, bool zero_set,
                           const level_reading_t *reading, uint32_t now_ms)
 {
     LOCKED({
         s_state.imu_ok = imu_ok;
         s_state.q = q;
         s_state.still = still;
+        s_state.vibrating = vibrating;
         s_state.zero_set = zero_set;
         s_state.reading = *reading;
         s_state.reading_ms = now_ms;

@@ -56,6 +56,17 @@ static const char *TAG = "control";
 // in progress is never cut off.
 #define CAL_IDLE_GRACE_MS (5u * 60u * 1000u)
 
+// A running drill held still (sensor_task.c, vibration.h) counts as activity
+// for this long after the last real activity, so the screen does not dim in
+// the middle of a hole. Moving to the next hole once the motor has stopped
+// (one calm 0.5 s window) or a tap re-arms it. Vibration alone (a van, a
+// toolbox, a bench next to a machine) therefore keeps the device awake at
+// most this much longer per real activity: at an assumed 100-150 mA ACTIVE,
+// 5-7.5 mAh. A turn while it lies calm counts as real activity, also a
+// vehicle turning at a stop, so a van that stops and turns every few minutes
+// can keep it awake (bring-up step 14).
+#define VIB_HOLD_MS (3u * 60u * 1000u)
+
 // --- control task only ---
 static settings_t s_settings;
 static bool s_display_ok;
@@ -74,6 +85,7 @@ static power_fsm_config_t fsm_config(const settings_t *s)
         .sleep_after_ms = (uint32_t)s->sleep_after_s * 1000u,
         .off_battery_pct = OFF_BATTERY_PCT,
         .battery_settle_ms = BATTERY_SETTLE_MS,
+        .vib_hold_ms = VIB_HOLD_MS,
     };
 }
 
@@ -429,6 +441,7 @@ static void update_power(uint32_t now)
     const app_battery_t *b = &snap.battery;
     power_inputs_t in = {
         .last_activity_ms = app_last_activity_ms(),
+        .vibrating = snap.vibrating,
         .battery_valid = b->valid,
         .battery_pct = b->percent,
         .charging = b->charging,

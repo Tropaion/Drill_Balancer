@@ -27,6 +27,7 @@
 #include "settings.h"
 #include "sim_core.h"
 #include "ui_logic.h"
+#include "vibration.h"
 
 // ---- log ring (stands in for ESP_LOGx) -------------------------------------------
 
@@ -140,12 +141,13 @@ void app_state_get(app_snapshot_t *out)
     *out = s_state;
 }
 
-void app_state_set_motion(bool imu_ok, quat_t q, bool still, bool zero_set,
+void app_state_set_motion(bool imu_ok, quat_t q, bool still, bool vibrating, bool zero_set,
                           const level_reading_t *reading, uint32_t now_ms)
 {
     s_state.imu_ok = imu_ok;
     s_state.q = q;
     s_state.still = still;
+    s_state.vibrating = vibrating;
     s_state.zero_set = zero_set;
     s_state.reading = *reading;
     s_state.reading_ms = now_ms;
@@ -461,6 +463,8 @@ static accel_cal_collector_t s_collector;
 static bool s_imu_ok;
 static uint32_t s_last_retry, s_last_pub, s_last_data;
 static imu_sample_t s_buf[FIFO_BATCH];
+static vib_detector_t s_vib;
+static bool s_arm_pending;
 
 // imu.c IMU_AXIS_MAP (identity until checked on the board).
 static const imu_axis_map_t IMU_AXIS_MAP = {.x = {0, 1}, .y = {1, 1}, .z = {2, 1}};
@@ -539,13 +543,16 @@ static void publish_no_imu(uint32_t now)
 {
     level_reading_t r = {.mode = s_level.mode, .status = LEVEL_STATUS_OFF,
                          .yaw_status = LEVEL_STATUS_OFF};
-    app_state_set_motion(false, quat_identity(), false, s_level.zero_set, &r, now);
+    app_state_set_motion(false, quat_identity(), false, false, s_level.zero_set, &r, now);
 }
 
 static void sensor_start(const settings_t *s, bool imu_ok)
 {
     s_fusion_cfg = fusion_default_config();
     s_fusion_ready = false;
+    vib_config_t vib_cfg = vib_default_config();
+    vib_init(&s_vib, &vib_cfg);
+    s_arm_pending = false;
     level_config_t cfg = settings_level_config(s);
     level_init(&s_level, &cfg);
     level_set_mode(&s_level, s->mode);
@@ -601,6 +608,8 @@ void sim_sensor_pass(uint32_t now_ms, const float *samples, int n, float dt, int
         s_imu_ok = false;
         s_last_retry = now;
         s_fusion_ready = false;
+        vib_reset(&s_vib);
+        s_arm_pending = false;
         s_last_pub = now;
         publish_no_imu(now);
         return;
@@ -627,11 +636,38 @@ void sim_sensor_pass(uint32_t now_ms, const float *samples, int n, float dt, int
         mount_add_locked(now);
     }
 
-    if (max_rate > ACTIVITY_GYRO_RAD_S) {
-        app_note_activity();
+    vib_state_t was = vib_state(&s_vib);
+    bool closed = false;
+    int above = 0;
+    for (int i = 0; i < n; i++) {
+        // The ESP_LOGD duty and gyro maximum line (and its s_win_max_rate) is left out.
+        bool window_closed = vib_add_sample(&s_vib, s_buf[i].accel_g, dt);
+        above += s_vib.above;
+        if (window_closed) {
+            closed = true;
+        }
+    }
+    vib_state_t vib = vib_state(&s_vib);
+    if (vib != was) {
+        LOGI("vibration %s, duty %d %%", vib == VIB_RUNNING ? "running" : "quiet",
+             (int)(s_vib.last_duty * 100.0f + 0.5f));
+    }
+    // Turning counts only while calm (sensor_task.c ACTIVITY_GYRO_RAD_S).
+    if (s_arm_pending && closed) {
+        s_arm_pending = false;
+        if (s_vib.last_calm) {
+            app_note_activity();
+        }
+    }
+    if (max_rate > ACTIVITY_GYRO_RAD_S && (float)above < s_vib.cfg.duty * (float)n) {
+        if (vib_calm(&s_vib)) {
+            app_note_activity();
+        } else {
+            s_arm_pending = true;
+        }
     }
     if (ready) {
-        app_state_set_motion(true, q, still, zero_set, &reading, now);
+        app_state_set_motion(true, q, still, vib == VIB_RUNNING, zero_set, &reading, now);
     }
 }
 
@@ -1549,6 +1585,7 @@ int sim_ota_state(void)
 #define BATTERY_SETTLE_MS 5000
 #define PWRKEY_BOOT_IGNORE_MS 2000
 #define CAL_IDLE_GRACE_MS (5u * 60u * 1000u)
+#define VIB_HOLD_MS (3u * 60u * 1000u)
 
 // The AXP2101 registers pmu.cpp reads (datasheet 6.13.2): REG 00 VBUS good,
 // REG 01 battery current direction and charger state, and the SOC IRQ
@@ -1583,6 +1620,7 @@ static power_fsm_config_t fsm_config(const settings_t *s)
         .sleep_after_ms = (uint32_t)s->sleep_after_s * 1000u,
         .off_battery_pct = OFF_BATTERY_PCT,
         .battery_settle_ms = BATTERY_SETTLE_MS,
+        .vib_hold_ms = VIB_HOLD_MS,
     };
 }
 
@@ -1936,6 +1974,7 @@ static void update_power(uint32_t now)
     const app_battery_t *b = &snap.battery;
     power_inputs_t in = {
         .last_activity_ms = app_last_activity_ms(),
+        .vibrating = snap.vibrating,
         .battery_valid = b->valid,
         .battery_pct = b->percent,
         .charging = b->charging,
@@ -2120,8 +2159,8 @@ int sim_snapshot_json(char *buf, int cap)
     put(&o, "\"now_ms\":%lu,", (unsigned long)s_now);
     put_str(&o, "state", STATES[s_run]);
     put_str(&o, "fw_version", sim_fw_version());
-    put(&o, "\"imu_ok\":%s,\"still\":%s,\"zero_set\":%s,\"reading_ms\":%lu,", B(s->imu_ok),
-        B(s->still), B(s->zero_set), (unsigned long)s->reading_ms);
+    put(&o, "\"imu_ok\":%s,\"still\":%s,\"vibrating\":%s,\"zero_set\":%s,\"reading_ms\":%lu,",
+        B(s->imu_ok), B(s->still), B(s->vibrating), B(s->zero_set), (unsigned long)s->reading_ms);
     put(&o, "\"q\":[%.7g,%.7g,%.7g,%.7g],", (double)s->q.w, (double)s->q.x, (double)s->q.y,
         (double)s->q.z);
     put(&o, "\"reading\":{\"mode\":%d,", (int)r->mode);

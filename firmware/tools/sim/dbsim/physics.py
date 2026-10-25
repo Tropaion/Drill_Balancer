@@ -182,7 +182,9 @@ class DrillPhysics:
         self.gyro_bias = [0.0, 0.0, 0.0]
         self.accel_noise_g = 0.0015
         self.gyro_noise_rad_s = 0.002
-        # drill motor: accel vibration amplitude (g) at ~100-300 Hz, aliased by the ODR
+        # drill motor: accel vibration amplitude (g) at ~100-300 Hz, aliased by the ODR.
+        # No on-chip LPF here: the firmware's vibration detector sees these tones in
+        # full, where the board's 11.9 Hz accel LPF would remove most of them.
         self.vibration_g = 0.0
         self.vibration_hz = (147.0, 233.0)
         self.max_rate_dps = 180.0            # how fast the orientation follows its target

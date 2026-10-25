@@ -62,6 +62,8 @@ typedef struct {
     bool imu_ok;
     quat_t q;                    // fused orientation, body -> world
     bool still;
+    bool vibrating;              // a running motor (vibration.h VIB_RUNNING):
+                                 // counts for the power FSM's vibration hold
     level_reading_t reading;     // for the current mode
     uint32_t reading_ms;
     bool zero_set;               // a zero is set (also with the bit vertical,
@@ -94,7 +96,7 @@ void app_state_get(app_snapshot_t *out);
 
 // zero_set is published with every motion update, so a snapshot never pairs
 // it with another reading.
-void app_state_set_motion(bool imu_ok, quat_t q, bool still, bool zero_set,
+void app_state_set_motion(bool imu_ok, quat_t q, bool still, bool vibrating, bool zero_set,
                           const level_reading_t *reading, uint32_t now_ms);
 void app_state_set_battery(const app_battery_t *battery);
 void app_state_set_ble(bool enabled, bool connected);
@@ -140,7 +142,9 @@ bool app_post_cmd(app_cmd_id_t id, int32_t arg);
 bool app_receive_cmd(app_cmd_t *out, uint32_t timeout_ms);
 
 // User activity that should keep the device awake (touch, BLE traffic,
-// significant motion). Cheap; call as often as needed.
+// significant motion). It also arms the power FSM's vibration hold, so it
+// must not be called for anything vibration alone can produce. Cheap; call
+// as often as needed.
 void app_note_activity(void);
 uint32_t app_last_activity_ms(void);
 

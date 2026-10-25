@@ -8,6 +8,13 @@
 //   power_inputs_t.last_activity_ms stamp (or a power_fsm_activity() call);
 //   a stamp older than power_fsm_init() is not activity.
 // - Idle >= dim_after_ms: DIM. Idle >= sleep_after_ms: SLEEP.
+// - Vibration (power_inputs_t.vibrating, a running drill) counts as activity
+//   only up to vib_hold_ms after the last real activity: each activity arms
+//   the hold, and a vibration credit does not re-arm it. So vibration alone
+//   keeps the device ACTIVE at most vib_hold_ms after the last touch, BLE
+//   write, key press or movement; it dims and sleeps dim_after_ms and
+//   sleep_after_ms after that. A stamp older than power_fsm_init() (the
+//   boot, also a wake on motion) does not arm it.
 // - Never SLEEP while an OTA update or a calibration runs, while BLE is
 //   connected, or while USB power is present (DIM is still allowed).
 // - Battery valid, not charging, no USB power and percent < off_battery_pct:
@@ -36,10 +43,12 @@ typedef struct {
     uint32_t sleep_after_ms;
     uint8_t off_battery_pct;     // 5
     uint32_t battery_settle_ms;  // from power_fsm_init()
+    uint32_t vib_hold_ms;        // 0 = vibration never counts
 } power_fsm_config_t;
 
 typedef struct {
     uint32_t last_activity_ms;   // app_last_activity_ms()
+    bool vibrating;              // app_snapshot_t.vibrating
     bool battery_valid;
     uint8_t battery_pct;
     bool charging;
@@ -57,10 +66,13 @@ typedef struct {
     bool battery_armed;          // battery_settle_ms has passed
     bool input_seen;             // seen_activity_ms is set
     uint32_t seen_activity_ms;   // last power_inputs_t.last_activity_ms
+    bool hold_armed;             // vibration counts (until vib_hold_ms after hold_arm_ms)
+    uint32_t hold_arm_ms;        // the last real activity
 } power_fsm_t;
 
 void power_fsm_init(power_fsm_t *f, const power_fsm_config_t *cfg, uint32_t now_ms);
 void power_fsm_set_config(power_fsm_t *f, const power_fsm_config_t *cfg);
+// Real activity: also arms the vibration hold.
 void power_fsm_activity(power_fsm_t *f, uint32_t now_ms);
 power_state_t power_fsm_update(power_fsm_t *f, const power_inputs_t *in, uint32_t now_ms);
 

@@ -1,6 +1,7 @@
 """The ctypes core on its own: build, state file, raw sensor passes, texts."""
 
 import json
+import math
 import tempfile
 import unittest
 from pathlib import Path
@@ -78,6 +79,31 @@ class CoreTest(unittest.TestCase):
         (self.dir / "state.json").write_text("{not json")
         self.boot()
         self.assertEqual(json.loads(self.core.config_read())["mode"], "wall")
+
+    def test_vibration_flag(self):
+        # vibration.c through the sensor-task mirror: a 0.2 g, 100 Hz vector
+        # turning in the board X/Y plane is RUNNING after three 0.5 s windows.
+        self.boot()
+        self.run_flat(2500)
+        self.assertIs(self.core.snapshot()["vibrating"], False)
+        k = 0
+
+        def run_tone(ms):
+            nonlocal k
+            for _ in range(ms // 20):
+                self.now += 20
+                batch = []
+                for _ in range(9):
+                    w = 2 * math.pi * 100 * k * DT
+                    batch.append((0.2 * math.cos(w), 0.2 * math.sin(w), 1.0, 0.0, 0.0, 0.0))
+                    k += 1
+                self.core.sensor_pass(self.now, batch, DT)
+
+        run_tone(1000)
+        self.assertIs(self.core.snapshot()["vibrating"], False)
+        run_tone(1000)
+        self.assertIs(self.core.snapshot()["vibrating"], True)
+        self.assertIn(("I", "vibration running, duty 100 %"), self.core.log_lines())
 
     def test_result_texts(self):
         self.assertTrue(self.core.ui_text(1, 0))

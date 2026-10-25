@@ -47,6 +47,7 @@ add_library(dbsim SHARED
     ${C}/level/src/fusion.c
     ${C}/level/src/level.c
     ${C}/level/src/accel_cal.c
+    ${C}/level/src/vibration.c
     ${C}/settings/src/settings.c
     ${C}/ota/src/ota_proto.c
     ${C}/ble/src/ble_codec.c

@@ -115,8 +115,15 @@ the app.
 - **Orientation:** sliders and number boxes for elevation (-90..90°), yaw
   and roll about the bit. Presets: wall 0°, floor (bit down), ceiling (bit
   up), 45°.
-- **Drill:** a *drill running* vibration toggle with intensity, and the
-  noise level.
+- **Drill:** a *drill running* vibration toggle with intensity, a
+  *detected* / *quiet* pill for what the firmware's vibration detector reads,
+  and the noise level. From about 0.06 g the detector reads it as running
+  (about 1.5 s after the toggle), and it counts as activity for up to 3 min
+  after the last touch or movement, as on the board. Vibration alone, steady
+  or switched on and off, does not keep the sim awake: it dims and sleeps
+  3 min later than without it, and then the 150 mg wake on motion reboots
+  it at once (the van case). A turn counts only in calm accelerometer
+  windows, so moving it right after switching the drill off still counts.
 - **Calibration helpers:**
   - the six table poses, which light up as the sensor calibration captures
     them;
@@ -228,7 +235,12 @@ curl -s -XPOST localhost:8765/api/cmd -d '{"cmd":"settings","set":{"tol":3,"near
   - the post-OTA self-test and rollback;
   - the fuel gauge (the battery is what the panel says);
   - lever-arm acceleration;
-  - the accelerometer's low-pass filter;
+  - the accelerometer's low-pass filter. The vibration detector therefore
+    sees the motor tones (147 and 233 Hz) in full, where the board's 11.9 Hz
+    filter removes most of them, and the gyro vibration is white noise. The
+    intensity slider is a stand-in for what reaches the detector on the
+    board, not for a real drill: the sim proves the detector's logic and the
+    power policy, not its 0.05 g threshold (bring-up step 14 tunes that);
   - the settings steppers on the screen.
 
 ## Tests

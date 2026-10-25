@@ -309,6 +309,244 @@ static void test_input_activity_stamp_wraps(void)
     TEST_ASSERT_EQUAL(POWER_ACTIVE, power_fsm_update(&f, &in, t0 + DIM_MS + 1u));
 }
 
+// ---- vibration hold ----------------------------------------------------------------
+
+#define HOLD_MS  180000u   // control.c VIB_HOLD_MS
+#define STEP_MS  200u      // control task period
+
+static void hold_on(void)
+{
+    cfg.vib_hold_ms = HOLD_MS;
+    power_fsm_init(&f, &cfg, 1000);
+}
+
+typedef struct {
+    uint32_t dim_at, sleep_at;   // first update in that state, 0 = none
+    bool reactivated;            // ACTIVE again after DIM
+} timeline_t;
+
+// Control task passes every STEP_MS in [from, to]; stops at SLEEP or OFF.
+static timeline_t run(uint32_t from, uint32_t to)
+{
+    timeline_t tl = {0};
+    for (uint32_t t = from; (int32_t)(to - t) >= 0; t += STEP_MS) {
+        power_state_t st = power_fsm_update(&f, &in, t);
+        if (st == POWER_DIM && !tl.dim_at) {
+            tl.dim_at = t;
+        }
+        if (st == POWER_ACTIVE && tl.dim_at) {
+            tl.reactivated = true;
+        }
+        if (st == POWER_SLEEP || st == POWER_OFF) {
+            tl.sleep_at = t;
+            break;
+        }
+    }
+    return tl;
+}
+
+static void test_vibration_ignored_when_hold_disabled(void)
+{
+    in.last_activity_ms = 2000;
+    in.vibrating = true;
+    timeline_t tl = run(2000, 2000 + 2 * SLEEP_MS);
+    TEST_ASSERT_EQUAL_UINT32(2000 + DIM_MS, tl.dim_at);
+    TEST_ASSERT_EQUAL_UINT32(2000 + SLEEP_MS, tl.sleep_at);
+}
+
+static void test_vibration_without_activity_since_init_never_counts(void)
+{
+    // A wake on motion is a reboot: app_state's boot stamp is older than the
+    // FSM's init, so nothing arms the hold, however long it vibrates.
+    hold_on();
+    in.last_activity_ms = 400;
+    in.vibrating = true;
+    timeline_t tl = run(1000, 1000 + HOLD_MS + SLEEP_MS);
+    TEST_ASSERT_FALSE(f.hold_armed);
+    TEST_ASSERT_EQUAL_UINT32(1000 + DIM_MS, tl.dim_at);
+    TEST_ASSERT_EQUAL_UINT32(1000 + SLEEP_MS, tl.sleep_at);
+}
+
+static void test_vibration_holds_until_cap(void)
+{
+    hold_on();
+    uint32_t t = 2000;
+    in.last_activity_ms = t;
+    in.vibrating = true;
+    // Credited up to and including held == HOLD_MS, then idle from there.
+    timeline_t tl = run(t, t + HOLD_MS + 2 * SLEEP_MS);
+    TEST_ASSERT_EQUAL_UINT32(t + HOLD_MS + DIM_MS, tl.dim_at);
+    TEST_ASSERT_EQUAL_UINT32(t + HOLD_MS + SLEEP_MS, tl.sleep_at);
+    TEST_ASSERT_FALSE(tl.reactivated);
+}
+
+static void test_credit_does_not_rearm(void)
+{
+    // Vibration that stops and starts again (an intermittent machine, a
+    // stop in traffic) gets no new hold: the cap counts from the activity.
+    hold_on();
+    uint32_t t = 2000;
+    in.last_activity_ms = t;
+    in.vibrating = true;
+    run(t, t + 60000);
+    in.vibrating = false;
+    timeline_t tl = run(t + 60200, t + 60000 + DIM_MS + 1000);
+    TEST_ASSERT_EQUAL_UINT32(t + 60000 + DIM_MS, tl.dim_at);
+    in.vibrating = true;   // back to ACTIVE: still inside the hold
+    tl = run(t + 60000 + DIM_MS + 1200, t + HOLD_MS + 2 * SLEEP_MS);
+    TEST_ASSERT_EQUAL_UINT32(t + HOLD_MS + DIM_MS, tl.dim_at);
+    TEST_ASSERT_EQUAL_UINT32(t + HOLD_MS + SLEEP_MS, tl.sleep_at);
+}
+
+static void test_new_activity_rearms(void)
+{
+    hold_on();
+    in.vibrating = true;
+    in.last_activity_ms = 2000;
+    run(2000, 100000);
+    uint32_t t2 = 100000 + 50;   // moving to the next hole
+    in.last_activity_ms = t2;
+    timeline_t tl = run(100200, t2 + HOLD_MS + 2 * SLEEP_MS);
+    // The last credit is the last pass inside the new hold, 50 ms before it ends.
+    TEST_ASSERT_EQUAL_UINT32(t2 + HOLD_MS - 50 + DIM_MS, tl.dim_at);
+    TEST_ASSERT_EQUAL_UINT32(t2 + HOLD_MS - 50 + SLEEP_MS, tl.sleep_at);
+}
+
+static void test_power_fsm_activity_arms(void)
+{
+    hold_on();
+    power_fsm_activity(&f, 2000);
+    TEST_ASSERT_TRUE(f.hold_armed);
+    in.vibrating = true;
+    timeline_t tl = run(2000, 2000 + HOLD_MS + SLEEP_MS);
+    TEST_ASSERT_EQUAL_UINT32(2000 + HOLD_MS + SLEEP_MS, tl.sleep_at);
+}
+
+static void test_vibration_from_dim_returns_active(void)
+{
+    // The motor starts after the screen dimmed, within the hold.
+    hold_on();
+    in.last_activity_ms = 2000;
+    timeline_t tl = run(2000, 2000 + DIM_MS);
+    TEST_ASSERT_EQUAL_UINT32(2000 + DIM_MS, tl.dim_at);
+    in.vibrating = true;
+    TEST_ASSERT_EQUAL(POWER_ACTIVE, power_fsm_update(&f, &in, 2000 + DIM_MS + STEP_MS));
+    TEST_ASSERT_EQUAL_UINT32(0, power_fsm_idle_ms(&f, 2000 + DIM_MS + STEP_MS));
+}
+
+static void test_expired_hold_latched_across_wrap(void)
+{
+    // On USB (no sleep) for 49.7 days: when now_ms comes round to just
+    // after the activity again, the old hold does not count.
+    hold_on();
+    in.vbus_present = true;
+    in.last_activity_ms = 2000;
+    run(2000, 2000 + HOLD_MS + STEP_MS);
+    TEST_ASSERT_FALSE(f.hold_armed);
+    in.vibrating = true;
+    uint32_t t = 2000 + HOLD_MS + STEP_MS;
+    for (int hour = 1; hour <= 1192; hour++) {
+        t += 3600u * 1000u;
+        TEST_ASSERT_EQUAL(POWER_DIM, power_fsm_update(&f, &in, t));
+    }
+    // 2^32 ms after the pass just after the activity: now_ms - hold_arm_ms
+    // is 200 again.
+    TEST_ASSERT_EQUAL(POWER_DIM, power_fsm_update(&f, &in, 2000 + STEP_MS));
+    TEST_ASSERT_FALSE(f.hold_armed);
+}
+
+static void test_stamp_after_now_counts_as_just_armed(void)
+{
+    // The stamp was taken after the control task read now_ms.
+    hold_on();
+    in.last_activity_ms = 2010;
+    in.vibrating = true;
+    TEST_ASSERT_EQUAL(POWER_ACTIVE, power_fsm_update(&f, &in, 2000));
+    TEST_ASSERT_TRUE(f.hold_armed);
+    TEST_ASSERT_EQUAL_UINT32(2010, f.last_activity_ms);   // not moved back
+    timeline_t tl = run(2200, 2010 + HOLD_MS + SLEEP_MS + STEP_MS);
+    TEST_ASSERT_EQUAL_UINT32(2000 + HOLD_MS + DIM_MS, tl.dim_at);   // last credit at 182000
+}
+
+static void test_low_battery_off_while_vibration_credited(void)
+{
+    hold_on();   // battery_settle_ms 0
+    in.last_activity_ms = 2000;
+    in.vibrating = true;
+    run(2000, 60000);
+    in.battery_pct = 4;
+    TEST_ASSERT_EQUAL(POWER_OFF, power_fsm_update(&f, &in, 60200));
+}
+
+static void test_sleep_blocked_still_dims_after_cap(void)
+{
+    // USB or a phone in use block sleep, not dimming: vibration keeps the
+    // screen bright only up to the cap.
+    bool *blocks[] = {&in.vbus_present, &in.ble_connected};
+    for (int i = 0; i < 2; i++) {
+        setUp();
+        hold_on();
+        *blocks[i] = true;
+        in.last_activity_ms = 2000;
+        in.vibrating = true;
+        timeline_t tl = run(2000, 2000 + 3600u * 1000u);
+        TEST_ASSERT_EQUAL_UINT32(2000 + HOLD_MS + DIM_MS, tl.dim_at);
+        TEST_ASSERT_EQUAL_UINT32(0, tl.sleep_at);
+        TEST_ASSERT_FALSE(tl.reactivated);
+    }
+}
+
+static void test_vibration_after_sleep_is_ignored(void)
+{
+    hold_on();
+    in.last_activity_ms = 2000;
+    run(2000, 2000 + SLEEP_MS);
+    TEST_ASSERT_EQUAL(POWER_SLEEP, f.state);
+    in.vibrating = true;
+    TEST_ASSERT_EQUAL(POWER_SLEEP, power_fsm_update(&f, &in, 2000 + SLEEP_MS + STEP_MS));
+}
+
+// The battery bound as a test: random vibration and random activity stamps,
+// nothing blocking sleep. The device is never ACTIVE later than DIM_MS, nor
+// awake later than SLEEP_MS, after hold expiry (the last real activity plus
+// HOLD_MS), and it is asleep one pass after that.
+static void test_vibration_bound_property(void)
+{
+    uint32_t rnd = 1;
+    for (int seed = 0; seed < 200; seed++) {
+        setUp();
+        rnd = rnd * 1664525u + 1013904223u;
+        // Some runs start just before the 49.7 day wrap of now_ms.
+        uint32_t t0 = seed % 4 == 0 ? 0xFFF00000u + (rnd >> 12) : rnd >> 4;
+        cfg.vib_hold_ms = HOLD_MS;
+        power_fsm_init(&f, &cfg, t0);
+        in.last_activity_ms = t0 - 100;   // the boot stamp
+        uint32_t real = t0;               // last real activity (or the init)
+        bool slept = false;
+        for (uint32_t k = 1; k < 9000 && !slept; k++) {   // 30 min
+            uint32_t t = t0 + k * STEP_MS;
+            rnd = rnd * 1664525u + 1013904223u;
+            if ((rnd >> 16) % 20 == 0) {
+                in.vibrating = !in.vibrating;
+            }
+            if ((rnd >> 8) % 1000 < 2 && k < 3000) {
+                in.last_activity_ms = t - (rnd >> 24) % STEP_MS;   // since the last pass
+                real = in.last_activity_ms;
+            }
+            power_state_t st = power_fsm_update(&f, &in, t);
+            int32_t since = (int32_t)(t - real);
+            if (st == POWER_ACTIVE) {
+                TEST_ASSERT_TRUE(since < (int32_t)(HOLD_MS + DIM_MS));
+            }
+            if (st != POWER_SLEEP) {
+                TEST_ASSERT_TRUE(since < (int32_t)(HOLD_MS + SLEEP_MS));
+            }
+            slept = st == POWER_SLEEP;
+        }
+        TEST_ASSERT_TRUE(slept);
+    }
+}
+
 // ---- battery settle time -----------------------------------------------------------
 
 static void test_low_battery_ignored_until_settled(void)
@@ -442,6 +680,19 @@ int main(void)
     RUN_TEST(test_input_activity_first_stamp_after_init_counts);
     RUN_TEST(test_input_activity_after_sleep_is_ignored);
     RUN_TEST(test_input_activity_stamp_wraps);
+    RUN_TEST(test_vibration_ignored_when_hold_disabled);
+    RUN_TEST(test_vibration_without_activity_since_init_never_counts);
+    RUN_TEST(test_vibration_holds_until_cap);
+    RUN_TEST(test_credit_does_not_rearm);
+    RUN_TEST(test_new_activity_rearms);
+    RUN_TEST(test_power_fsm_activity_arms);
+    RUN_TEST(test_vibration_from_dim_returns_active);
+    RUN_TEST(test_expired_hold_latched_across_wrap);
+    RUN_TEST(test_stamp_after_now_counts_as_just_armed);
+    RUN_TEST(test_low_battery_off_while_vibration_credited);
+    RUN_TEST(test_sleep_blocked_still_dims_after_cap);
+    RUN_TEST(test_vibration_after_sleep_is_ignored);
+    RUN_TEST(test_vibration_bound_property);
     RUN_TEST(test_low_battery_ignored_until_settled);
     RUN_TEST(test_bogus_first_reading_does_not_turn_off);
     RUN_TEST(test_battery_settle_counts_from_init_not_boot);

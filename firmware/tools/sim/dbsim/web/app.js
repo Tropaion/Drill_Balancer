@@ -936,6 +936,7 @@ function updatePanel() {
   $("roll-start").classList.toggle("on", st.sim.roll_running);
 
   // drill
+  setPill($("vib-state"), running ? (s.vibrating ? "detected" : "quiet") : "-", running && s.vibrating ? "ok" : "");
   setChecked($("vib-on"), p.vibration_g > 0);
   if (p.vibration_g > 0) {
     setValue($("vib"), p.vibration_g);

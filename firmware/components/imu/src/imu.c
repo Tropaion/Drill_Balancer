@@ -72,7 +72,8 @@ static const char *TAG = "imu";
 // CTRL5 LPF: gLPF mode 10 (5.39% of ODR = 24.2 Hz), aLPF mode 00 (2.66% =
 // 11.9 Hz) (Tables 11, 13). Hand motion is well below both; the accel only
 // feeds the slow tilt correction, so it gets the stronger filter against
-// drill vibration.
+// drill vibration. The vibration detector (level/src/vibration.c) sees only
+// what the aLPF passes: retune its defaults whenever the aLPF changes.
 // TODO(hw): tune both on a running drill.
 #define CTRL5_RUN         ((0x2 << 5) | (1 << 4) | (0x0 << 1) | 1)
 

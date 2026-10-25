@@ -23,13 +23,42 @@ void power_fsm_set_config(power_fsm_t *f, const power_fsm_config_t *cfg)
     f->cfg = *cfg;
 }
 
+static void note_activity(power_fsm_t *f, uint32_t now_ms)
+{
+    f->last_activity_ms = now_ms;
+    f->state = POWER_ACTIVE;
+}
+
 void power_fsm_activity(power_fsm_t *f, uint32_t now_ms)
 {
     if (f->state == POWER_SLEEP || f->state == POWER_OFF) {
         return;
     }
-    f->last_activity_ms = now_ms;
-    f->state = POWER_ACTIVE;
+    note_activity(f, now_ms);
+    f->hold_armed = true;
+    f->hold_arm_ms = now_ms;
+}
+
+// Vibration counts as activity up to vib_hold_ms after the last real
+// activity. The credit does not re-arm the hold, so last_activity_ms never
+// gets past hold_arm_ms + vib_hold_ms: vibration alone cannot keep the
+// device awake.
+static void vibration_hold(power_fsm_t *f, bool vibrating, uint32_t now_ms)
+{
+    if (!f->hold_armed) {
+        return;
+    }
+    uint32_t held = now_ms - f->hold_arm_ms;
+    if (held < 0x80000000u && held > f->cfg.vib_hold_ms) {
+        // Latched until the next real activity, so the 49.7 day wrap of
+        // now_ms cannot bring it back.
+        f->hold_armed = false;
+    } else if (vibrating && f->cfg.vib_hold_ms > 0 &&
+               (int32_t)(now_ms - f->last_activity_ms) > 0) {
+        // Also for held >= 2^31 (armed by a stamp slightly after now_ms, so
+        // just now); the signed check never moves last_activity_ms back.
+        note_activity(f, now_ms);
+    }
 }
 
 uint32_t power_fsm_idle_ms(power_fsm_t *f, uint32_t now_ms)
@@ -77,6 +106,8 @@ power_state_t power_fsm_update(power_fsm_t *f, const power_inputs_t *in, uint32_
         f->state = POWER_OFF;
         return f->state;
     }
+
+    vibration_hold(f, in->vibrating, now_ms);
 
     uint32_t idle = power_fsm_idle_ms(f, now_ms);
     bool sleep_blocked = in->ota_active || in->calibrating || in->ble_connected ||

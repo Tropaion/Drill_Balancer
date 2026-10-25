@@ -35,7 +35,9 @@ readings, settings, calibration and firmware updates.
   mount calibration that finds the drill axis while you roll the drill with
   the bit in a hole.
 - **Power management**: dims, then goes into deep sleep and wakes on motion;
-  optional power-off after a time in sleep; power-off at low battery.
+  optional power-off after a time in sleep; power-off at low battery. A
+  running drill held still keeps the screen on, for up to 3 min after the
+  last touch or movement.
 - **On-device settings** (hold 1 s) for tolerance, near band, target angle,
   brightness, timeouts and Bluetooth.
 - **Bluetooth LE**: live angle and status notifications, settings as JSON,
@@ -174,6 +176,10 @@ Full guide: [Getting Started](https://github.com/Tropaion/Drill_Balancer/wiki/Ge
 **Power** ([Power and Sleep](https://github.com/Tropaion/Drill_Balancer/wiki/Power-and-Sleep))
 - Defaults: dim after 30 s, sleep after 120 s, power off after 60 min in
   sleep. Moving the drill wakes it from sleep.
+- A running drill counts as activity for up to 3 min after the last touch
+  or movement, so the screen stays on mid-hole. Vibration alone never keeps
+  it awake: put away in a running van, it sleeps within 3 min + the sleep
+  time (a turn while the van stands counts as movement).
 - PWR key: short press = sleep, hold 1.5 s = power off. The key cannot wake
   the device from deep sleep; move it instead.
 
@@ -259,6 +265,9 @@ More: [Development and Testing](https://github.com/Tropaion/Drill_Balancer/wiki/
 - [x] Python BLE client with OTA
 - [x] Android app with JVM and screenshot tests
 - [x] PC simulator
+- [x] A running drill (vibration) counts as activity, bounded to 3 min after
+      the last touch or movement, so the screen does not dim mid-hole
+      (host- and simulator-tested; the threshold is tuned at bring-up)
 - [x] App end-to-end on a real phone against the simulator: scan, pairing,
       live values, settings, both calibrations, OTA (about 100 KiB/s at
       MTU 517 with the PC's adapter) and the fault cases
@@ -266,10 +275,10 @@ More: [Development and Testing](https://github.com/Tropaion/Drill_Balancer/wiki/
       [checklist](firmware/README.md#bring-up-checklist-hardware) (all
       `TODO(hw)` items)
 - [ ] Measure: current per state and battery life, accuracy against a spirit
-      level, steadiness with the motor running, OTA throughput
+      level (target ≤ 0.2° after mount calibration), steadiness with the
+      motor running (target ±0.3°), OTA throughput
 - [ ] Signed release APK
-- [ ] Ideas, not decided: CI, detecting the drilling state, counting strong
-      vibration as activity so the screen does not dim mid-hole
+- [ ] Ideas, not decided: CI, detecting the drilling state
 
 Details: [Roadmap](https://github.com/Tropaion/Drill_Balancer/wiki/Roadmap).
 

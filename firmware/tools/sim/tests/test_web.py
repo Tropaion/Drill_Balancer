@@ -160,6 +160,15 @@ class PanelTest(DeviceTest):
         self.assertEqual(self.dev.state, "running")
         self.assertEqual(self.panel.screen.screen, "level")
 
+    def test_drill_running_toggle_is_detected(self):
+        self.assertIs(self.panel.state()["snap"]["vibrating"], False)
+        self.cmd(cmd="vibration", g=0.3)   # what the Drill running toggle sends
+        self.settle(2000)
+        self.assertIs(self.panel.state()["snap"]["vibrating"], True)
+        self.cmd(cmd="vibration", g=0)
+        self.settle(2600)
+        self.assertIs(self.panel.state()["snap"]["vibrating"], False)
+
     def test_state_is_json_without_nan(self):
         st = self.panel.state()
         json.loads(json.dumps(st, allow_nan=False))
