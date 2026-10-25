@@ -1,0 +1,4 @@
+# DrillBalancer simulator (tools/sim). The core and its tests need only the
+# standard library; these are for the BLE layer and the web UI.
+dbus-fast>=5.2    # BlueZ GATT server, advertisement and agent over D-Bus
+aiohttp>=3.14     # web UI (HTTP + websocket)

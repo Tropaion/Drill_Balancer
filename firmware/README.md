@@ -90,6 +90,14 @@ Linux, see [tools/ble/README.md](tools/ble/README.md).
 `python3 db_client.py --dry-run` and
 `python3 -m unittest test_db_client` run without Bluetooth.
 
+### Device simulator
+
+`tools/sim` runs the firmware's hardware-independent C code on the PC as a
+BLE peripheral on BlueZ, with a web panel. The panel has a live copy of the
+round screen and controls for the drill pose, calibration errors, power and
+faults. The Android app can't tell it from the board, so the app can be
+tested without hardware. See [tools/sim/README.md](tools/sim/README.md).
+
 ### Android app
 
 The Android companion app (live view, settings, calibration, firmware

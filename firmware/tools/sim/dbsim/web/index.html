@@ -1,0 +1,209 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DrillBalancer Simulator</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header>
+  <span class="dot" id="hdr-dot"></span>
+  <h1>DrillBalancer simulator</h1>
+  <span class="sub" id="hdr-name">-</span>
+  <span class="spacer"></span>
+  <span class="pill" id="hdr-adv">-</span>
+  <span class="pill" id="hdr-link">-</span>
+  <span class="pill" id="hdr-ws">connecting</span>
+</header>
+
+<main class="layout">
+  <section class="left">
+    <div class="device"><canvas id="screen" width="932" height="932"
+         title="Touchscreen: tap = zero, swipe left/right = mode, hold 1 s = settings"></canvas></div>
+    <div class="caption" id="caption">-</div>
+    <div class="passkey-banner" id="passkey" hidden>
+      <div class="hint">Pairing: type this passkey into the phone</div>
+      <div class="code" id="passkey-code">000 000</div>
+    </div>
+
+    <div class="card">
+      <h2>Status</h2>
+      <dl class="kv">
+        <dt>Device</dt><dd id="st-device">-</dd>
+        <dt>Power</dt><dd id="st-power">-</dd>
+        <dt>Firmware</dt><dd id="st-fw">-</dd>
+        <dt>Reading</dt><dd id="st-reading">-</dd>
+        <dt>Phone</dt><dd id="st-peer">-</dd>
+        <dt>Security</dt><dd id="st-sec">-</dd>
+        <dt>MTU</dt><dd id="st-mtu">-</dd>
+        <dt>Subscribed</dt><dd id="st-subs">-</dd>
+        <dt>Calibration</dt><dd id="st-cal">-</dd>
+      </dl>
+    </div>
+  </section>
+
+  <section class="right">
+   <div class="cards">
+    <div class="card">
+      <h2>Orientation <span class="pill" id="pose-mode">drill</span></h2>
+      <div class="slider"><label for="elevation">Elevation</label>
+        <input type="range" id="elevation" min="-90" max="90" step="0.1" value="0">
+        <input type="number" id="elevation-n" min="-90" max="90" step="0.1" value="0"></div>
+      <div class="slider"><label for="yaw">Yaw</label>
+        <input type="range" id="yaw" min="-180" max="180" step="0.1" value="0">
+        <input type="number" id="yaw-n" min="-180" max="180" step="0.1" value="0"></div>
+      <div class="slider"><label for="roll">Roll (bit)</label>
+        <input type="range" id="roll" min="-180" max="180" step="0.5" value="0">
+        <input type="number" id="roll-n" min="-180" max="180" step="0.5" value="0"></div>
+      <h3>Level it</h3>
+      <div class="row">
+        <button data-preset="wall">Wall 0°</button>
+        <button data-preset="floor">Floor (bit down)</button>
+        <button data-preset="ceiling">Ceiling (bit up)</button>
+        <button data-preset="deg45">45° up</button>
+      </div>
+      <p class="note">Elevation: bit above horizontal is positive. Yaw: turned right is positive.</p>
+    </div>
+
+    <div class="card">
+      <h2>Drill</h2>
+      <div class="row"><label class="switch"><input type="checkbox" id="vib-on"> Drill running</label></div>
+      <div class="slider"><label for="vib">Vibration</label>
+        <input type="range" id="vib" min="0.02" max="1" step="0.01" value="0.3">
+        <span id="vib-v" class="c-muted">0.30 g</span></div>
+      <div class="slider"><label for="noise">Noise</label>
+        <input type="range" id="noise" min="0" max="10" step="0.5" value="1">
+        <span id="noise-v" class="c-muted">x1</span></div>
+      <p class="note">Vibration is the motor at 147 + 233 Hz (aliased by the 448 Hz ODR). Noise scales the
+        accelerometer (1.5 mg) and gyro (0.002 rad/s) white noise.</p>
+    </div>
+
+    <div class="card">
+      <h2>Calibration helpers</h2>
+      <h3>Place on the table (sensor calibration)</h3>
+      <div class="grid2 faces" id="faces">
+        <button data-face="+Z" data-bit="16">Screen up</button>
+        <button data-face="-Z" data-bit="32">Screen down</button>
+        <button data-face="+Y" data-bit="4">Top edge up</button>
+        <button data-face="-Y" data-bit="8">Bottom edge up</button>
+        <button data-face="-X" data-bit="2">Left edge up</button>
+        <button data-face="+X" data-bit="1">Right edge up</button>
+      </div>
+      <h3>Roll in hole (mount calibration)</h3>
+      <div class="row">
+        <button id="roll-start" class="primary">Start</button>
+        <button id="roll-stop">Stop</button>
+        <label class="c-muted">± <input type="number" class="short" id="roll-amp" min="5" max="90" value="50">°</label>
+        <label class="c-muted"><input type="number" class="short" id="roll-period" min="1" max="30" value="4"> s/cycle</label>
+      </div>
+      <h3>Mount offset (board on the drill, °)</h3>
+      <div class="vec"><label>x / y / z</label>
+        <input type="number" id="mo-x" step="0.5" min="-15" max="15" value="0">
+        <input type="number" id="mo-y" step="0.5" min="-15" max="15" value="0">
+        <input type="number" id="mo-z" step="0.5" min="-15" max="15" value="0"></div>
+      <h3>Accelerometer error (raw = true / scale + bias)</h3>
+      <div class="vec"><label>bias (g)</label>
+        <input type="number" id="ab-x" step="0.005" min="-0.25" max="0.25" value="0">
+        <input type="number" id="ab-y" step="0.005" min="-0.25" max="0.25" value="0">
+        <input type="number" id="ab-z" step="0.005" min="-0.25" max="0.25" value="0"></div>
+      <div class="vec"><label>scale</label>
+        <input type="number" id="as-x" step="0.005" min="0.8" max="1.25" value="1">
+        <input type="number" id="as-y" step="0.005" min="0.8" max="1.25" value="1">
+        <input type="number" id="as-z" step="0.005" min="0.8" max="1.25" value="1"></div>
+      <div class="row">
+        <button id="err-apply" class="primary">Apply errors</button>
+        <button id="err-typical">Typical errors</button>
+        <button id="err-clear">Perfect sensor</button>
+      </div>
+      <dl class="kv" style="margin-top:10px">
+        <dt>Found axis</dt><dd id="cal-axis">-</dd>
+        <dt>Found bias</dt><dd id="cal-bias">-</dd>
+        <dt>Found scale</dt><dd id="cal-scale">-</dd>
+      </dl>
+    </div>
+
+    <div class="card">
+      <h2>Power</h2>
+      <div class="slider"><label for="bat">Battery</label>
+        <input type="range" id="bat" min="0" max="100" step="1" value="80">
+        <span id="bat-v" class="c-muted">80 %</span></div>
+      <div class="row">
+        <label class="switch"><input type="checkbox" id="bat-vbus"> USB (VBUS)</label>
+        <label class="switch"><input type="checkbox" id="bat-chg"> Charging</label>
+        <label class="switch"><input type="checkbox" id="bat-done"> Charge done</label>
+        <label class="switch"><input type="checkbox" id="bat-valid" checked> Gauge valid</label>
+      </div>
+      <h3>PWR key</h3>
+      <div class="row">
+        <button id="pwr-short">Short press</button>
+        <button id="pwr-long" class="danger">Hold 4 s</button>
+        <button id="nudge">Motion nudge</button>
+      </div>
+      <p class="note">Short press = sleep, hold = power off; on a switched-off device either switches it on.
+        The firmware ignores the key for 2 s after a boot. Deep sleep only wakes on motion (nudge, or
+        move a slider).</p>
+    </div>
+
+    <div class="card">
+      <h2>Faults</h2>
+      <div class="row"><label class="switch danger"><input type="checkbox" id="f-imu"> IMU lost</label></div>
+      <div class="row"><label class="name">BUSY</label>
+        <span class="c-muted">next</span>
+        <input type="number" class="short" id="f-busy-n" min="1" max="50" value="1">
+        <span class="c-muted">command(s)</span>
+        <button id="f-busy">Arm</button></div>
+      <div class="row"><label class="name">OTA ind.</label>
+        <span class="c-muted">drop</span>
+        <input type="number" class="short" id="f-drop-n" min="1" max="100" value="2">
+        <span class="c-muted">after</span>
+        <input type="number" class="short" id="f-drop-after" min="0" max="100000" value="3">
+        <button id="f-drop">Arm</button></div>
+      <div class="row"><label class="name">Slow flash</label>
+        <input type="number" class="short" id="f-slow" min="0" max="500" value="0">
+        <span class="c-muted">ms per write</span>
+        <button id="f-slow-set">Set</button></div>
+      <div class="row">
+        <label class="switch danger"><input type="checkbox" id="f-store"> Settings store fails</label>
+        <label class="switch danger"><input type="checkbox" id="f-flash"> OTA flash fails</label>
+      </div>
+      <div class="row"><button id="f-disc" class="danger">Disconnect now</button></div>
+      <p class="note" id="f-armed">-</p>
+    </div>
+
+    <div class="card">
+      <h2>OTA <span class="pill" id="ota-state">idle</span></h2>
+      <div class="bar"><div id="ota-bar"></div></div>
+      <dl class="kv">
+        <dt>Progress</dt><dd id="ota-pct">-</dd>
+        <dt>Rate</dt><dd id="ota-rate">-</dd>
+        <dt>Last transfer</dt><dd id="ota-last">-</dd>
+      </dl>
+    </div>
+
+    <div class="card">
+      <h2>Settings <span class="pill">read-only</span></h2>
+      <pre class="json" id="settings">-</pre>
+    </div>
+
+   </div>
+    <div class="card">
+      <h2>Event log <span class="pill" id="log-count">0</span></h2>
+      <div class="log-tools">
+        <label><input type="checkbox" data-src="ble" checked> BLE</label>
+        <label><input type="checkbox" data-src="fw" checked> firmware</label>
+        <label><input type="checkbox" data-src="dev" checked> device</label>
+        <label><input type="checkbox" data-src="sim" checked> sim</label>
+        <label><input type="checkbox" data-src="web" checked> panel</label>
+        <label><input type="checkbox" id="log-reads"> reads</label>
+        <span class="spacer" style="flex:1"></span>
+        <button id="log-clear">Clear</button>
+      </div>
+      <div id="log"></div>
+    </div>
+  </section>
+</main>
+<div class="toast" id="toast" hidden></div>
+<script src="app.js"></script>
+</body>
+</html>

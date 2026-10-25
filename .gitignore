@@ -23,3 +23,9 @@ app/captures/
 # Roborazzi comparison output, should it land next to the reference images
 app/src/test/screenshots/*_compare.png
 app/src/test/screenshots/*_actual.png
+
+# Device simulator (firmware/tools/sim)
+firmware/tools/sim/.venv/
+firmware/tools/sim/core/build/
+firmware/tools/sim/state/
+__pycache__/
