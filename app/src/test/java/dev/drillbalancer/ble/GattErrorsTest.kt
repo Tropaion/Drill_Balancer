@@ -116,6 +116,25 @@ class GattErrorsTest {
     }
 
     @Test
+    fun connectFailsAfterAFactoryResetDeviceAskedToPair() {
+        // Android 15+ holds GATT back for its own "pair again" dialog until the connect times out.
+        val timeout = err(FailCallback.REASON_TIMEOUT, GattOp.CONNECT, linkUp = false)
+        assertTrue(GattErrors.connectError(timeout, keysLost = true) is DeviceError.StaleBond)
+        assertTrue(GattErrors.connectError(timeout, keysLost = false) === timeout)
+        // Or the link came up and a request of the set-up after it timed out or found no link.
+        val setUp = err(FailCallback.REASON_TIMEOUT, GattOp.READ, linkUp = true)
+        assertTrue(setUp is DeviceError.Timeout)
+        assertTrue(GattErrors.connectError(setUp, keysLost = true) is DeviceError.StaleBond)
+        assertTrue(GattErrors.connectError(DeviceError.NotConnected(), keysLost = true) is DeviceError.StaleBond)
+        assertTrue(GattErrors.connectError(setUp, keysLost = false) === setUp)
+        // Nothing to do with the keys.
+        val off = DeviceError.Link(DisconnectReason.BLUETOOTH_OFF)
+        assertTrue(GattErrors.connectError(off, keysLost = true) === off)
+        val permission = DeviceError.MissingPermission()
+        assertTrue(GattErrors.connectError(permission, keysLost = true) === permission)
+    }
+
+    @Test
     fun disconnectReasons() {
         fun reason(r: Int, expected: DisconnectReason? = null, on: Boolean = true) =
             GattErrors.disconnectError(r, expected, on).reason

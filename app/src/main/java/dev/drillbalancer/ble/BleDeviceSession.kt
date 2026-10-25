@@ -93,6 +93,12 @@ class BleDeviceSession(
 
     @Volatile private var expectedDrop: DisconnectReason? = null
 
+    // The connect in progress got a pairing request although the phone held a bond when
+    // it started. Checked against the start: Android marks the device BONDING before it
+    // sends the request.
+    @Volatile private var bondedAtConnect = false
+    @Volatile private var keysLost = false
+
     // The device of the last open(). Nordic forgets its own as soon as the link drops,
     // before it fails the request in flight, and the bond state is needed right then.
     @Volatile private var device: BluetoothDevice? = null
@@ -123,6 +129,10 @@ class BleDeviceSession(
 
             override fun onOtaCtrl(value: ByteArray) {
                 otaIndications.tryEmit(value)
+            }
+
+            override fun onPairingRequest() {
+                if (_connection.value is ConnectionState.Connecting && bondedAtConnect) keysLost = true
             }
         },
     )
@@ -263,7 +273,9 @@ class BleDeviceSession(
         }
         scanner?.stop()
         expectedDrop = null
+        keysLost = false
         this.device = device
+        bondedAtConnect = phoneBonded()
         val connecting = ConnectionState.Connecting(address)
         _connection.value = connecting
         if (manager.isConnected) closeLink()
@@ -277,9 +289,10 @@ class BleDeviceSession(
         } catch (e: Throwable) {
             // Not Connecting any more: disconnect() was called meanwhile and set the state.
             val cancelled = e is CancellationException || _connection.value !== connecting
-            val error = if (cancelled) null else toDeviceError(e, GattOp.CONNECT)
+            val error = if (cancelled) null else GattErrors.connectError(toDeviceError(e, GattOp.CONNECT), keysLost)
             if (!cancelled) {
-                _connection.value = if (retryCause != null) {
+                // A stale bond ends the reconnecting: every attempt would bring up Android's dialog.
+                _connection.value = if (retryCause != null && error !is DeviceError.StaleBond) {
                     ConnectionState.Disconnected(retryCause, reconnecting = true)
                 } else {
                     ConnectionState.Disconnected(error as? DeviceError)
@@ -373,7 +386,8 @@ class BleDeviceSession(
                     return@launch
                 } catch (e: DeviceError) {
                     Log.i(TAG, "reconnect attempt $attempt: ${e.message}")
-                    if (e is DeviceError.MissingPermission || e is DeviceError.Link && !ReconnectPolicy.retries(e.reason)) break
+                    if (e is DeviceError.MissingPermission || e is DeviceError.StaleBond) break
+                    if (e is DeviceError.Link && !ReconnectPolicy.retries(e.reason)) break
                 }
             }
             // Given up: the user decides. Not if connect() or disconnect() took over.

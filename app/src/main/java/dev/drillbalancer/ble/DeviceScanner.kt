@@ -27,15 +27,19 @@ class DeviceScanner(context: Context) {
     private val throttle = ScanThrottle()           // under lock
     private var stopActive: (() -> Unit)? = null   // under lock
 
+    // Kept across scans: a scan restarted after a connection carries on with what was
+    // heard before, minus what aged out meanwhile.
+    private val results = ScanResults()
+
     /**
      * The devices found so far, newest state of each, in discovery order; devices not
      * heard for 10 s drop out. Fails with [ScanException] if the phone cannot scan, or
      * SecurityException if a permission is missing (check [BlePermissions.readiness]).
-     * One scan at a time: a new collection stops the previous one.
+     * One scan at a time: a new collection stops the previous one. The first list comes at
+     * once: the devices earlier scans heard in the last 10 s, possibly none.
      */
     fun scan(): Flow<List<ScannedDevice>> = callbackFlow {
         stop()
-        val results = ScanResults()
         var retried = false
 
         val callback = object : ScanCallback() {
@@ -67,6 +71,11 @@ class DeviceScanner(context: Context) {
 
         val stopThis = { channel.close(); Unit }
         synchronized(lock) { stopActive = stopThis }
+        // Before start(), which may wait for Android's scan limit.
+        synchronized(results) {
+            results.prune(now())
+            trySend(results.devices)
+        }
         start(callback)
         launch {
             while (true) {

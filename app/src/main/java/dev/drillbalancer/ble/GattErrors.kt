@@ -79,6 +79,18 @@ object GattErrors {
     }
 
     /**
+     * A failed connect. [keysLost]: the device asked to pair although the phone holds a bond
+     * for it, so it no longer has its half (factory reset). Android 15+ then shows its own
+     * "pair again" dialog and holds GATT back until the connect, or a request of the set-up
+     * after it, times out or the link drops, which would otherwise read as "not in range".
+     */
+    fun connectError(error: Throwable, keysLost: Boolean): Throwable {
+        val heldBack = error is DeviceError.Link && error.reason == DisconnectReason.LINK_LOSS ||
+            error is DeviceError.Timeout || error is DeviceError.NotConnected
+        return if (keysLost && heldBack) DeviceError.StaleBond() else error
+    }
+
+    /**
      * The error a session that ended by itself reports (ConnectionObserver.REASON_*).
      * [expected] is the drop the last command, settings write or update announced;
      * [bluetoothOn] whether the phone's adapter is still enabled.

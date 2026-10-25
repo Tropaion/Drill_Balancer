@@ -95,6 +95,24 @@ the device's link policy it keeps the device awake for about 10 minutes.
   first frame, without which Robolectric captures screens with no animation
   as blank.
 
+### Against the device simulator
+
+Without the board, test the app on a phone against
+[`firmware/tools/sim`](../firmware/tools/sim/README.md). It runs the
+firmware's own logic on a Linux PC and advertises as `DrillBalancer-XXXX`
+over the PC's Bluetooth adapter.
+
+```sh
+cd ../firmware/tools/sim && ./run.sh   # then open http://127.0.0.1:8765
+```
+
+- Pairing works as described above. The passkey shows on the panel's copy
+  of the device screen and in the terminal.
+- The panel moves the virtual drill and injects faults: BUSY replies,
+  dropped OTA indications, a lost IMU, a disconnect, slow flash.
+- After a factory reset in the sim, forget `DrillBalancer-XXXX` on the phone,
+  as with the board.
+
 ## Architecture
 
 | Package | What it holds |

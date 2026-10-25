@@ -40,13 +40,14 @@ class PairingGate(private val session: DeviceSession, private val scope: Corouti
     init {
         // A pairing cannot outlive its link.
         scope.launch {
-            session.connection.collect { if (it !is ConnectionState.Connected) cancel() }
+            session.connection.collect { if (it !is ConnectionState.Connected) linkLost() }
         }
     }
 
     /**
      * Runs [block] on the bonded link, pairing first if needed. Throws [PairingCancelled]
-     * if the user backs out, else whatever [block] throws.
+     * if the user backs out, DeviceError.PairingFailed if the link dropped after Pair was
+     * tapped, else whatever [block] throws.
      */
     suspend fun <T> secure(block: suspend () -> T): T {
         val c = session.connection.value
@@ -84,6 +85,16 @@ class PairingGate(private val session: DeviceSession, private val scope: Corouti
     fun cancel() {
         _prompt.value = null
         waiting?.complete(false)
+        waiting = null
+    }
+
+    // Android drops the link after a cancelled pairing dialog (BlueZ after a wrong code
+    // too): once Pair was tapped, the action fails visibly instead of vanishing.
+    private fun linkLost() {
+        val stage = _prompt.value?.stage
+        if (stage != PairingPrompt.Stage.PAIRING && stage != PairingPrompt.Stage.FAILED) return cancel()
+        _prompt.value = null
+        waiting?.completeExceptionally(DeviceError.PairingFailed())
         waiting = null
     }
 

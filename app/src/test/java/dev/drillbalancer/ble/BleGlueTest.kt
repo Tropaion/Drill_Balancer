@@ -2,9 +2,16 @@ package dev.drillbalancer.ble
 
 import android.Manifest
 import android.app.Application
+import android.bluetooth.BluetoothDevice
+import android.bluetooth.BluetoothGattCharacteristic
+import android.bluetooth.BluetoothGattService
 import android.bluetooth.BluetoothManager
 import android.bluetooth.le.ScanRecord
 import android.bluetooth.le.ScanResult
+import android.content.Intent
+import android.os.Handler
+import android.os.HandlerThread
+import android.os.Looper
 import androidx.test.core.app.ApplicationProvider
 import dev.drillbalancer.device.ConnectionState
 import dev.drillbalancer.device.DeviceError
@@ -12,8 +19,10 @@ import dev.drillbalancer.device.DisconnectReason
 import dev.drillbalancer.protocol.Command
 import dev.drillbalancer.protocol.DeviceSettings
 import dev.drillbalancer.protocol.SettingsUpdate
+import dev.drillbalancer.protocol.Uuids
 import dev.drillbalancer.ui.firmware
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.runCurrent
@@ -27,6 +36,10 @@ import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
+import org.robolectric.shadows.ShadowLog
+import org.robolectric.shadows.ShadowSystemClock
+import java.time.Duration
+import java.util.UUID
 
 /**
  * The parts of the BLE glue that run without a radio: the checks before connecting and
@@ -85,6 +98,102 @@ class BleGlueTest {
         assertEquals(ConnectionState.Disconnected(), s.connection.value)
     }
 
+    // Robolectric runs the test on the main thread, where the app's ViewModels call in.
+    // Nordic's blocking TimeoutableRequest.await() throws there; the manager's GATT calls
+    // must suspend instead (here they fail through the request's callback: no link).
+    @Test
+    fun gattCallsSuspendOnTheMainThread() = runTest {
+        val thread = HandlerThread("test-ble").apply { start() }
+        val manager = DrillBalancerManager(app, Handler(thread.looper), object : DrillBalancerManager.Events {
+            override fun onAngle(value: ByteArray) = Unit
+            override fun onStatus(value: ByteArray) = Unit
+            override fun onBattery(value: ByteArray) = Unit
+            override fun onOtaCtrl(value: ByteArray) = Unit
+            override fun onPairingRequest() = Unit
+        })
+        try {
+            val calls = listOf<suspend () -> Unit>(
+                { manager.subscribe() },
+                { manager.readStatus() },
+                { manager.writeCommand(byteArrayOf(1)) },
+                { manager.setOtaIndications(true) },
+            )
+            for (call in calls) {
+                val e = expectError(call)
+                assertTrue(e.toString(), e !is IllegalStateException)
+            }
+        } finally {
+            manager.close()
+            thread.quitSafely()
+        }
+    }
+
+    // After a factory reset the phone still holds its bond. Android marks the device
+    // BONDING, asks to pair and holds GATT back until the connect times out: a stale bond,
+    // not "not in range". Robolectric's GATT never connects, so every connect times out.
+    @Test
+    fun connectHeldBackForPairingWithABondReportsStaleBond() = runTest {
+        grant(Manifest.permission.BLUETOOTH_CONNECT)
+        shadowOf(adapter).setEnabled(true)
+        val address = "F4:12:FA:00:1A:2B"
+        val device = adapter.getRemoteDevice(address)
+        val s = session()
+        suspend fun connect(pairingRequest: Boolean, bondedAtStart: Boolean): Throwable? {
+            shadowOf(device).setBondState(if (bondedAtStart) BluetoothDevice.BOND_BONDED else BluetoothDevice.BOND_NONE)
+            val gatts = gattsCreated()
+            val result = async { runCatching { s.connect(address) }.exceptionOrNull() }
+            runCurrent()
+            awaitReal { gattsCreated() > gatts }   // Nordic called connectGatt
+            if (pairingRequest) {
+                shadowOf(device).setBondState(BluetoothDevice.BOND_BONDING)
+                app.sendBroadcast(
+                    Intent(BluetoothDevice.ACTION_PAIRING_REQUEST)
+                        .putExtra(BluetoothDevice.EXTRA_DEVICE, device)
+                        .putExtra(BluetoothDevice.EXTRA_PAIRING_VARIANT, BluetoothDevice.PAIRING_VARIANT_PIN),
+                )
+                shadowOf(Looper.getMainLooper()).idle()
+            }
+            ShadowSystemClock.advanceBy(Duration.ofSeconds(16))
+            return result.await()
+        }
+
+        val stale = connect(pairingRequest = true, bondedAtStart = true)
+        assertTrue(stale.toString(), stale is DeviceError.StaleBond)
+        assertTrue(s.connection.value.let { it is ConnectionState.Disconnected && it.error is DeviceError.StaleBond && !it.reconnecting })
+        // The next connect starts afresh; without a request it is "not in range" again.
+        val plain = connect(pairingRequest = false, bondedAtStart = true)
+        assertTrue(plain.toString(), plain is DeviceError.Link)
+        // A first pairing (no bond on the phone) is no stale bond either.
+        val first = connect(pairingRequest = true, bondedAtStart = false)
+        assertTrue(first.toString(), first is DeviceError.Link)
+    }
+
+    // The framework's BluetoothGatt logs its creation; Robolectric does not track it.
+    private fun gattsCreated() = ShadowLog.getLogsForTag("BluetoothGatt").count { it.msg.startsWith("BluetoothGatt()") }
+
+    // Waits for work on a real thread (the BLE handler thread).
+    private fun awaitReal(condition: () -> Boolean) {
+        val until = System.nanoTime() + 5_000_000_000
+        while (!condition()) {
+            if (System.nanoTime() > until) fail("timed out")
+            Thread.sleep(10)
+        }
+    }
+
+    @Test
+    fun deviceInfoFromAnyInstanceOfTheService() {
+        val read = BluetoothGattCharacteristic.PROPERTY_READ
+        fun service(vararg chars: UUID) = BluetoothGattService(Uuids.SVC_DEVICE_INFO, BluetoothGattService.SERVICE_TYPE_PRIMARY).apply {
+            chars.forEach { addCharacteristic(BluetoothGattCharacteristic(it, read, BluetoothGattCharacteristic.PERMISSION_READ)) }
+        }
+        val pnpId = UUID.fromString("00002a50-0000-1000-8000-00805f9b34fb")
+        val bluez = service(pnpId)                                   // BlueZ's own, listed first
+        val device = service(Uuids.CHR_MANUFACTURER, Uuids.CHR_MODEL)
+        val found = listOf(bluez, device).findCharacteristic(Uuids.SVC_DEVICE_INFO, Uuids.CHR_MODEL, read)
+        assertTrue(found === device.getCharacteristic(Uuids.CHR_MODEL))
+        assertEquals(null, listOf(bluez, device).findCharacteristic(Uuids.SVC_DEVICE_INFO, Uuids.CHR_FIRMWARE_REV, read))
+    }
+
     @Test
     fun scanFindsNameInAdvertisingAndUuidInScanResponse() = runTest {
         grant(Manifest.permission.BLUETOOTH_SCAN, Manifest.permission.BLUETOOTH_CONNECT)
@@ -116,6 +225,39 @@ class BleGlueTest {
         runCurrent()
         assertTrue(job.isCompleted)
         assertTrue(shadowOf(adapter.bluetoothLeScanner).scanCallbacks.isEmpty())
+    }
+
+    @Test
+    fun restartedScanDropsDevicesThatAgedOutMeanwhile() = runTest {
+        grant(Manifest.permission.BLUETOOTH_SCAN, Manifest.permission.BLUETOOTH_CONNECT)
+        shadowOf(adapter).setEnabled(true)
+        val scanner = DeviceScanner(app)
+        val named = ADV_FLAGS + adName("DrillBalancer-1A2B")
+        backgroundScope.launch { scanner.scan().collect {} }
+        runCurrent()
+        shadowOf(adapter.bluetoothLeScanner).scanCallbacks.single()
+            .onScanResult(0, result("F4:12:FA:00:1A:2B", named, -60))
+        // Connecting stops the scan; the device then went to sleep and stopped advertising.
+        scanner.stop()
+        runCurrent()
+        ShadowSystemClock.advanceBy(Duration.ofSeconds(3))
+
+        // Back on the scan screen: heard 3 s ago, still listed at once.
+        val seen = mutableListOf<List<ScannedDevice>>()
+        backgroundScope.launch { scanner.scan().collect { seen += it } }
+        runCurrent()
+        assertEquals(listOf("F4:12:FA:00:1A:2B"), seen.single().map { it.address })
+        scanner.stop()
+        runCurrent()
+
+        // Not heard for 11 s: a new scan starts with an empty list, not the old one.
+        ShadowSystemClock.advanceBy(Duration.ofSeconds(8))
+        seen.clear()
+        backgroundScope.launch { scanner.scan().collect { seen += it } }
+        runCurrent()
+        assertEquals(listOf(emptyList<ScannedDevice>()), seen)
+        scanner.stop()
+        runCurrent()
     }
 
     @Test

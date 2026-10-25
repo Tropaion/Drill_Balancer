@@ -1,5 +1,6 @@
 package dev.drillbalancer.ble
 
+import android.bluetooth.BluetoothDevice
 import android.bluetooth.BluetoothGatt
 import android.bluetooth.BluetoothGattCharacteristic
 import android.bluetooth.BluetoothGattService
@@ -40,12 +41,18 @@ internal class DrillBalancerManager(
     private val events: Events,
 ) : BleManager(context, callbackHandler) {
 
-    /** Called on the manager's handler thread. */
+    /** Called on the manager's handler thread, except [onPairingRequest]. */
     interface Events {
         fun onAngle(value: ByteArray)
         fun onStatus(value: ByteArray)
         fun onBattery(value: ByteArray)
         fun onOtaCtrl(value: ByteArray)
+
+        /**
+         * Android's pairing request for the device being connected (its system dialog is up).
+         * Called on the main thread: Nordic's broadcast receiver has no handler.
+         */
+        fun onPairingRequest()
     }
 
     private var angle: BluetoothGattCharacteristic? = null
@@ -71,6 +78,10 @@ internal class DrillBalancerManager(
 
     override fun getMinLogPriority(): Int = Log.INFO
 
+    override fun onPairingRequestReceived(device: BluetoothDevice, variant: Int, key: Int) {
+        events.onPairingRequest()
+    }
+
     override fun isRequiredServiceSupported(gatt: BluetoothGatt): Boolean {
         val main = gatt.getService(Uuids.SVC_MAIN) ?: return false
         angle = main.find(Uuids.CHR_ANGLE, PROP_NOTIFY)
@@ -85,11 +96,11 @@ internal class DrillBalancerManager(
             otaCtrl = it.find(Uuids.CHR_OTA_CTRL, PROP_WRITE or PROP_INDICATE)
             otaData = it.find(Uuids.CHR_OTA_DATA, PROP_WRITE_NO_RESPONSE)
         }
-        gatt.getService(Uuids.SVC_DEVICE_INFO)?.let {
-            manufacturer = it.find(Uuids.CHR_MANUFACTURER, PROP_READ)
-            model = it.find(Uuids.CHR_MODEL, PROP_READ)
-            firmwareRev = it.find(Uuids.CHR_FIRMWARE_REV, PROP_READ)
-        }
+        // Any Device Information service: BlueZ (the simulator's host) adds its own, with
+        // only the PnP ID, ahead of the device's.
+        manufacturer = gatt.services.findCharacteristic(Uuids.SVC_DEVICE_INFO, Uuids.CHR_MANUFACTURER, PROP_READ)
+        model = gatt.services.findCharacteristic(Uuids.SVC_DEVICE_INFO, Uuids.CHR_MODEL, PROP_READ)
+        firmwareRev = gatt.services.findCharacteristic(Uuids.SVC_DEVICE_INFO, Uuids.CHR_FIRMWARE_REV, PROP_READ)
         battery = gatt.getService(Uuids.SVC_BATTERY)?.find(Uuids.CHR_BATTERY_LEVEL, PROP_READ or PROP_NOTIFY)
         return true
     }
@@ -128,9 +139,9 @@ internal class DrillBalancerManager(
     // ---- operations ----
 
     suspend fun subscribe() {
-        enableNotifications(angle).timeout(TIMEOUT_MS).await()
-        enableNotifications(status).timeout(TIMEOUT_MS).await()
-        if (battery != null) enableNotifications(battery).timeout(TIMEOUT_MS).await()
+        enableNotifications(angle).timeout(TIMEOUT_MS).awaitOnHandler()
+        enableNotifications(status).timeout(TIMEOUT_MS).awaitOnHandler()
+        if (battery != null) enableNotifications(battery).timeout(TIMEOUT_MS).awaitOnHandler()
     }
 
     suspend fun readStatus(): ByteArray = read(status)
@@ -169,7 +180,7 @@ internal class DrillBalancerManager(
 
     suspend fun setOtaIndications(on: Boolean) {
         val request = if (on) enableIndications(otaCtrl) else disableIndications(otaCtrl)
-        request.timeout(TIMEOUT_MS).await()
+        request.timeout(TIMEOUT_MS).awaitOnHandler()
     }
 
     suspend fun setHighPriority(high: Boolean) {
@@ -186,12 +197,12 @@ internal class DrillBalancerManager(
 
     private suspend fun read(c: BluetoothGattCharacteristic?): ByteArray {
         var data: Data? = null
-        readCharacteristic(c).timeout(TIMEOUT_MS).with { _, d -> data = d }.await()
+        readCharacteristic(c).timeout(TIMEOUT_MS).with { _, d -> data = d }.awaitOnHandler()
         return data?.value ?: ByteArray(0)
     }
 
     private suspend fun write(c: BluetoothGattCharacteristic?, value: ByteArray, type: Int) {
-        writeCharacteristic(c, value, type).timeout(TIMEOUT_MS).await()
+        writeCharacteristic(c, value, type).timeout(TIMEOUT_MS).awaitOnHandler()
     }
 
     /**
@@ -200,8 +211,10 @@ internal class DrillBalancerManager(
      * lives until the timeout would have fired: one per OTA chunk, thousands at a time.
      * With a Handler the timeout is a message that is removed when the request completes.
      * Not cancellable, like ble-ktx's: a GATT operation in flight cannot be withdrawn.
+     * Not named await(): TimeoutableRequest has a blocking member await() that would win
+     * over this extension (and throws on the main thread).
      */
-    private suspend fun Request.await(): Unit = suspendCoroutine { continuation ->
+    private suspend fun Request.awaitOnHandler(): Unit = suspendCoroutine { continuation ->
         setHandler(callbackHandler)
             .invalid { continuation.resumeWithException(InvalidRequestException(this)) }
             .fail { _, status ->
@@ -217,9 +230,6 @@ internal class DrillBalancerManager(
             .enqueue()
     }
 
-    private fun BluetoothGattService.find(uuid: UUID, props: Int): BluetoothGattCharacteristic? =
-        getCharacteristic(uuid)?.takeIf { it.properties and props == props }
-
     private companion object {
         const val TAG = "DrillBalancerBle"
         const val MTU = 247
@@ -231,3 +241,10 @@ internal class DrillBalancerManager(
         const val PROP_INDICATE = BluetoothGattCharacteristic.PROPERTY_INDICATE
     }
 }
+
+private fun BluetoothGattService.find(uuid: UUID, props: Int): BluetoothGattCharacteristic? =
+    getCharacteristic(uuid)?.takeIf { it.properties and props == props }
+
+/** The characteristic with [props] in the first instance of [service] that has it. */
+internal fun List<BluetoothGattService>.findCharacteristic(service: UUID, uuid: UUID, props: Int) =
+    firstNotNullOfOrNull { s -> s.takeIf { it.uuid == service }?.find(uuid, props) }
