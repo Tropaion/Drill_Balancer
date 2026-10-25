@@ -28,6 +28,6 @@ enum class AttError(val code: Int, val message: String, val needsPairing: Boolea
         fun fromCode(code: Int): AttError? = entries.firstOrNull { it.code == code }
 
         fun messageFor(code: Int): String =
-            fromCode(code)?.message ?: "Bluetooth error 0x${code.toString(16).padStart(2, '0').uppercase()}."
+            fromCode(code)?.message ?: "Bluetooth error ${hexByte(code)}."
     }
 }

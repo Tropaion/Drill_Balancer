@@ -51,7 +51,7 @@ class DeviceViewModel(private val session: DeviceSession, private val gate: Pair
     /** Sleep, power off, reboot and factory reset end the link; the connect screen says why. */
     fun send(command: Command) {
         if (busy.value) return
-        viewModelScope.launch { gate.runCommand(session, command, { busy.value = it }, { message.value = it }) }
+        viewModelScope.launch { gate.runCommand(command, { busy.value = it }, { message.value = it }) }
     }
 
     fun dismissMessage() {

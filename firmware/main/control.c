@@ -58,13 +58,12 @@ static const char *TAG = "control";
 
 // A running drill held still (sensor_task.c, vibration.h) counts as activity
 // for this long after the last real activity, so the screen does not dim in
-// the middle of a hole. Moving to the next hole once the motor has stopped
-// (one calm 0.5 s window) or a tap re-arms it. Vibration alone (a van, a
+// the middle of a hole. Moving the drill to the next hole (a turn, turn.h,
+// also while the motor runs) or a tap re-arms it. Vibration alone (a van, a
 // toolbox, a bench next to a machine) therefore keeps the device awake at
 // most this much longer per real activity: at an assumed 100-150 mA ACTIVE,
-// 5-7.5 mAh. A turn while it lies calm counts as real activity, also a
-// vehicle turning at a stop, so a van that stops and turns every few minutes
-// can keep it awake (bring-up step 14).
+// 5-7.5 mAh. A vehicle turning a corner turns the device as well, so a drive
+// with a turn every few minutes can keep it awake (bring-up step 14).
 #define VIB_HOLD_MS (3u * 60u * 1000u)
 
 // --- control task only ---

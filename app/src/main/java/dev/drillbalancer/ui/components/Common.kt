@@ -16,11 +16,18 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.TextAutoSize
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
+import androidx.compose.material3.LocalTextStyle
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.SegmentedButton
+import androidx.compose.material3.SegmentedButtonDefaults
+import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -48,6 +55,7 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import dev.drillbalancer.protocol.LevelMode
 import dev.drillbalancer.ui.batteryLevel
 import dev.drillbalancer.ui.theme.Amber
 import dev.drillbalancer.ui.theme.Blue
@@ -115,6 +123,84 @@ fun Panel(
         border = BorderStroke(1.dp, border),
     ) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp), content = content)
+    }
+}
+
+/** A blue panel with a spinner and [title], for states that wait on the device. */
+@Composable
+fun BusyPanel(
+    title: String,
+    modifier: Modifier = Modifier,
+    titleStyle: TextStyle = MaterialTheme.typography.titleMedium,
+    content: @Composable ColumnScope.() -> Unit = {},
+) {
+    Panel(modifier, border = Blue) {
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+            CircularProgressIndicator(Modifier.size(32.dp), color = Blue)
+            Text(title, Modifier.weight(1f), style = titleStyle)
+        }
+        content()
+    }
+}
+
+/** A question with glove-sized buttons. Confirm closes the dialog, then runs [onConfirm]. */
+@Composable
+fun ConfirmDialog(
+    title: String,
+    text: String,
+    confirmLabel: String,
+    onConfirm: () -> Unit,
+    onDismiss: () -> Unit,
+    confirmColor: Color = Color.Unspecified,
+    dismissLabel: String = "Cancel",
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(title) },
+        text = { Text(text, style = MaterialTheme.typography.bodyLarge) },
+        confirmButton = {
+            TextButton({
+                onDismiss()
+                onConfirm()
+            }, Modifier.heightIn(min = TouchHeight)) { Text(confirmLabel, color = confirmColor) }
+        },
+        dismissButton = { TextButton(onDismiss, Modifier.heightIn(min = TouchHeight)) { Text(dismissLabel) } },
+    )
+}
+
+val LevelMode.title: String
+    get() = when (this) {
+        LevelMode.WALL -> "Wall"
+        LevelMode.FLOOR -> "Floor"
+        LevelMode.ANGLE -> "Angle"
+    }
+
+/** The level mode as one segmented row. A null [textStyle] keeps the button's own label style. */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun ModeSelector(
+    selected: LevelMode,
+    onMode: (LevelMode) -> Unit,
+    inactiveColor: Color,
+    textStyle: TextStyle? = null,
+) {
+    SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
+        LevelMode.entries.forEachIndexed { i, mode ->
+            SegmentedButton(
+                selected = mode == selected,
+                onClick = { onMode(mode) },
+                shape = SegmentedButtonDefaults.itemShape(i, LevelMode.entries.size),
+                modifier = Modifier.heightIn(min = TouchHeight),
+                icon = {},
+                colors = SegmentedButtonDefaults.colors(
+                    activeContainerColor = MaterialTheme.colorScheme.primary,
+                    activeContentColor = Color.Black,
+                    inactiveContainerColor = inactiveColor,
+                ),
+            ) {
+                Text(mode.title, style = textStyle ?: LocalTextStyle.current, maxLines = 1)
+            }
+        }
     }
 }
 

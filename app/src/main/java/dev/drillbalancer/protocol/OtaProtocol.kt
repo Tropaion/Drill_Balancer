@@ -34,6 +34,9 @@ enum class OtaStatus(val code: Int, val message: String) {
         fun fromCode(code: Int): OtaStatus? = entries.firstOrNull { it.code == code }
 
         fun name(code: Int): String = fromCode(code)?.name ?: "status $code"
+
+        /** The user-facing text for [code], or its name if the app does not know it. */
+        fun messageFor(code: Int): String = fromCode(code)?.message ?: name(code)
     }
 }
 

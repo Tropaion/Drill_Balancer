@@ -26,6 +26,7 @@
 #include "power_fsm.h"
 #include "settings.h"
 #include "sim_core.h"
+#include "turn.h"
 #include "ui_logic.h"
 #include "vibration.h"
 
@@ -444,7 +445,6 @@ static int settings_reset(void)
 
 #define FIFO_BATCH          64
 #define NO_IMU_PUBLISH_MS   200
-#define ACTIVITY_GYRO_RAD_S 0.3f
 #define IMU_LOST_MS         200
 #define IMU_RETRY_MS        2000
 
@@ -464,7 +464,7 @@ static bool s_imu_ok;
 static uint32_t s_last_retry, s_last_pub, s_last_data;
 static imu_sample_t s_buf[FIFO_BATCH];
 static vib_detector_t s_vib;
-static bool s_arm_pending;
+static turn_detector_t s_turn;
 
 // imu.c IMU_AXIS_MAP (identity until checked on the board).
 static const imu_axis_map_t IMU_AXIS_MAP = {.x = {0, 1}, .y = {1, 1}, .z = {2, 1}};
@@ -505,9 +505,9 @@ static void accel_pose_kept_locked(void)
     publish_cal_locked();
 }
 
-static float process_batch_locked(const imu_sample_t *smp, size_t n, float dt)
+static bool process_batch_locked(const imu_sample_t *smp, size_t n, float dt)
 {
-    float max_rate = 0.0f;
+    bool turning = false;
     bool acal = s_collecting && s_cal.kind == APP_CAL_ACCEL;
     for (size_t i = 0; i < n; i++) {
         vec3_t raw = smp[i].accel_g;
@@ -516,15 +516,16 @@ static float process_batch_locked(const imu_sample_t *smp, size_t n, float dt)
             fusion_init(&s_fusion, &s_fusion_cfg, a);
             s_fusion_ready = true;
             level_reset_heading(&s_level);
+            turn_reset(&s_turn);
             continue;
         }
         float rate = fusion_update(&s_fusion, smp[i].gyro_rad_s, a, dt);
-        max_rate = fmaxf(max_rate, rate);
+        turning |= turn_add_sample(&s_turn, vec3_sub(smp[i].gyro_rad_s, s_fusion.gyro_bias), dt);
         if (acal && accel_cal_collector_add_sample(&s_collector, raw, rate, dt)) {
             accel_pose_kept_locked();
         }
     }
-    return max_rate;
+    return turning;
 }
 
 static void mount_add_locked(uint32_t now)
@@ -552,7 +553,8 @@ static void sensor_start(const settings_t *s, bool imu_ok)
     s_fusion_ready = false;
     vib_config_t vib_cfg = vib_default_config();
     vib_init(&s_vib, &vib_cfg);
-    s_arm_pending = false;
+    turn_config_t turn_cfg = turn_default_config();
+    turn_init(&s_turn, &turn_cfg);
     level_config_t cfg = settings_level_config(s);
     level_init(&s_level, &cfg);
     level_set_mode(&s_level, s->mode);
@@ -609,7 +611,6 @@ void sim_sensor_pass(uint32_t now_ms, const float *samples, int n, float dt, int
         s_last_retry = now;
         s_fusion_ready = false;
         vib_reset(&s_vib);
-        s_arm_pending = false;
         s_last_pub = now;
         publish_no_imu(now);
         return;
@@ -626,7 +627,7 @@ void sim_sensor_pass(uint32_t now_ms, const float *samples, int n, float dt, int
     for (int i = 0; i < n; i++) {
         imu_sample_from(&samples[6 * i], &s_buf[i]);
     }
-    float max_rate = process_batch_locked(s_buf, (size_t)n, dt);
+    bool turning = process_batch_locked(s_buf, (size_t)n, dt);
     bool ready = s_fusion_ready;
     if (ready) {
         q = s_fusion.q;
@@ -637,34 +638,17 @@ void sim_sensor_pass(uint32_t now_ms, const float *samples, int n, float dt, int
     }
 
     vib_state_t was = vib_state(&s_vib);
-    bool closed = false;
-    int above = 0;
     for (int i = 0; i < n; i++) {
-        // The ESP_LOGD duty and gyro maximum line (and its s_win_max_rate) is left out.
-        bool window_closed = vib_add_sample(&s_vib, s_buf[i].accel_g, dt);
-        above += s_vib.above;
-        if (window_closed) {
-            closed = true;
-        }
+        // The ESP_LOGD duty and turn rate line (and its s_win_max_rate) is left out.
+        vib_add_sample(&s_vib, s_buf[i].accel_g, dt);
     }
     vib_state_t vib = vib_state(&s_vib);
     if (vib != was) {
         LOGI("vibration %s, duty %d %%", vib == VIB_RUNNING ? "running" : "quiet",
              (int)(s_vib.last_duty * 100.0f + 0.5f));
     }
-    // Turning counts only while calm (sensor_task.c ACTIVITY_GYRO_RAD_S).
-    if (s_arm_pending && closed) {
-        s_arm_pending = false;
-        if (s_vib.last_calm) {
-            app_note_activity();
-        }
-    }
-    if (max_rate > ACTIVITY_GYRO_RAD_S && (float)above < s_vib.cfg.duty * (float)n) {
-        if (vib_calm(&s_vib)) {
-            app_note_activity();
-        } else {
-            s_arm_pending = true;
-        }
+    if (turning) {
+        app_note_activity();
     }
     if (ready) {
         app_state_set_motion(true, q, still, vib == VIB_RUNNING, zero_set, &reading, now);
@@ -1572,11 +1556,6 @@ int sim_ota_reboot_pending(void)
     return ota_proto_state(&s_proto) == OTA_STATE_DONE;
 }
 
-int sim_ota_state(void)
-{
-    return (int)ota_proto_state(&s_proto);
-}
-
 // ---- control.c -------------------------------------------------------------------
 
 #define PMU_STATUS_PERIOD_MS 500
@@ -1633,9 +1612,9 @@ static void apply_brightness(void)
     s_brightness = pct;
 }
 
-int sim_brightness(void)
+int sim_power(void)
 {
-    return s_brightness;
+    return (int)s_state.power;
 }
 
 uint32_t sim_off_after_s(void)
@@ -2119,9 +2098,9 @@ static void put_vec(out_t *o, const char *key, vec3_t v)
     put(o, "\"%s\":[%.7g,%.7g,%.7g],", key, (double)v.x, (double)v.y, (double)v.z);
 }
 
-static void put_str(out_t *o, const char *key, const char *s)
+static void put_text(out_t *o, const char *s)
 {
-    put(o, "\"%s\":\"", key);
+    put(o, "\"");
     for (; s && *s; s++) {
         if (*s == '"' || *s == '\\') {
             put(o, "\\%c", *s);
@@ -2132,6 +2111,12 @@ static void put_str(out_t *o, const char *key, const char *s)
         }
     }
     put(o, "\",");
+}
+
+static void put_str(out_t *o, const char *key, const char *s)
+{
+    put(o, "\"%s\":", key);
+    put_text(o, s);
 }
 
 #define B(x) ((x) ? "true" : "false")
@@ -2209,7 +2194,16 @@ int sim_snapshot_json(char *buf, int cap)
     put(&o, "\"wall_arrow\":%d,\"tenths\":%ld,\"battery_level\":%d,\"low_battery\":%s,",
         ui_wall_arrow(r), (long)ui_tenths(r->elevation_deg), ui_battery_level(s->battery.percent),
         B(ui_low_battery(&s->battery)));
+    put(&o, "\"yaw_tenths\":%ld,", (long)ui_tenths(r->yaw_deg));
     put_str(&o, "mode_title", ui_mode_title(r->mode));
+    // The settings list's value texts, in ui_field_t order.
+    put(&o, "\"settings_text\":[");
+    for (int f = 0; f < UI_FIELD_COUNT; f++) {
+        char t[32];
+        ui_settings_format(&s_current, (ui_field_t)f, t, sizeof(t));
+        put_text(&o, t);
+    }
+    close_obj(&o, ']');
     int res = s->cal.last_result;
     const char *text = s->cal.last_kind == APP_CAL_MOUNT ? ui_mount_result_text(res)
                        : s->cal.last_kind == APP_CAL_ACCEL ? ui_accel_result_text(res) : "";

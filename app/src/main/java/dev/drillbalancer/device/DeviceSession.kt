@@ -58,7 +58,8 @@ interface DeviceSession {
 
     /**
      * Writes only the changed keys, then reads the settings back (they also update
-     * [settings]). ATT 0x82 if the result breaks a rule with the device's current values.
+     * [settings]); if only that read fails, the result is the update applied to the last
+     * known settings. ATT 0x82 if the result breaks a rule with the device's current values.
      */
     suspend fun writeSettings(update: SettingsUpdate): DeviceSettings
 

@@ -34,6 +34,12 @@ fun ConnectRoute(vm: ConnectViewModel) {
     val state by vm.state.collectAsStateWithLifecycle()
     var readiness by remember { mutableStateOf(BlePermissions.readiness(context)) }
     var denied by rememberSaveable { mutableStateOf(false) }
+    // The request before: permissions with a rationale, and whether it was refused silently.
+    var rationaleBefore by rememberSaveable { mutableStateOf<Set<String>>(emptySet()) }
+    var previousSilent by rememberSaveable { mutableStateOf(false) }
+    val withRationale = { permissions: Collection<String> ->
+        permissions.filterTo(HashSet()) { activity != null && ActivityCompat.shouldShowRequestPermissionRationale(activity, it) }
+    }
     val refresh = { readiness = BlePermissions.readiness(context) }
 
     LifecycleResumeEffect(Unit) {
@@ -61,9 +67,9 @@ fun ConnectRoute(vm: ConnectViewModel) {
     val permissions = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { result ->
         refresh()
         val refused = result.filterValues { !it }.keys
-        // Refused without a rationale to show: Android will not ask again.
-        denied = refused.isNotEmpty() && activity != null &&
-            refused.none { ActivityCompat.shouldShowRequestPermissionRationale(activity, it) }
+        val after = withRationale(refused)
+        denied = activity != null && PermissionOutcome.deniedForGood(refused, rationaleBefore, after, previousSilent)
+        previousSilent = PermissionOutcome.silent(refused, rationaleBefore, after)
     }
     val forResult = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { refresh() }
     val launch = { intent: Intent ->
@@ -81,7 +87,11 @@ fun ConnectRoute(vm: ConnectViewModel) {
         permissionsDenied = denied,
         legacyLocation = BlePermissions.needsLocationServices(),
         actions = ConnectActions(
-            requestPermissions = { permissions.launch(BlePermissions.required().toTypedArray()) },
+            requestPermissions = {
+                val required = BlePermissions.required()
+                rationaleBefore = withRationale(required)
+                permissions.launch(required.toTypedArray())
+            },
             openAppSettings = { launch(BlePermissions.appSettingsIntent(context)) },
             enableBluetooth = { launch(BlePermissions.enableBluetoothIntent()) },
             openLocationSettings = { launch(BlePermissions.locationSettingsIntent()) },

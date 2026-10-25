@@ -1,12 +1,9 @@
 package dev.drillbalancer.ble
 
-import android.Manifest
-import android.bluetooth.BluetoothDevice
 import android.bluetooth.le.ScanCallback
 import android.bluetooth.le.ScanResult
 import android.bluetooth.le.ScanSettings
 import android.content.Context
-import android.os.Build
 import android.os.SystemClock
 import android.util.Log
 import kotlinx.coroutines.channels.awaitClose
@@ -47,7 +44,8 @@ class DeviceScanner(context: Context) {
                 val record = result.scanRecord
                 val name = record?.deviceName
                 if (!isDrillBalancer(name, record?.serviceUuids?.map { it.uuid })) return
-                val seen = ScannedDevice(result.device.address, name, result.rssi, isBonded(result.device), now())
+                val bonded = BlePermissions.isBonded(context, result.device)
+                val seen = ScannedDevice(result.device.address, name, result.rssi, bonded, now())
                 synchronized(results) { if (results.update(seen)) trySend(results.devices) }
             }
 
@@ -101,7 +99,7 @@ class DeviceScanner(context: Context) {
             Log.i(TAG, "scan start delayed $wait ms (Android scan limit)")
             delay(wait)
         }
-        if (!hasScanPermission()) throw SecurityException("Bluetooth scan permission missing")
+        if (!BlePermissions.canScan(context)) throw SecurityException("Bluetooth scan permission missing")
         // Null while Bluetooth is off.
         val scanner = BlePermissions.adapter(context)?.bluetoothLeScanner
             ?: throw ScanException("Bluetooth is turned off.")
@@ -112,7 +110,11 @@ class DeviceScanner(context: Context) {
         synchronized(lock) { throttle.recordStart(now()) }
         // No ScanFilter: see isDrillBalancer(). Fine while the screen is on, which a
         // visible scan screen implies.
-        scanner.startScan(null, settings, callback)
+        try {
+            scanner.startScan(null, settings, callback)
+        } catch (_: IllegalStateException) {
+            throw ScanException("Bluetooth is turned off.")   // since the check above (Android 8 to 14)
+        }
     }
 
     private fun stopHardware(callback: ScanCallback) {
@@ -124,21 +126,6 @@ class DeviceScanner(context: Context) {
             Log.w(TAG, "stopScan: ${e.message}")   // Bluetooth turned off meanwhile
         }
     }
-
-    private fun isBonded(device: BluetoothDevice): Boolean =
-        BlePermissions.canConnect(context) &&
-            try {
-                device.bondState == BluetoothDevice.BOND_BONDED
-            } catch (_: SecurityException) {
-                false
-            }
-
-    private fun hasScanPermission(): Boolean =
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            BlePermissions.isGranted(context, Manifest.permission.BLUETOOTH_SCAN)
-        } else {
-            BlePermissions.isGranted(context, Manifest.permission.ACCESS_FINE_LOCATION)
-        }
 
     private fun now() = SystemClock.elapsedRealtime()
 

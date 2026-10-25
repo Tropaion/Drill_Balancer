@@ -68,8 +68,7 @@ class ConnectViewModel(
             lastAddress = last,
             connecting = (c as? ConnectionState.Connecting)?.address ?: l.connecting,
             message = error?.let { UiMessage(it.message ?: "Error", kindOf(it)) },
-            removeBond = error is DeviceError.StaleBond ||
-                (error is DeviceError.Link && error.reason == DisconnectReason.FACTORY_RESET),
+            removeBond = needsBondRemoval(error),
         )
     }.stateIn(viewModelScope, SharingStarted.Eagerly, ConnectUiState())
 
@@ -124,17 +123,20 @@ class ConnectViewModel(
     }
 
     private fun kindOf(e: DeviceError): UiMessage.Kind = when {
-        e is DeviceError.StaleBond -> UiMessage.Kind.WARNING
-        e is DeviceError.Link && e.reason == DisconnectReason.FACTORY_RESET -> UiMessage.Kind.WARNING
+        needsBondRemoval(e) -> UiMessage.Kind.WARNING
         e is DeviceError.Link && e.reason in EXPECTED -> UiMessage.Kind.INFO
         else -> UiMessage.Kind.ERROR
     }
+
+    // The device no longer knows this phone: its pairing has to be removed first.
+    private fun needsBondRemoval(e: DeviceError?) =
+        e is DeviceError.StaleBond || (e is DeviceError.Link && e.reason == DisconnectReason.FACTORY_RESET)
 
     private companion object {
         // Drops that follow a command or an update: information, not an error.
         val EXPECTED = setOf(
             DisconnectReason.SLEEP, DisconnectReason.POWER_OFF, DisconnectReason.REBOOT,
-            DisconnectReason.FIRMWARE_UPDATED, DisconnectReason.FACTORY_RESET, DisconnectReason.BLE_DISABLED,
+            DisconnectReason.FIRMWARE_UPDATED, DisconnectReason.BLE_DISABLED,
         )
     }
 }

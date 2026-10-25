@@ -30,6 +30,7 @@ import dev.drillbalancer.protocol.PowerState
 import dev.drillbalancer.ui.LOW_BATTERY_PCT
 import dev.drillbalancer.ui.components.ActionButton
 import dev.drillbalancer.ui.components.ButtonKind
+import dev.drillbalancer.ui.components.ConfirmDialog
 import dev.drillbalancer.ui.components.InfoRow
 import dev.drillbalancer.ui.components.MessageBanner
 import dev.drillbalancer.ui.components.Panel
@@ -122,18 +123,7 @@ fun DeviceScreen(state: DeviceUiState, actions: DeviceActions, modifier: Modifie
     }
 
     confirm?.let { c ->
-        AlertDialog(
-            onDismissRequest = { confirm = null },
-            title = { Text(c.title) },
-            text = { Text(c.text, style = MaterialTheme.typography.bodyLarge) },
-            confirmButton = {
-                TextButton({
-                    confirm = null
-                    actions.send(c.command)
-                }, Modifier.heightIn(min = TouchHeight)) { Text(c.button) }
-            },
-            dismissButton = { TextButton({ confirm = null }, Modifier.heightIn(min = TouchHeight)) { Text("Cancel") } },
-        )
+        ConfirmDialog(c.title, c.text, c.button, onConfirm = { actions.send(c.command) }, onDismiss = { confirm = null })
     }
     if (reset) {
         FactoryResetDialog(
@@ -150,6 +140,7 @@ fun DeviceScreen(state: DeviceUiState, actions: DeviceActions, modifier: Modifie
 @Composable
 fun FactoryResetDialog(onConfirm: () -> Unit, onDismiss: () -> Unit) {
     var typed by rememberSaveable { mutableStateOf("") }
+    val confirmed = typed.trim().equals(RESET_WORD, ignoreCase = true)
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("Factory reset?") },
@@ -177,8 +168,8 @@ fun FactoryResetDialog(onConfirm: () -> Unit, onDismiss: () -> Unit) {
         confirmButton = {
             TextButton(
                 onConfirm, Modifier.heightIn(min = TouchHeight),
-                enabled = typed.trim().equals(RESET_WORD, ignoreCase = true),
-            ) { Text("Reset", color = if (typed.trim().equals(RESET_WORD, true)) Red else Color.Unspecified) }
+                enabled = confirmed,
+            ) { Text("Reset", color = if (confirmed) Red else Color.Unspecified) }
         },
         dismissButton = { TextButton(onDismiss, Modifier.heightIn(min = TouchHeight)) { Text("Cancel") } },
     )

@@ -122,8 +122,9 @@ the app.
   after the last touch or movement, as on the board. Vibration alone, steady
   or switched on and off, does not keep the sim awake: it dims and sleeps
   3 min later than without it, and then the 150 mg wake on motion reboots
-  it at once (the van case). A turn counts only in calm accelerometer
-  windows, so moving it right after switching the drill off still counts.
+  it at once (the van case). The firmware's turn detector low-passes the
+  gyro, so its vibration noise is no turn, while moving the drill counts
+  with the drill running, right after switching it off, or out of sleep.
 - **Calibration helpers:**
   - the six table poses, which light up as the sensor calibration captures
     them;
@@ -237,10 +238,12 @@ curl -s -XPOST localhost:8765/api/cmd -d '{"cmd":"settings","set":{"tol":3,"near
   - lever-arm acceleration;
   - the accelerometer's low-pass filter. The vibration detector therefore
     sees the motor tones (147 and 233 Hz) in full, where the board's 11.9 Hz
-    filter removes most of them, and the gyro vibration is white noise. The
-    intensity slider is a stand-in for what reaches the detector on the
-    board, not for a real drill: the sim proves the detector's logic and the
-    power policy, not its 0.05 g threshold (bring-up step 14 tunes that);
+    filter removes most of them. The gyro vibration is white noise, 0.1 rad/s
+    per g on each axis: 3 % of the samples pass 0.3 rad/s at 1 g and half of
+    them at 2 g, which the turn detector must reject. The intensity slider
+    is a stand-in for what reaches the detectors on the board, not for a
+    real drill: the sim proves the detectors' logic and the power policy,
+    not the 0.05 g and 0.3 rad/s thresholds (bring-up step 14 tunes those);
   - the settings steppers on the screen.
 
 ## Tests

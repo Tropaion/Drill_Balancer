@@ -6,8 +6,12 @@ import android.bluetooth.BluetoothDevice
 import android.bluetooth.BluetoothGattCharacteristic
 import android.bluetooth.BluetoothGattService
 import android.bluetooth.BluetoothManager
+import android.bluetooth.le.BluetoothLeScanner
+import android.bluetooth.le.ScanCallback
+import android.bluetooth.le.ScanFilter
 import android.bluetooth.le.ScanRecord
 import android.bluetooth.le.ScanResult
+import android.bluetooth.le.ScanSettings
 import android.content.Intent
 import android.os.Handler
 import android.os.HandlerThread
@@ -36,6 +40,9 @@ import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
+import org.robolectric.annotation.Implementation
+import org.robolectric.annotation.Implements
+import org.robolectric.shadows.ShadowBluetoothLeScanner
 import org.robolectric.shadows.ShadowLog
 import org.robolectric.shadows.ShadowSystemClock
 import java.time.Duration
@@ -207,7 +214,7 @@ class BleGlueTest {
         val named = ADV_FLAGS + adName("DrillBalancer-1A2B")
         val uuidOnly = ADV_FLAGS + adUuid128(MAIN_UUID_LE)
         val other = ADV_FLAGS + adName("Headphones")
-        callback.onScanResult(0, result("F4:12:FA:00:1A:2B", named, -60))
+        callback.onScanResult(0, result("F4:12:FA:00:1A:2B", named, -75))
         callback.onScanResult(0, result("F4:12:FA:00:3C:4D", uuidOnly, -70))
         callback.onScanResult(0, result("00:11:22:33:44:55", other, -40))
         // The merged advertisement + scan response of the first device: name kept, rssi new.
@@ -264,6 +271,26 @@ class BleGlueTest {
     fun scanWithoutPermissionFails() = runTest {
         shadowOf(app).denyPermissions(Manifest.permission.BLUETOOTH_SCAN)
         assertTrue(expectError { DeviceScanner(app).scan().first() } is SecurityException)
+    }
+
+    // Android 8 to 14 throw from startScan() when the adapter turned off since the scanner
+    // was fetched; the screen shows that as a scan error instead of crashing.
+    @Test
+    @Config(shadows = [AdapterTurnedOffScanner::class])
+    fun bluetoothTurnedOffAtStartFailsTheScan() = runTest {
+        grant(Manifest.permission.BLUETOOTH_SCAN, Manifest.permission.BLUETOOTH_CONNECT)
+        shadowOf(adapter).setEnabled(true)
+        val e = expectError { DeviceScanner(app).scan().collect {} }
+        assertTrue(e.toString(), e is ScanException)
+        assertEquals("Bluetooth is turned off.", e.message)
+    }
+
+    @Implements(BluetoothLeScanner::class)
+    class AdapterTurnedOffScanner : ShadowBluetoothLeScanner() {
+        @Implementation
+        public override fun startScan(filters: MutableList<ScanFilter>?, settings: ScanSettings?, callback: ScanCallback?) {
+            throw IllegalStateException("BT Adapter is not turned ON")
+        }
     }
 
     private fun emptyUpdate() = SettingsUpdate.diff(DeviceSettings.DEFAULTS, DeviceSettings.DEFAULTS)

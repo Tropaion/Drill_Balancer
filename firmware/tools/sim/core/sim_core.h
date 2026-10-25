@@ -101,8 +101,8 @@ void sim_set_battery(int valid, int percent, int voltage_mv, int charging, int c
                      int vbus);
 // PWR key: short press (sleep) or long press (power off).
 void sim_pwrkey(int long_press);
-// Last brightness set (percent), -1 none yet.
-int sim_brightness(void);
+// The power state (app_power_t) the control task last published.
+int sim_power(void);
 
 // ---- BLE service -----------------------------------------------------------------
 // GATT writes return 0 or the ATT error code; each counts as activity.
@@ -128,7 +128,6 @@ void sim_ota_set_mtu(int mtu);
 // ota_update's 1 s timer while a transfer runs.
 void sim_ota_tick(uint32_t now_ms);
 int sim_ota_reboot_pending(void);
-int sim_ota_state(void);
 
 // Link events, as the GAP handlers of ble_service.c. sim_link_connect()
 // returns 1 if the link must be terminated at once (BLE disabled).

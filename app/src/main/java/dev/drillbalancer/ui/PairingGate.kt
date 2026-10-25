@@ -31,7 +31,7 @@ class PairingCancelled : Exception("Pairing cancelled")
  * explains the passkey and pairs; then it runs (again). One gate per session, shared by
  * all screens; [scope] runs the pairing itself.
  */
-class PairingGate(private val session: DeviceSession, private val scope: CoroutineScope) {
+class PairingGate(internal val session: DeviceSession, private val scope: CoroutineScope) {
     private val _prompt = MutableStateFlow<PairingPrompt?>(null)
     val prompt: StateFlow<PairingPrompt?> = _prompt.asStateFlow()
 
@@ -125,7 +125,6 @@ suspend fun <T> PairingGate.attempt(onError: (UiMessage) -> Unit, block: suspend
  * [show]. Null if it failed or the user cancelled pairing.
  */
 suspend fun PairingGate.runCommand(
-    session: DeviceSession,
     command: Command,
     setBusy: (Boolean) -> Unit,
     show: (UiMessage?) -> Unit,

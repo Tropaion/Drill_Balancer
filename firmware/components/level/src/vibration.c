@@ -4,8 +4,6 @@
 // sample period of 0 cannot hold the state forever.
 #define WINDOW_MAX_SAMPLES 1024u
 
-#define TWO_PI 6.2831853f
-
 vib_config_t vib_default_config(void)
 {
     // TODO(hw): tune hp_hz and amp_g on a running drill held still (bring-up
@@ -27,7 +25,7 @@ void vib_init(vib_detector_t *d, const vib_config_t *cfg)
 {
     *d = (vib_detector_t){
         .cfg = *cfg,
-        .tau_s = cfg->hp_hz > 0.0f ? 1.0f / (TWO_PI * cfg->hp_hz) : 0.0f,
+        .tau_s = level_rc_tau_s(cfg->hp_hz),
         .state = VIB_UNKNOWN,
     };
 }
@@ -42,8 +40,7 @@ static void close_window(vib_detector_t *d)
 {
     const vib_config_t *cfg = &d->cfg;
     d->last_duty = (float)d->win_above / (float)d->win_n;
-    d->last_calm = (float)d->win_above < cfg->duty * (float)d->win_n;
-    if (!d->last_calm) {
+    if ((float)d->win_above >= cfg->duty * (float)d->win_n) {
         d->run_calm = 0;
         if (d->run_shaking < UINT8_MAX) {
             d->run_shaking++;
@@ -67,7 +64,7 @@ static void close_window(vib_detector_t *d)
 bool vib_add_sample(vib_detector_t *d, vec3_t accel_g, float dt_s)
 {
     if (!(dt_s > 0.0f)) {
-        dt_s = 0.0f;   // also NaN: the filter holds, the sample cap closes the window
+        dt_s = 0.0f;   // also NaN: the sample cap closes the window
     }
     if (!d->primed) {
         // No start-up step: the first sample is the low-pass state.
@@ -75,10 +72,7 @@ bool vib_add_sample(vib_detector_t *d, vec3_t accel_g, float dt_s)
         d->m1 = accel_g;
         d->m2 = (vec3_t){0.0f, 0.0f, 0.0f};
     }
-    float alpha = dt_s / (d->tau_s + dt_s);
-    if (!(alpha <= 1.0f)) {
-        alpha = 1.0f;   // hp_hz <= 0 and dt 0: 0/0
-    }
+    float alpha = level_rc_alpha(d->tau_s, dt_s);   // the filter holds at dt 0
     vec3_t h1 = vec3_sub(accel_g, d->m1);
     d->m1 = vec3_add(d->m1, vec3_scale(h1, alpha));
     vec3_t h2 = vec3_sub(h1, d->m2);
@@ -87,8 +81,7 @@ bool vib_add_sample(vib_detector_t *d, vec3_t accel_g, float dt_s)
     // Squared: no sqrt in the 448 Hz path for a threshold test.
     float amp = d->cfg.amp_g;
     d->win_n++;
-    d->above = vec3_dot(h2, h2) > amp * amp;
-    if (d->above) {
+    if (vec3_dot(h2, h2) > amp * amp) {
         d->win_above++;
     }
     d->win_s += dt_s;
@@ -102,10 +95,4 @@ bool vib_add_sample(vib_detector_t *d, vec3_t accel_g, float dt_s)
 vib_state_t vib_state(const vib_detector_t *d)
 {
     return d->state;
-}
-
-bool vib_calm(const vib_detector_t *d)
-{
-    return d->last_calm &&
-           (d->win_n == 0 || (float)d->win_above < d->cfg.duty * (float)d->win_n);
 }

@@ -87,14 +87,6 @@ const val LOW_BATTERY_PCT = 10
 fun displayBatteryPct(status: StatusPacket?, battery: Int?): Int? =
     if (status != null) status.batteryPct.takeIf { status.batteryValid } else battery
 
-/** Signal bars 1..4 for a scan RSSI (a device that was heard always gets one). */
-fun signalBars(rssi: Int): Int = when {
-    rssi >= -60 -> 4
-    rssi >= -70 -> 3
-    rssi >= -80 -> 2
-    else -> 1
-}
-
 /** "1.2 MB" / "640 KB" for file sizes and transfer counts (1 KB = 1024 bytes). */
 fun formatBytes(bytes: Long): String = when {
     bytes >= 1024 * 1024 -> formatFixed(bytes / (1024f * 1024f), 1, suffix = " MB")

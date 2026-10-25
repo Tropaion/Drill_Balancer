@@ -27,14 +27,15 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import dev.drillbalancer.ble.BleReadiness
 import dev.drillbalancer.ble.ScannedDevice
+import dev.drillbalancer.ble.signalBars
 import dev.drillbalancer.ui.components.ActionButton
+import dev.drillbalancer.ui.components.BusyPanel
 import dev.drillbalancer.ui.components.ButtonKind
 import dev.drillbalancer.ui.components.DbIcons
 import dev.drillbalancer.ui.components.MessageBanner
 import dev.drillbalancer.ui.components.Panel
 import dev.drillbalancer.ui.components.SectionTitle
 import dev.drillbalancer.ui.components.SignalBars
-import dev.drillbalancer.ui.signalBars
 import dev.drillbalancer.ui.theme.Blue
 import dev.drillbalancer.ui.theme.Dark
 import dev.drillbalancer.ui.theme.Green
@@ -134,11 +135,7 @@ private fun Blocker(title: String, text: String, button: String? = null, onClick
 private fun DeviceList(state: ConnectUiState, actions: ConnectActions) {
     state.connecting?.let { address ->
         val name = state.devices.firstOrNull { it.address == address }?.name ?: address
-        Panel(border = Blue) {
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-                CircularProgressIndicator(Modifier.size(32.dp), color = Blue)
-                Text("Connecting to $name…", Modifier.weight(1f), style = MaterialTheme.typography.titleMedium)
-            }
+        BusyPanel("Connecting to $name…") {
             ActionButton("Cancel", actions.cancelConnect, Modifier.fillMaxWidth(), kind = ButtonKind.SECONDARY)
         }
     }

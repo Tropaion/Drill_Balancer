@@ -48,8 +48,6 @@ typedef struct {
     uint16_t win_n, win_above;
     uint8_t run_shaking, run_calm;
     float last_duty;        // of the last closed window, for the log
-    bool last_calm;         // the last closed window was calm (false before the first)
-    bool above;             // the last sample was above amp_g
 } vib_detector_t;
 
 vib_config_t vib_default_config(void);
@@ -66,12 +64,6 @@ void vib_reset(vib_detector_t *d);
 bool vib_add_sample(vib_detector_t *d, vec3_t accel_g, float dt_s);
 
 vib_state_t vib_state(const vib_detector_t *d);
-
-// Calm right now: the last closed window was calm and the open one is below
-// the duty so far. Unlike the state, this has no hysteresis, so it is false
-// from the first shaking window after a start-up or reset and true again one
-// calm window after the motor stops.
-bool vib_calm(const vib_detector_t *d);
 
 #ifdef __cplusplus
 }

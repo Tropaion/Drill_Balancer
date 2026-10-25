@@ -4,10 +4,7 @@
 #include "vibration.h"
 #include "test_util.h"
 
-#define DT (1.0f / 448.4f)            // imu.c IMU_ODR_HZ
-#define SAMPLES(seconds) ((int)((seconds) / DT + 0.5f))
-#define TWO_PI 6.2831853f
-#define BENCH_NOISE_G 0.0015f         // tools/sim physics.py accel noise
+#define BENCH_NOISE_G 0.0015f         // tools/sim physics.py ACCEL_NOISE_G
 
 static vib_detector_t d;
 static vib_config_t cfg;
@@ -21,23 +18,9 @@ static float noise_g;
 static float amp_g;
 static float freq_hz;
 
-// Deterministic noise: uniform in [-1, 1], and the sum of three of them
-// (standard deviation 1, bounded at 3).
-static uint32_t rng;
-static float noise(void)
-{
-    rng = rng * 1664525u + 1013904223u;
-    return (float)(rng >> 8) / (float)(1u << 23) - 1.0f;
-}
-
-static float gauss(void)
-{
-    return noise() + noise() + noise();
-}
-
 static vec3_t with_noise(vec3_t a)
 {
-    return vec3_add(a, (vec3_t){noise_g * gauss(), noise_g * gauss(), noise_g * gauss()});
+    return vec3_add(a, test_gauss_vec3(noise_g));
 }
 
 static vec3_t bench(float t)
@@ -49,28 +32,28 @@ static vec3_t bench(float t)
 // Chuck imbalance: a vector turning in the board X/Y plane at freq_hz.
 static vec3_t drill(float t)
 {
-    float w = TWO_PI * freq_hz * t;
+    float w = LEVEL_TWO_PI * freq_hz * t;
     return with_noise(vec3_add(up, (vec3_t){amp_g * cosf(w), amp_g * sinf(w), 0.0f}));
 }
 
 // A tone on X only: its magnitude crosses the threshold for part of each cycle.
 static vec3_t tone_x(float t)
 {
-    return with_noise(vec3_add(up, (vec3_t){amp_g * sinf(TWO_PI * freq_hz * t), 0.0f, 0.0f}));
+    return with_noise(vec3_add(up, (vec3_t){amp_g * sinf(LEVEL_TWO_PI * freq_hz * t), 0.0f, 0.0f}));
 }
 
 // Blows every 1 / freq_hz s: an 80 Hz ring of amp_g decaying with 20 ms.
 static vec3_t hammer(float t)
 {
     float since = fmodf(t, 1.0f / freq_hz);
-    float ring = amp_g * expf(-since / 0.02f) * sinf(TWO_PI * 80.0f * since);
+    float ring = amp_g * expf(-since / 0.02f) * sinf(LEVEL_TWO_PI * 80.0f * since);
     return with_noise(vec3_add(up, (vec3_t){ring, 0.0f, ring}));
 }
 
 // Walking: a vertical bounce at freq_hz.
 static vec3_t walk(float t)
 {
-    return with_noise(vec3_add(up, vec3_scale(up, amp_g * sinf(TWO_PI * freq_hz * t))));
+    return with_noise(vec3_add(up, vec3_scale(up, amp_g * sinf(LEVEL_TWO_PI * freq_hz * t))));
 }
 
 static void use(void)
@@ -87,7 +70,7 @@ static bool sample_dt(signal_fn sig, float dt)
 
 static bool sample(signal_fn sig)
 {
-    return sample_dt(sig, DT);
+    return sample_dt(sig, TEST_IMU_DT);
 }
 
 // Feeds until `windows` windows have closed; returns the samples fed.
@@ -107,7 +90,7 @@ static int feed_windows(signal_fn sig, int windows)
 static bool ever(signal_fn sig, float seconds, vib_state_t s)
 {
     bool seen = false;
-    for (int i = 0; i < SAMPLES(seconds); i++) {
+    for (int i = 0; i < TEST_SAMPLES(seconds); i++) {
         sample(sig);
         seen |= vib_state(&d) == s;
     }
@@ -121,7 +104,7 @@ static void settle_quiet(void)
     TEST_ASSERT_EQUAL(VIB_QUIET, vib_state(&d));
 }
 
-// The samples in one window at DT (224 or 225, depending on float rounding).
+// The samples in one window at TEST_IMU_DT (224 or 225, depending on float rounding).
 static int window_samples(void)
 {
     vib_detector_t saved = d;
@@ -139,7 +122,7 @@ void setUp(void)
     noise_g = BENCH_NOISE_G;
     amp_g = 0.1f;
     freq_hz = 10.0f;
-    rng = 12345;
+    test_noise_seed(12345);
     use();
 }
 
@@ -166,49 +149,10 @@ static void test_starts_unknown(void)
     TEST_ASSERT_EQUAL(VIB_UNKNOWN, vib_state(&d));
 }
 
-// Feeds until a window closes, checking that vib_calm() is false before it;
-// returns the samples fed.
-static int feed_window_not_calm(signal_fn sig)
-{
-    int n = 1;
-    while (!sample(sig)) {
-        TEST_ASSERT_FALSE(vib_calm(&d));
-        n++;
-    }
-    return n;
-}
-
-static void test_calm_has_no_hysteresis(void)
-{
-    // Not calm before the first window closes; calm at its close, before
-    // any decision.
-    feed_window_not_calm(bench);
-    TEST_ASSERT_TRUE(vib_calm(&d));
-    TEST_ASSERT_TRUE(d.last_calm);
-    TEST_ASSERT_FALSE(d.above);
-    TEST_ASSERT_EQUAL(VIB_UNKNOWN, vib_state(&d));
-    // The motor starts: not calm from the first sample above amp_g, long
-    // before the window closes or the state changes.
-    sample(drill);
-    TEST_ASSERT_TRUE(d.above);
-    TEST_ASSERT_FALSE(vib_calm(&d));
-    TEST_ASSERT_INT_WITHIN(1, window_samples(), 1 + feed_window_not_calm(drill));
-    TEST_ASSERT_FALSE(d.last_calm);
-    feed_windows(drill, cfg.on_windows);
-    TEST_ASSERT_EQUAL(VIB_RUNNING, vib_state(&d));
-    // It stops: calm again one window later, while the state still reads
-    // RUNNING for quiet_windows.
-    TEST_ASSERT_INT_WITHIN(1, window_samples(), feed_window_not_calm(bench));
-    TEST_ASSERT_TRUE(vib_calm(&d));
-    TEST_ASSERT_EQUAL(VIB_RUNNING, vib_state(&d));
-    vib_reset(&d);
-    TEST_ASSERT_FALSE(vib_calm(&d));
-}
-
 static void test_bench_noise_becomes_quiet_exactly(void)
 {
     int w = window_samples();
-    TEST_ASSERT_INT_WITHIN(1, SAMPLES(cfg.window_s), w);
+    TEST_ASSERT_INT_WITHIN(1, TEST_SAMPLES(cfg.window_s), w);
     for (int i = 1; i < cfg.quiet_windows * w; i++) {
         TEST_ASSERT_EQUAL(i % w == 0, sample(bench));
         TEST_ASSERT_EQUAL(VIB_UNKNOWN, vib_state(&d));
@@ -317,8 +261,8 @@ static void test_slow_handling_and_walking_stay_quiet(void)
     settle_quiet();
     // A 90 degree turn in 1 s (smoothstep), screen up to edge up, and back.
     for (int k = 0; k < 10; k++) {
-        for (int i = 0; i < SAMPLES(1.0f); i++) {
-            float s = (float)i / (float)SAMPLES(1.0f);
+        for (int i = 0; i < TEST_SAMPLES(1.0f); i++) {
+            float s = (float)i / (float)TEST_SAMPLES(1.0f);
             float a = 1.5707963f * s * s * (3.0f - 2.0f * s);
             if (k % 2) {
                 a = 1.5707963f - a;
@@ -377,13 +321,13 @@ static void test_dt_jitter(void)
     settle_quiet();
     int n = 0;
     while (vib_state(&d) != VIB_RUNNING) {
-        sample_dt(drill, DT * (1.0f + 0.1f * noise()));
+        sample_dt(drill, TEST_IMU_DT * (1.0f + 0.1f * test_noise()));
         n++;
-        TEST_ASSERT_TRUE(n < SAMPLES(5.0f));
+        TEST_ASSERT_TRUE(n < TEST_SAMPLES(5.0f));
     }
-    TEST_ASSERT_INT_WITHIN(SAMPLES(0.1f), SAMPLES(cfg.on_windows * cfg.window_s), n);
-    for (int i = 0; i < SAMPLES(20.0f); i++) {
-        sample_dt(drill, DT * (1.0f + 0.1f * noise()));
+    TEST_ASSERT_INT_WITHIN(TEST_SAMPLES(0.1f), TEST_SAMPLES(cfg.on_windows * cfg.window_s), n);
+    for (int i = 0; i < TEST_SAMPLES(20.0f); i++) {
+        sample_dt(drill, TEST_IMU_DT * (1.0f + 0.1f * test_noise()));
         TEST_ASSERT_EQUAL(VIB_RUNNING, vib_state(&d));
     }
 }
@@ -410,7 +354,6 @@ int main(void)
     UNITY_BEGIN();
     RUN_TEST(test_default_config);
     RUN_TEST(test_starts_unknown);
-    RUN_TEST(test_calm_has_no_hysteresis);
     RUN_TEST(test_bench_noise_becomes_quiet_exactly);
     RUN_TEST(test_bench_noise_x10_never_running);
     RUN_TEST(test_running_drill_after_on_windows);

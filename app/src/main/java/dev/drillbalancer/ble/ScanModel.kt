@@ -21,19 +21,31 @@ data class ScannedDevice(
 fun isDrillBalancer(name: String?, serviceUuids: Collection<UUID>?): Boolean =
     name?.startsWith(Uuids.NAME_PREFIX) == true || serviceUuids?.contains(Uuids.SVC_MAIN) == true
 
+/** Signal bars 1..4 for a scan RSSI (a device that was heard always gets one). */
+fun signalBars(rssi: Int): Int = when {
+    rssi >= -60 -> 4
+    rssi >= -70 -> 3
+    rssi >= -80 -> 2
+    else -> 1
+}
+
 /** The devices found so far, in order of discovery; ones not seen for [staleMs] drop out. */
 class ScanResults(private val staleMs: Long = 10_000) {
     private val byAddress = LinkedHashMap<String, ScannedDevice>()
 
     val devices: List<ScannedDevice> get() = byAddress.values.toList()
 
-    /** Returns whether the list changed in a way worth showing. */
+    /**
+     * Returns whether the list changed in a way worth showing: the RSSI only when its
+     * [signalBars] did (it varies with every advertisement). The newest RSSI is kept.
+     */
     fun update(seen: ScannedDevice): Boolean {
         val old = byAddress[seen.address]
         // A report without the advertising packet carries no name: keep the known one.
         val merged = if (seen.name == null && old != null) seen.copy(name = old.name) else seen
         byAddress[seen.address] = merged
-        return old == null || old.name != merged.name || old.bonded != merged.bonded || old.rssi != merged.rssi
+        return old == null || old.name != merged.name || old.bonded != merged.bonded ||
+            signalBars(old.rssi) != signalBars(merged.rssi)
     }
 
     fun prune(nowMs: Long): Boolean = byAddress.values.removeAll { nowMs - it.lastSeenMs > staleMs }

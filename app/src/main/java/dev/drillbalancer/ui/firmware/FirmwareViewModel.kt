@@ -30,14 +30,27 @@ data class FirmwareUiState(
     val progress: OtaProgress? = null,
     val error: OtaError? = null,
     val newVersion: String? = null,      // DONE: what the device reports after the reboot
+    val unconfirmed: Boolean = false,    // FINISH went out, its answer was lost: the reconnect decides
 ) {
     enum class Phase { IDLE, TRANSFERRING, REBOOTING, DONE, FAILED }
+
+    /** What the version the device came back with says about the update. */
+    enum class Outcome {
+        INSTALLED,      // it runs the image's version
+        RESTARTED,      // FINISH answered, but the device did not come back to say which version
+        UNKNOWN,        // FINISH not answered and the device did not come back: nothing is known
+        ROLLED_BACK,    // FINISH answered, another version came back (rolled back, or not bumped)
+        NOT_INSTALLED,  // FINISH not answered, another version came back: the update failed
+    }
 
     data class OtaError(val title: String, val text: String)
 
     val canStart: Boolean get() = image != null && (phase == Phase.IDLE || phase == Phase.FAILED)
     val canPick: Boolean get() = phase != Phase.TRANSFERRING && phase != Phase.REBOOTING
     val sameVersion: Boolean get() = image != null && image.version == deviceVersion
+
+    /** DONE: the outcome shown. */
+    val outcome: Outcome get() = outcomeOf(newVersion, image?.version, unconfirmed)
 
     /** Until FINISH goes out: after it the device installs the image whatever the app does. */
     val canCancel: Boolean
@@ -51,12 +64,20 @@ data class FirmwareUiState(
             if (phase != Phase.TRANSFERRING || p.phase != OtaProgress.Phase.SENDING || p.bytesPerSecond <= 0f) return null
             return ((p.totalBytes - p.bytesDone) / p.bytesPerSecond).roundToLong()
         }
+
+    companion object {
+        fun outcomeOf(newVersion: String?, expected: String?, unconfirmed: Boolean): Outcome = when {
+            newVersion == null -> if (unconfirmed) Outcome.UNKNOWN else Outcome.RESTARTED
+            newVersion == expected -> Outcome.INSTALLED
+            unconfirmed -> Outcome.NOT_INSTALLED
+            else -> Outcome.ROLLED_BACK
+        }
+    }
 }
 
 class FirmwareViewModel(
     private val session: DeviceSession,
     private val gate: PairingGate,
-    private val reconnectTimeoutMs: Long = 90_000,
 ) : ViewModel() {
     private val _state = MutableStateFlow(FirmwareUiState(deviceVersion = session.info.value?.firmwareRevision))
     val state: StateFlow<FirmwareUiState> = _state.asStateFlow()
@@ -68,10 +89,9 @@ class FirmwareViewModel(
         }
     }
 
-    /** A picked file's contents (the route reads it from the Storage Access Framework). */
-    fun onFile(name: String?, bytes: ByteArray) {
+    /** A picked file, parsed (the route reads it from the Storage Access Framework). */
+    fun onFile(name: String?, parsed: FirmwareParseResult) {
         if (!_state.value.canPick) return
-        val parsed = FirmwareImage.parse(bytes)
         _state.update {
             it.copy(
                 fileName = name,
@@ -95,21 +115,34 @@ class FirmwareViewModel(
         val image = s.image ?: return
         if (!s.canStart) return
         job = viewModelScope.launch {
-            _state.update { it.copy(phase = FirmwareUiState.Phase.TRANSFERRING, progress = null, error = null, newVersion = null) }
+            _state.update {
+                it.copy(phase = FirmwareUiState.Phase.TRANSFERRING, progress = null, error = null, newVersion = null, unconfirmed = false)
+            }
+            // A stopped transfer may still be sending ABORT: the session starts this one after it.
+            var unconfirmed = false
             try {
                 gate.secure { session.startOta(image).collect { p -> _state.update { it.copy(progress = p) } } }
             } catch (_: PairingCancelled) {
                 _state.update { it.copy(phase = FirmwareUiState.Phase.IDLE) }
                 return@launch
             } catch (e: OtaException) {
-                fail(otaError(e))
-                return@launch
+                if (!e.unconfirmed) {
+                    fail(otaError(e))
+                    return@launch
+                }
+                unconfirmed = true
             } catch (e: DeviceError) {
                 fail(FirmwareUiState.OtaError("Update failed", e.message ?: "Error"))
                 return@launch
             }
-            _state.update { it.copy(phase = FirmwareUiState.Phase.REBOOTING) }
+            _state.update { it.copy(phase = FirmwareUiState.Phase.REBOOTING, unconfirmed = unconfirmed) }
             val version = awaitNewVersion()
+            if (FirmwareUiState.outcomeOf(version, image.version, unconfirmed) == FirmwareUiState.Outcome.NOT_INSTALLED) {
+                val text = "The connection dropped while the device checked the image. It came back with firmware $version, " +
+                    "so the update did not go through."
+                fail(FirmwareUiState.OtaError("Update failed", text))
+                return@launch
+            }
             _state.update { it.copy(phase = FirmwareUiState.Phase.DONE, newVersion = version) }
         }
     }
@@ -126,10 +159,12 @@ class FirmwareViewModel(
         _state.update { it.copy(phase = FirmwareUiState.Phase.FAILED, error = error) }
 
     // The device reboots about 0.5 s after FINISH; the session then reconnects by itself.
+    // No time limit here: the session's reconnecting is bounded (ReconnectPolicy, up to
+    // about 110 s) and ends Connected or Disconnected without reconnecting.
     private suspend fun awaitNewVersion(): String? {
         withTimeoutOrNull(DROP_TIMEOUT_MS) { session.connection.first { it !is ConnectionState.Connected } }
-        val back = withTimeoutOrNull(reconnectTimeoutMs) {
-            session.connection.first { it is ConnectionState.Connected || it is ConnectionState.Disconnected && !it.reconnecting }
+        val back = session.connection.first {
+            it is ConnectionState.Connected || it is ConnectionState.Disconnected && !it.reconnecting
         }
         if (back !is ConnectionState.Connected) return null
         return session.info.value?.firmwareRevision

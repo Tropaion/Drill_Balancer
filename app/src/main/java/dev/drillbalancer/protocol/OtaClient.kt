@@ -1,16 +1,17 @@
 package dev.drillbalancer.protocol
 
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
-import java.security.MessageDigest
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.seconds
 import kotlin.time.TimeSource
@@ -51,16 +52,26 @@ data class OtaProgress(
     val percent: Int get() = if (totalBytes == 0) 0 else (bytesDone.toLong() * 100 / totalBytes).toInt()
 }
 
-/** The update failed; [status] is the device's, if it reported one. */
-class OtaException(message: String, val status: OtaStatus? = null) : Exception(message)
+/**
+ * The update failed; [status] is the device's, if it reported one. [unconfirmed]: FINISH
+ * went out but its answer was lost with the link, so the device may have installed the
+ * image; the version it reports after the reconnect tells.
+ */
+class OtaException(
+    message: String,
+    val status: OtaStatus? = null,
+    val unconfirmed: Boolean = false,
+    cause: Throwable? = null,
+) : Exception(message, cause)
 
 /**
  * Sends an app image over the OTA service, like tools/ble/db_client.py ota_transfer():
  * START -> stream chunks at most 2 * ack_every ahead of the last ACK, rewinding to a
  * NACK's expected_seq or, when the device goes quiet, to the last ACK -> FINISH. On any
  * failure or cancellation it sends ABORT (best effort); a lost link fails the transfer at
- * once, until FINISH goes out. After a successful FINISH the device reboots into the new
- * image.
+ * once, until FINISH goes out. After that a lost link or a failed FINISH write ends in an
+ * unconfirmed OtaException, without ABORT. After a successful FINISH the device reboots
+ * into the new image.
  */
 class OtaClient(
     private val transport: OtaTransport,
@@ -71,28 +82,39 @@ class OtaClient(
     private val timeSource: TimeSource = TimeSource.Monotonic,
 ) {
     /** Cold: each collection runs one transfer; cancelling the collection aborts it. */
-    fun upload(image: ByteArray): Flow<OtaProgress> = flow { send(image) { emit(it) } }
+    fun upload(image: ByteArray, sha256: ByteArray = image.sha256()): Flow<OtaProgress> =
+        flow { send(image, sha256) { emit(it) } }
 
-    suspend fun send(image: ByteArray, onProgress: suspend (OtaProgress) -> Unit = {}) {
+    /** [sha256]: the image's digest, when the caller has it already (FirmwareImage.sha256). */
+    suspend fun send(image: ByteArray, sha256: ByteArray = image.sha256(), onProgress: suspend (OtaProgress) -> Unit = {}) {
         require(image.isNotEmpty()) { "empty image" }
         coroutineScope {
             val inbox = Channel<OtaMessage>(Channel.UNLIMITED)
+            var finishing = false
             // Subscribed before START is written, so its reply cannot be missed.
             val listener = launch(start = CoroutineStart.UNDISPATCHED) {
                 transport.ctrlIndications.collect { raw ->
                     // Malformed indications are ignored, like db_client.py.
-                    OtaMessage.decode(raw).getOrNull()?.let { inbox.send(it) }
+                    OtaMessage.decode(raw).getOrNull()?.let { inbox.trySend(it) }
                 }
             }
-            // Not after FINISH: the device may install the image whatever happens to the link.
             val watchdog = launch(start = CoroutineStart.UNDISPATCHED) {
-                transport.linkLost.collect { throw OtaException(LINK_LOST) }
+                transport.linkLost.collect {
+                    if (!finishing) throw OtaException(LINK_LOST)
+                    // After FINISH the device may install the image whatever happens to the
+                    // link. A reply indicated before the drop may still be on its way here.
+                    delay(LOST_REPLY_GRACE)
+                    inbox.close(OtaException(UNCONFIRMED, unconfirmed = true))
+                }
             }
             try {
-                transfer(image, inbox, onProgress, beforeFinish = { watchdog.cancel() })
+                transfer(image, sha256, inbox, onProgress, beforeFinish = { finishing = true })
             } catch (e: Throwable) {
-                withContext(NonCancellable) {
-                    runCatching { withTimeoutOrNull(ABORT_TIMEOUT) { transport.writeCtrl(OtaMessage.encodeAbort()) } }
+                // Not when unconfirmed: the device may be installing, and the link is gone.
+                if (!(e is OtaException && e.unconfirmed)) {
+                    withContext(NonCancellable) {
+                        runCatching { withTimeoutOrNull(ABORT_TIMEOUT) { transport.writeCtrl(OtaMessage.encodeAbort()) } }
+                    }
                 }
                 throw e
             } finally {
@@ -104,13 +126,13 @@ class OtaClient(
 
     private suspend fun transfer(
         image: ByteArray,
+        sha: ByteArray,
         inbox: Channel<OtaMessage>,
         onProgress: suspend (OtaProgress) -> Unit,
         beforeFinish: () -> Unit,
     ) {
         val size = image.size
         onProgress(OtaProgress(OtaProgress.Phase.STARTING, 0, size, 0f))
-        val sha = MessageDigest.getInstance("SHA-256").digest(image)
         transport.writeCtrl(OtaMessage.encodeStart(size, sha))
         val rep = awaitReply(inbox, OtaOp.START, replyTimeout)
         if (rep.status != OtaStatus.OK.code) {
@@ -141,8 +163,7 @@ class OtaClient(
                 is OtaMessage.Nack -> {
                     val st = msg.status
                     if (st != OtaStatus.SEQ_ERROR.code && st != OtaStatus.BAD_REQUEST.code) {
-                        val status = OtaStatus.fromCode(st)
-                        throw OtaException("The device aborted the update: ${status?.message ?: OtaStatus.name(st)}", status)
+                        throw OtaException("The device aborted the update: ${OtaStatus.messageFor(st)}", OtaStatus.fromCode(st))
                     }
                     // expected_seq is a 16-bit chunk index at or after the last ACK.
                     val idx = acked + ((msg.expectedSeq - acked) and 0xFFFF)
@@ -193,11 +214,18 @@ class OtaClient(
         val rate = size / (t0.elapsedNow().inWholeMilliseconds.coerceAtLeast(1) / 1000f)
         onProgress(OtaProgress(OtaProgress.Phase.VERIFYING, size, size, rate))
         beforeFinish()
-        transport.writeCtrl(OtaMessage.encodeFinish())
+        try {
+            transport.writeCtrl(OtaMessage.encodeFinish())
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            // The device verifies the image before it answers the write: a write that
+            // failed with the link may still have arrived.
+            throw OtaException(UNCONFIRMED, unconfirmed = true, cause = e)
+        }
         val fin = awaitReply(inbox, OtaOp.FINISH, finishTimeout)
         if (fin.status != OtaStatus.OK.code) {
-            val status = OtaStatus.fromCode(fin.status)
-            throw OtaException("FINISH failed: ${status?.message ?: OtaStatus.name(fin.status)}", status)
+            throw OtaException("FINISH failed: ${OtaStatus.messageFor(fin.status)}", OtaStatus.fromCode(fin.status))
         }
         onProgress(OtaProgress(OtaProgress.Phase.DONE, size, size, rate))
     }
@@ -216,6 +244,9 @@ class OtaClient(
         const val MAX_BAD_REQUESTS = 3
         const val LINK_LOST = "The connection dropped during the transfer, so the device stopped the update. " +
             "Start it again once the app has reconnected."
+        const val UNCONFIRMED = "The connection dropped while the device checked the image, so the app could not " +
+            "confirm the update."
         private val ABORT_TIMEOUT = 2.seconds
+        private val LOST_REPLY_GRACE = 1.seconds
     }
 }

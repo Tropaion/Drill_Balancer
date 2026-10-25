@@ -22,14 +22,12 @@ from pathlib import Path
 
 from aiohttp import WSMsgType, web
 
-from ..physics import FACES, LiftMotion, RollMotion
+from ..physics import ACCEL_NOISE_G, FACES, GYRO_NOISE_RAD_S, LiftMotion, RollMotion
 from .screen import DeviceScreen
 
 STATIC_DIR = Path(__file__).resolve().parent
 PUSH_MS = 66                  # ui_priv.h UI_TICK_MS: the device redraws at this rate
 LOG_LEN = 600
-BASE_ACCEL_NOISE_G = 0.0015   # physics.py defaults: noise level 1
-BASE_GYRO_NOISE = 0.002
 
 # ble_protocol.h
 CMD_NAMES = {0x01: "ZERO", 0x02: "CLEAR_ZERO", 0x03: "SET_MODE", 0x10: "MOUNT_CAL_START",
@@ -220,7 +218,7 @@ class WebPanel:
             "ota": self._ota_rate(bool(snap.get("ota_active"))),
             "sim": {
                 "roll_running": p.running(RollMotion),
-                "noise": round(p.accel_noise_g / BASE_ACCEL_NOISE_G, 2),
+                "noise": round(p.accel_noise_g / ACCEL_NOISE_G, 2),
                 "accel_bias": list(p.accel_bias), "accel_scale": list(p.accel_scale),
             },
         }
@@ -285,8 +283,8 @@ class WebPanel:
 
     def c_noise(self, d):
         level = _num(d, "level", 0, 20)
-        self.dev.physics.accel_noise_g = BASE_ACCEL_NOISE_G * level
-        self.dev.physics.gyro_noise_rad_s = BASE_GYRO_NOISE * level
+        self.dev.physics.accel_noise_g = ACCEL_NOISE_G * level
+        self.dev.physics.gyro_noise_rad_s = GYRO_NOISE_RAD_S * level
         return f"sensor noise x{level:g}"
 
     def c_mount_offset(self, d):

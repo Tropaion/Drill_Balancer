@@ -7,18 +7,14 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -33,15 +29,17 @@ import androidx.compose.ui.unit.sp
 import dev.drillbalancer.protocol.FirmwareImage
 import dev.drillbalancer.protocol.OtaProgress
 import dev.drillbalancer.ui.components.ActionButton
+import dev.drillbalancer.ui.components.BusyPanel
 import dev.drillbalancer.ui.components.ButtonKind
+import dev.drillbalancer.ui.components.ConfirmDialog
 import dev.drillbalancer.ui.components.DbIcons
 import dev.drillbalancer.ui.components.InfoRow
 import dev.drillbalancer.ui.components.MessageBanner
 import dev.drillbalancer.ui.components.Panel
-import dev.drillbalancer.ui.components.TouchHeight
 import dev.drillbalancer.ui.components.UiMessage
 import dev.drillbalancer.ui.components.numberStyle
 import dev.drillbalancer.ui.formatBytes
+import dev.drillbalancer.ui.firmware.FirmwareUiState.Outcome
 import dev.drillbalancer.ui.formatMinSec
 import dev.drillbalancer.ui.theme.Blue
 import dev.drillbalancer.ui.theme.Dark
@@ -80,25 +78,16 @@ fun FirmwareScreen(state: FirmwareUiState, actions: FirmwareActions, modifier: M
                 FilePanel(state, actions)
             }
             FirmwareUiState.Phase.TRANSFERRING -> Transfer(state, onCancel = { askCancel = true })
-            FirmwareUiState.Phase.REBOOTING -> Rebooting()
+            FirmwareUiState.Phase.REBOOTING -> Rebooting(state.unconfirmed)
             FirmwareUiState.Phase.DONE -> Done(state, actions.done)
         }
     }
 
     if (askCancel) {
-        AlertDialog(
-            onDismissRequest = { askCancel = false },
-            title = { Text("Stop the update?") },
-            text = { Text("The device keeps its current firmware.", style = MaterialTheme.typography.bodyLarge) },
-            confirmButton = {
-                TextButton({
-                    askCancel = false
-                    actions.cancel()
-                }, Modifier.heightIn(min = TouchHeight)) { Text("Stop update", color = Red) }
-            },
-            dismissButton = {
-                TextButton({ askCancel = false }, Modifier.heightIn(min = TouchHeight)) { Text("Continue") }
-            },
+        ConfirmDialog(
+            "Stop the update?", "The device keeps its current firmware.", "Stop update",
+            onConfirm = actions.cancel, onDismiss = { askCancel = false },
+            confirmColor = Red, dismissLabel = "Continue",
         )
     }
 }
@@ -193,14 +182,18 @@ private fun Transfer(state: FirmwareUiState, onCancel: () -> Unit) {
 }
 
 @Composable
-private fun Rebooting() {
-    Panel(border = Blue) {
-        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-            CircularProgressIndicator(Modifier.size(32.dp), color = Blue)
-            Text("Device is rebooting", style = MaterialTheme.typography.titleLarge)
-        }
+private fun Rebooting(unconfirmed: Boolean) {
+    BusyPanel(
+        if (unconfirmed) "Waiting for the device" else "Device is rebooting",
+        titleStyle = MaterialTheme.typography.titleLarge,
+    ) {
         Text(
-            "The image was checked and installed. The device restarts with it and the app reconnects by itself.",
+            if (unconfirmed) {
+                "The connection dropped while the device checked the image. The app reconnects by itself and " +
+                    "checks which firmware the device runs."
+            } else {
+                "The image was checked and installed. The device restarts with it and the app reconnects by itself."
+            },
             style = MaterialTheme.typography.bodyLarge,
         )
     }
@@ -209,22 +202,22 @@ private fun Rebooting() {
 @Composable
 private fun Done(state: FirmwareUiState, onDone: () -> Unit) {
     val v = state.newVersion
-    val expected = state.image?.version
-    val ok = v != null && v == expected
-    Panel(border = if (v == null || ok) Green else Red) {
+    val (border, text) = when (state.outcome) {
+        Outcome.UNKNOWN ->
+            Blue to "The connection dropped while the device checked the image. Connect again to check its version."
+        Outcome.RESTARTED -> Green to "The device restarted with the new firmware. Connect again to check its version."
+        Outcome.INSTALLED -> Green to "The device now runs firmware $v."
+        // The VM shows NOT_INSTALLED as a failure; listed for completeness
+        Outcome.ROLLED_BACK, Outcome.NOT_INSTALLED ->
+            Red to "The device reports firmware $v, not ${state.image?.version}. It may have rolled back to the old image."
+    }
+    val unknown = state.outcome == Outcome.UNKNOWN
+    Panel(border = border) {
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            Icon(DbIcons.Check, contentDescription = null, tint = Green, modifier = Modifier.size(32.dp))
-            Text("Update complete", style = MaterialTheme.typography.titleLarge)
+            if (!unknown) Icon(DbIcons.Check, contentDescription = null, tint = Green, modifier = Modifier.size(32.dp))
+            Text(if (unknown) "Update not confirmed" else "Update complete", style = MaterialTheme.typography.titleLarge)
         }
-        Text(
-            when {
-                v == null -> "The device restarted with the new firmware. Connect again to check its version."
-                ok -> "The device now runs firmware $v."
-                // The bootloader rolled back, or the image's version string was not bumped
-                else -> "The device reports firmware $v, not $expected. It may have rolled back to the old image."
-            },
-            style = MaterialTheme.typography.bodyLarge,
-        )
+        Text(text, style = MaterialTheme.typography.bodyLarge)
     }
     ActionButton("Done", onDone, Modifier.fillMaxWidth())
 }

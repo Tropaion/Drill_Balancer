@@ -33,13 +33,15 @@ fun FirmwareRoute(vm: FirmwareViewModel, onDone: () -> Unit) {
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri == null) return@rememberLauncherForActivityResult
         scope.launch {
-            val name = displayName(context, uri)
+            // Both ask the document provider, which may be a slow cloud or USB one.
+            val name = withContext(Dispatchers.IO) { displayName(context, uri) }
             try {
                 val bytes = withContext(Dispatchers.IO) { readLimited(context, uri, FirmwareImage.OTA_SLOT_SIZE) }
                 if (bytes == null) {
                     vm.onFileError(name, "The file is larger than the device's ${formatBytes(FirmwareImage.OTA_SLOT_SIZE.toLong())} update slot.")
                 } else {
-                    vm.onFile(name, bytes)
+                    // Hashes up to 6 MB
+                    vm.onFile(name, withContext(Dispatchers.Default) { FirmwareImage.parse(bytes) })
                 }
             } catch (e: IOException) {
                 vm.onFileError(name, "The file could not be read (${e.message}).")

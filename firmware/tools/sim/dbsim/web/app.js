@@ -78,7 +78,6 @@ function fmtFixed(v, dec, plus, suffix = "") {
   return sign + body + suffix;
 }
 const fmtDeg = (v, plus = false) => fmtFixed(v, 1, plus, "°");
-const tenths = (v) => (Number.isFinite(v) ? Math.sign(v) * Math.round(Math.min(Math.abs(v) * 10, 99990)) : 0);
 const saneNear = (n) => (n > 0.01 ? n : 1);
 
 function yawOffset(yaw, near, halfW) {
@@ -110,12 +109,6 @@ function roundRow(dy, h, nominal, minW, radius) {
   return [w, Math.max(40, 255 - (over * (255 - 40)) / 40) / 255];
 }
 
-function fmtDuration(s) {
-  if (s !== 0 && s % 3600 === 0) return `${s / 3600} h`;
-  if (s !== 0 && s % 60 === 0) return `${s / 60} min`;
-  return `${s} s`;
-}
-
 // ---- the round screen -----------------------------------------------------------------
 
 const W = 466, CX = 233, SAFE_R = 225;
@@ -124,7 +117,6 @@ const COL = {
   button: "#1C1C1C", red: "#FF5252", redBg: "#C62828", blue: "#448AFF",
 };
 const FONT = '"Montserrat", "Inter", "Noto Sans", "DejaVu Sans", system-ui, sans-serif';
-const NUM_FONT = '"Montserrat", "Inter", "Noto Sans", "DejaVu Sans", system-ui, sans-serif';
 const statusColor = (st) => (st === 0 ? COL.green : st === 1 ? COL.amber : COL.white);
 
 const canvas = $("screen");
@@ -146,13 +138,13 @@ function font(px, weight = 500) { return `${weight} ${px}px ${FONT}`; }
 // Text centred at x, with its middle at y; shrinks to maxW if needed.
 function text(str, x, y, px, color, opts = {}) {
   ctx.save();
-  let f = opts.num ? `600 ${px}px ${NUM_FONT}` : font(px, opts.weight || 500);
-  ctx.font = f;
+  const weight = opts.num ? 600 : opts.weight || 500;
+  ctx.font = font(px, weight);
   if (opts.maxW) {
     const w = ctx.measureText(str).width;
     if (w > opts.maxW) {
       const p2 = Math.floor((px * opts.maxW) / w);
-      ctx.font = opts.num ? `600 ${p2}px ${NUM_FONT}` : font(p2, opts.weight || 500);
+      ctx.font = font(p2, weight);
     }
   }
   ctx.fillStyle = color;
@@ -167,7 +159,7 @@ function text(str, x, y, px, color, opts = {}) {
 
 function textWidth(str, px, num = false) {
   ctx.save();
-  ctx.font = num ? `600 ${px}px ${NUM_FONT}` : font(px);
+  ctx.font = font(px, num ? 600 : 500);
   const w = ctx.measureText(str).width;
   ctx.restore();
   return w;
@@ -375,7 +367,7 @@ function drawWall(r, cfg, ui) {
   pill(CX - 120, top + 15, 240, 6, "#4A4A4A");
   pill(CX - 2, top + 5, 4, 26, COL.grey);
   pill(CX + yawOffset(r.yaw, cfg.near, 120) - 7, top, 14, 36, yc);
-  const t = tenths(r.yaw);
+  const t = ui.yaw_tenths;
   const deg = fmtDeg(Math.abs(r.yaw));
   text(t === 0 ? deg : `${t > 0 ? "R" : "L"} ${deg}`, CX, top + 42 + 14, 24, yc);
   if (r.yaw_stale) text("Yaw drifts: tap to re-zero", CX, top + 74 + 10, 16, COL.amber);
@@ -422,15 +414,11 @@ function drawStatusBar(s) {
 }
 
 // Settings (ui_settings.c): the scrolling round list. Steppers show their values
-// but are not mirrored; the action buttons work.
+// (ui_settings_format(), in the snapshot) but are not mirrored; the action
+// buttons work. In ui_field_t order.
 const FIELDS = [
-  ["Tolerance (green)", (c) => fmtFixed(c.tol, 2, false, "°")],
-  ["Near band (amber)", (c) => fmtFixed(c.near, 2, false, "°")],
-  ["Target angle", (c) => fmtDeg(c.target)],
-  ["Brightness", (c) => `${c.bright} %`],
-  ["Dim after", (c) => fmtDuration(c.dim_s)],
-  ["Sleep after", (c) => fmtDuration(c.sleep_s)],
-  ["Power off after sleep", (c) => (c.off_min === 0 ? "Never" : fmtDuration(c.off_min * 60))],
+  "Tolerance (green)", "Near band (amber)", "Target angle", "Brightness", "Dim after",
+  "Sleep after", "Power off after sleep",
 ];
 
 function drawSettings(s, view) {
@@ -438,7 +426,7 @@ function drawSettings(s, view) {
   // flex column: pad top 70, row gap 30, pad bottom 150
   const rows = [
     {h: 27, kind: "title"}, {h: 19, kind: "hint"},
-    ...FIELDS.map((f) => ({h: 92, kind: "step", f, nominal: 330, min: 240})),
+    ...FIELDS.map((label, i) => ({h: 92, kind: "step", label, i, nominal: 330, min: 240})),
     {h: 72, kind: "ble", nominal: 330, min: 280},
     {h: 66, kind: "act", id: "set_mount", str: "Calibrate mount", nominal: 300, min: 240},
     {h: 66, kind: "act", id: "set_sensor", str: "Calibrate sensor", nominal: 300, min: 240},
@@ -467,11 +455,11 @@ function drawSettings(s, view) {
     } else if (row.kind === "hint") {
       text("Swipe right or tap Back to leave", CX, cy, 16, COL.grey);
     } else if (row.kind === "step") {
-      text(row.f[0], CX, top + 9, 16, COL.grey);
+      text(row.label, CX, top + 9, 16, COL.grey);
       const by = top + row.h - 32;
       button(null, CX - w / 2 + 32, by, 64, 64, "−", {alpha: opa});
       button(null, CX + w / 2 - 32, by, 64, 64, "+", {alpha: opa});
-      text(row.f[1](cfg), CX, by, 24, COL.white);
+      text(s.ui.settings_text[row.i], CX, by, 24, COL.white);
       regions.push({id: "stepper", x: CX - w / 2, y: by - 32, w, h: 64, enabled: true});
     } else if (row.kind === "ble") {
       btIcon(CX - w / 2 + 16, cy, COL.white, 1);
@@ -614,7 +602,7 @@ function draw() {
   ctx.fillRect(0, 0, W, W);
   regions = [];
   const s = state && state.snap;
-  const on = s && s.device_state === "running" && s.power !== 2 && s.power !== 3;
+  const on = screenOn();
   // AMOLED brightness, roughly perceptual; dark when asleep or off
   canvas.style.filter = on ? `brightness(${Math.sqrt(Math.max(5, s.brightness) / 100).toFixed(3)})` : "";
   if (!on) {

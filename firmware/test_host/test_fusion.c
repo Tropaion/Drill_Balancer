@@ -13,6 +13,7 @@ static fusion_config_t cfg;
 void setUp(void)
 {
     cfg = fusion_default_config();
+    test_noise_seed(12345);
 }
 
 void tearDown(void) {}
@@ -31,14 +32,6 @@ static float body_x_heading_deg(void)
 {
     vec3_t x = quat_rotate(f.q, AXIS_X);
     return LEVEL_RAD2DEG(atan2f(x.y, x.x));
-}
-
-// Deterministic noise in [-1, 1].
-static uint32_t rng = 12345;
-static float noise(void)
-{
-    rng = rng * 1664525u + 1013904223u;
-    return (float)(rng >> 8) / (float)(1u << 23) - 1.0f;
 }
 
 static void test_init_takes_tilt_from_accel(void)
@@ -101,8 +94,9 @@ static void test_vibration_averages_out(void)
     vec3_t g = accel_at_rest(truth);
     fusion_init(&f, &cfg, g);
     for (int i = 0; i < SAMPLES(10.0f); i++) {
-        vec3_t a = {g.x + 0.08f * noise(), g.y + 0.08f * noise(), g.z + 0.08f * noise()};
-        vec3_t w = {0.02f * noise(), 0.02f * noise(), 0.02f * noise()};
+        vec3_t a = {g.x + 0.08f * test_noise(), g.y + 0.08f * test_noise(),
+                    g.z + 0.08f * test_noise()};
+        vec3_t w = {0.02f * test_noise(), 0.02f * test_noise(), 0.02f * test_noise()};
         fusion_update(&f, w, a, DT);
     }
     TEST_ASSERT_FLOAT_WITHIN(0.3f, 0.0f, tilt_error_deg(truth));

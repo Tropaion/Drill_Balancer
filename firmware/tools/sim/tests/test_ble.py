@@ -15,16 +15,16 @@ import subprocess
 import tempfile
 import unittest
 
-from simtest import FIRMWARE_IMAGE, C, SIM_DIR, dc
+from simtest import FIRMWARE_IMAGE, C, dc
 
 from dbsim import DbSimDevice
 from dbsim import ble as B
 from dbus_fast import DBusError, Message, MessageType, Variant
 from dbus_fast.aio import MessageBus
 
-FIRMWARE_DIR = SIM_DIR.parent.parent
 PHONE = "/org/bluez/hci0/dev_AA_BB_CC_DD_EE_FF"
 PHONE_ADDR = "AA:BB:CC:DD:EE:FF"
+OTHER = "/org/bluez/hci0/dev_11_22_33_44_55_66"
 
 
 def bluez_ecode(name: str, msg: str, perm_err: int) -> int:
@@ -52,9 +52,8 @@ NIMBLE_FLAGS = {"BLE_GATT_CHR_F_READ": 0x02, "BLE_GATT_CHR_F_WRITE_NO_RSP": 0x04
 
 def firmware_gatt_table():
     """[(service UUID, [(char UUID, properties, secure write)])] from ble_service.c."""
-    src = (FIRMWARE_DIR / "components/ble/src/ble_service.c").read_text()
-    proto = (FIRMWARE_DIR / "components/ble/include/ble_protocol.h").read_text()
-    ids = {m[0]: int(m[1], 16) for m in re.findall(r"#define (DB_\w+)\s+(0x[0-9A-Fa-f]+)", proto)}
+    src = (C.COMPONENTS_DIR / "ble/src/ble_service.c").read_text()
+    ids = dc._header_defines(dc._header_path("ble", "include", "ble_protocol.h"))
 
     def uuid(expr):
         m = re.search(r"BLE_UUID16_DECLARE\((0x[0-9A-Fa-f]+)\)", expr)
@@ -209,6 +208,29 @@ class BleTest(unittest.IsolatedAsyncioTestCase):
         self.write("command", b"\x01")                 # BlueZ checked the link
         self.assertTrue(self.dev.link_trusted)
         self.assertEqual(self.dev.snapshot()["link"]["trusted"], True)
+
+    async def test_access_from_another_connection_is_refused(self):
+        # BlueZ also serves connections the device does not hold (one the PC
+        # opened itself, a central _is_ours turned away); the board never
+        # sees those. ota_data is the one BlueZ does not guard itself.
+        self.connect()
+        self.write("command", b"\x01")                 # the link is trusted
+        cfg = self.read("config")
+        for linked in (True, False):
+            other = self.opts(device=OTHER, mtu=100)
+            rx, mtu = self.dev.ota_rx_bytes, self.dev.mtu
+            self.p.gatt_write("ota_data", b"\x00\x00" + bytes(16), {**other, "type": "command"})
+            self.assertEqual(self.dev.ota_rx_bytes, rx)
+            self.assertEqual(self.att(self.p.gatt_write, "config", b'{"tol":0.4}', other), 0x0E)
+            self.assertEqual(self.att(self.p.gatt_write, "command", b"\x03\x02", other), 0x0E)
+            self.assertEqual(self.att(self.p.gatt_read, "config", other), 0x0E)
+            self.assertEqual(self.dev.mtu, mtu)
+            self.dev.advance(10)
+            self.assertEqual(json.loads(self.dev.read_char("config")), json.loads(cfg))
+            if linked:
+                self.disconnect()
+        # Without a link, not even the last peer gets through.
+        self.assertEqual(self.att(self.write, "command", b"\x03\x02"), 0x0E)
 
     async def test_mtu_from_options(self):
         self.connect()

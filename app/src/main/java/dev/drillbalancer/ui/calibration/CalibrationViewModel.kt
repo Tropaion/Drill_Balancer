@@ -114,7 +114,7 @@ class CalibrationViewModel(private val session: DeviceSession, private val gate:
         if (_state.value.busy) return
         viewModelScope.launch {
             val ok = gate.runCommand(
-                session, command,
+                command,
                 setBusy = { b -> _state.update { it.copy(busy = b) } },
                 show = { m -> _state.update { it.copy(message = m) } },
             )

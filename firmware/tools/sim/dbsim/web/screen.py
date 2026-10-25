@@ -36,10 +36,6 @@ MOUNT_COLLECT_TEXT = ("Roll the drill slowly back\nand forth, at least 45°\n"
                       "each way. Keep the bit\nin the hole.")
 
 
-def _result_known(r: int) -> bool:
-    return r >= 0 or r in (-2, -3)    # ui_cal_result_known()
-
-
 class CalGuide:
     """One calibration guide (ui_cal.c cal_ui_t)."""
 
@@ -89,12 +85,11 @@ class CalGuide:
         self.set_phase("collect")
         self.s.dev.ui_command(self.start_cmd, 0)
 
-    def show_result(self, cal: dict):
-        r = cal["last_result"]
-        have = cal["last_kind"] == self.code and _result_known(r)
-        self.result_text = (self.s.dev.core.ui_text(1 if self.kind == "mount" else 2, r)
-                            if have else "No result.\nPlease try again.")
-        self.result_ok = have and r in (0, -3)    # ui_cal_result_ok()
+    def show_result(self, snap: dict):
+        ui = snap["ui"]     # ui_logic.c's verdict on the last result
+        have = snap["cal"]["last_kind"] == self.code and ui["cal_result_known"]
+        self.result_text = ui["cal_result_text"] if have else "No result.\nPlease try again."
+        self.result_ok = have and ui["cal_result_ok"]
         self.set_phase("result")
 
     def left(self):
@@ -138,12 +133,12 @@ class CalGuide:
             if active:
                 self.seen_active = True
             elif self.seen_active:
-                self.show_result(cal)   # ended elsewhere (BLE cancel, power state)
+                self.show_result(snap)  # ended elsewhere (BLE cancel, power state)
                 return
             self.right_enabled = self.seen_active and can_finish
         elif self.phase == "solving":
             if not active or self.s.dev.now_ms - self.finish_ms > SOLVE_TIMEOUT_MS:
-                self.show_result(cal)
+                self.show_result(snap)
 
 
 class DeviceScreen:
@@ -162,12 +157,9 @@ class DeviceScreen:
 
     def show(self, screen: str):
         """ui_show()"""
-        if self.screen == "settings" and screen != "settings":
-            self.confirm = False
+        self.confirm = False            # only ever shown on the settings screen
         self.screen = screen
-        if screen == "settings":
-            self.confirm = False
-        elif screen in self.guides:
+        if screen in self.guides:
             self.guides[screen].on_show()
 
     def toast_show(self, text: str, color: str, ms: int):

@@ -23,13 +23,15 @@ class GattErrorsTest {
     @Test
     fun applicationCodesOnlyForTheirCharacteristic() {
         for (code in 0x80..0x83) assertEquals(code, attCode(err(code, GattOp.CONFIG_WRITE, bonded = true)))
-        for (code in 0x84..0x86) assertEquals(code, attCode(err(code, GattOp.COMMAND, bonded = true)))
+        for (code in listOf(0x84, 0x86)) assertEquals(code, attCode(err(code, GattOp.COMMAND, bonded = true)))
         assertEquals(0x87, attCode(err(0x87, GattOp.OTA, bonded = true)))
 
-        // 0x85 is also Android's GATT_ERROR: on a read it is the phone's error, not BAD_ARG.
-        val read = err(GattErrors.GATT_ERROR, GattOp.READ)
-        assertTrue(read is DeviceError.Link)
-        assertTrue(read.message!!.contains("0x85"))
+        // 0x85 is also Android's GATT_ERROR: the phone's error, not BAD_ARG, even on a command.
+        for (op in listOf(GattOp.READ, GattOp.COMMAND)) {
+            val e = err(GattErrors.GATT_ERROR, op, bonded = true)
+            assertTrue(e.toString(), e is DeviceError.Link)
+            assertTrue(e.message!!.contains("0x85"))
+        }
         assertTrue(err(0x86, GattOp.CONFIG_WRITE, bonded = true) is DeviceError.Link)
         assertTrue(err(0x82, GattOp.COMMAND, bonded = true) is DeviceError.Link)
     }

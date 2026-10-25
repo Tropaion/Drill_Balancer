@@ -25,11 +25,12 @@ data class SettingsUiState(
     val saving: Boolean = false,
     val message: UiMessage? = null,
 ) {
+    // Computed once per state, not on every read: the screen reads them for every row.
     /** Only the fields the user changed: the device merges a write onto what it has. */
-    val update: SettingsUpdate? get() = if (base != null && edited != null) SettingsUpdate.diff(base, edited) else null
-    val changed: Set<SettingsField> get() = update?.fields.orEmpty()
-    val invalid: Set<SettingsField> get() = edited?.invalidFields().orEmpty()
-    val canSave: Boolean get() = changed.isNotEmpty() && invalid.isEmpty() && !saving && !loading
+    val update: SettingsUpdate? = if (base != null && edited != null) SettingsUpdate.diff(base, edited) else null
+    val changed: Set<SettingsField> = update?.fields.orEmpty()
+    val invalid: Set<SettingsField> = edited?.invalidFields().orEmpty()
+    val canSave: Boolean = changed.isNotEmpty() && invalid.isEmpty() && !saving && !loading
 }
 
 class SettingsViewModel(private val session: DeviceSession, private val gate: PairingGate) : ViewModel() {

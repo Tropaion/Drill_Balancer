@@ -122,7 +122,7 @@ class LiveViewModel(private val session: DeviceSession, private val gate: Pairin
 
     private fun command(command: Command) {
         if (busy.value) return
-        viewModelScope.launch { gate.runCommand(session, command, { busy.value = it }, { message.value = it }) }
+        viewModelScope.launch { gate.runCommand(command, { busy.value = it }, { message.value = it }) }
     }
 
     private fun show(m: UiMessage) {

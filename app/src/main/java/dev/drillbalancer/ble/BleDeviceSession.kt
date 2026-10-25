@@ -77,6 +77,7 @@ class BleDeviceSession(
     private val thread = HandlerThread("DrillBalancer-BLE").apply { start() }
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private val linkLock = Mutex()   // connect and pairing, one at a time
+    private val otaLock = Mutex()    // one firmware update at a time, clean-up included
 
     private val _connection = MutableStateFlow<ConnectionState>(ConnectionState.Disconnected())
     private val _angle = MutableStateFlow<AnglePacket?>(null)
@@ -206,9 +207,11 @@ class BleDeviceSession(
         if (update.isEmpty) return fetchSettings()
         val drop = expectedDrop(update)
         withExpectedDrop(drop) { gatt(GattOp.CONFIG_WRITE) { writeConfig(update.toBytes()) } }
-        if (drop == null) return fetchSettings()
+        val known = _settings.value
         // The link is closing: no read-back, the device stored exactly this.
-        return update.applyTo(_settings.value ?: DeviceSettings.DEFAULTS).also { _settings.value = it }
+        val stored = if (drop != null) merged(update, known) else storedSettings(update, known) { fetchSettings() }
+        _settings.value = stored
+        return stored
     }
 
     override suspend fun sendCommand(command: Command) {
@@ -218,28 +221,32 @@ class BleDeviceSession(
         if (command is Command.SetMode) _settings.update { it?.copy(mode = command.mode) }
     }
 
+    // A stopped transfer may still be sending ABORT: its clean-up (indications off) must not
+    // land after the next one subscribed, whichever screen started that one.
     override fun startOta(image: FirmwareImage): Flow<OtaProgress> = flow {
-        requireReady()
-        if (!manager.hasOta) throw OtaException("The device's firmware does not offer updates over Bluetooth.")
-        // Indications only while updating; subscribed before START is written.
-        gatt(GattOp.OTA) { setOtaIndications(true) }
-        quietly { gatt(GattOp.OTA) { setHighPriority(true) } }
-        var done = false
-        try {
-            OtaClient(transport).upload(image.bytes).collect { progress ->
-                if (progress.phase == OtaProgress.Phase.DONE) {
-                    // The device reboots into the new image about 0.5 s after FINISH.
-                    done = true
-                    expectedDrop = DisconnectReason.FIRMWARE_UPDATED
-                    manager.clearCacheOnDisconnect = true
+        otaLock.withLock {
+            requireReady()
+            if (!manager.hasOta) throw OtaException("The device's firmware does not offer updates over Bluetooth.")
+            // Indications only while updating; subscribed before START is written.
+            gatt(GattOp.OTA) { setOtaIndications(true) }
+            quietly { gatt(GattOp.OTA) { setHighPriority(true) } }
+            var done = false
+            try {
+                OtaClient(transport).upload(image.bytes, image.sha256).collect { progress ->
+                    if (progress.phase == OtaProgress.Phase.DONE) {
+                        // The device reboots into the new image about 0.5 s after FINISH.
+                        done = true
+                        expectedDrop = DisconnectReason.FIRMWARE_UPDATED
+                        manager.clearCacheOnDisconnect = true
+                    }
+                    emit(progress)
                 }
-                emit(progress)
-            }
-        } finally {
-            if (!done && manager.isConnected) {
-                withContext(NonCancellable) {
-                    quietly { gatt(GattOp.OTA) { setOtaIndications(false) } }
-                    quietly { gatt(GattOp.OTA) { setHighPriority(false) } }
+            } finally {
+                if (!done && manager.isConnected) {
+                    withContext(NonCancellable) {
+                        quietly { gatt(GattOp.OTA) { setOtaIndications(false) } }
+                        quietly { gatt(GattOp.OTA) { setHighPriority(false) } }
+                    }
                 }
             }
         }
@@ -323,9 +330,7 @@ class BleDeviceSession(
         gatt(GattOp.SUBSCRIBE) { subscribe() }
         _status.value = decode(gatt(GattOp.READ) { readStatus() }, "status") { StatusPacket.decode(it) }
         gatt(GattOp.READ) { readBattery() }?.let { _battery.value = decodeBatteryLevel(it).getOrNull() }
-        gatt(GattOp.READ) { readDeviceInfo() }?.let { (manufacturer, model, firmware) ->
-            _info.value = DeviceInfo(manufacturer, model, firmware)
-        }
+        gatt(GattOp.READ) { readDeviceInfo() }?.let { _info.value = it }
         fetchSettings()
     }
 
@@ -351,7 +356,7 @@ class BleDeviceSession(
         clearLive()
         while (true) {
             val was = _connection.value as? ConnectionState.Connected ?: return
-            val error = GattErrors.disconnectError(reason, expectedDrop, BlePermissions.adapter(context)?.isEnabled == true)
+            val error = GattErrors.disconnectError(reason, expectedDrop, BlePermissions.isBluetoothEnabled(context))
             val retry = ReconnectPolicy.retries(error.reason)
             // Retried if setBonded() changed the state meanwhile.
             if (!_connection.compareAndSet(was, ConnectionState.Disconnected(error, retry))) continue
@@ -456,15 +461,7 @@ class BleDeviceSession(
         _connection.update { if (it is ConnectionState.Connected) it.copy(bonded = bonded) else it }
     }
 
-    private fun phoneBonded(): Boolean {
-        val device = device ?: return false
-        if (!BlePermissions.canConnect(context)) return false
-        return try {
-            device.bondState == BluetoothDevice.BOND_BONDED
-        } catch (_: SecurityException) {
-            false
-        }
-    }
+    private fun phoneBonded(): Boolean = device?.let { BlePermissions.isBonded(context, it) } == true
 
     private fun deviceName(device: BluetoothDevice): String? {
         if (!BlePermissions.canConnect(context)) return null
@@ -497,3 +494,22 @@ class BleDeviceSession(
         val PROBE = "{}".encodeToByteArray()
     }
 }
+
+/**
+ * The settings after a write the device stored: [read] back, or, if only that read fails,
+ * [update] applied to the [known] ones (the device stored exactly the merged keys). The
+ * real values come with the next read or reconnect.
+ */
+internal suspend fun storedSettings(
+    update: SettingsUpdate,
+    known: DeviceSettings?,
+    read: suspend () -> DeviceSettings,
+): DeviceSettings = try {
+    read()
+} catch (_: DeviceError) {
+    merged(update, known)
+}
+
+/** [update] applied to the [known] settings, or to the defaults before any were read. */
+private fun merged(update: SettingsUpdate, known: DeviceSettings?): DeviceSettings =
+    update.applyTo(known ?: DeviceSettings.DEFAULTS)

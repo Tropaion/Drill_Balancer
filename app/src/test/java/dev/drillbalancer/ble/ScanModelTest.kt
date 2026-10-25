@@ -26,14 +26,21 @@ class ScanModelTest {
         assertTrue(r.update(ScannedDevice("AA", "DrillBalancer-00AA", -60, false, 0)))
         assertTrue(r.update(ScannedDevice("BB", null, -70, true, 0)))
         // A report without the advertising packet keeps the name seen before.
-        assertTrue(r.update(ScannedDevice("AA", null, -55, false, 100)))
+        assertTrue(r.update(ScannedDevice("AA", null, -65, false, 100)))
         assertEquals(listOf("AA", "BB"), r.devices.map { it.address })
         assertEquals("DrillBalancer-00AA", r.devices[0].name)
-        assertEquals(-55, r.devices[0].rssi)
-        // Nothing new: no update for the UI.
-        assertFalse(r.update(ScannedDevice("AA", null, -55, false, 200)))
+        assertEquals(-65, r.devices[0].rssi)
+        // Nothing new, or an RSSI within the same bars: no update for the UI, newest RSSI kept.
+        assertFalse(r.update(ScannedDevice("AA", null, -65, false, 200)))
+        assertFalse(r.update(ScannedDevice("AA", null, -61, false, 300)))
+        assertEquals(-61, r.devices[0].rssi)
         assertTrue(r.update(ScannedDevice("BB", "DrillBalancer-00BB", -70, true, 200)))
         assertEquals("DrillBalancer-00BB", r.devices[1].name)
+    }
+
+    @Test
+    fun signalBarsForRssi() {
+        assertEquals(listOf(4, 4, 3, 3, 2, 2, 1), listOf(-40, -60, -61, -70, -71, -80, -81).map { signalBars(it) })
     }
 
     @Test

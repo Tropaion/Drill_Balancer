@@ -12,6 +12,7 @@ import dev.drillbalancer.protocol.DeviceSettings
 import dev.drillbalancer.protocol.FirmwareImage
 import dev.drillbalancer.protocol.LevelMode
 import dev.drillbalancer.protocol.MountCalResult
+import dev.drillbalancer.protocol.OtaClient
 import dev.drillbalancer.protocol.OtaException
 import dev.drillbalancer.protocol.OtaProgress
 import dev.drillbalancer.protocol.OtaStatus
@@ -20,12 +21,19 @@ import dev.drillbalancer.protocol.SensorCalResult
 import dev.drillbalancer.protocol.SettingsUpdate
 import dev.drillbalancer.protocol.StatusFlags
 import dev.drillbalancer.protocol.StatusPacket
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.FlowCollector
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 import kotlin.math.abs
 import kotlin.math.hypot
 import kotlin.math.sin
@@ -51,9 +59,13 @@ class FakeDeviceSession(
     var mountCalResult = MountCalResult.OK          // what the next mount FINISH yields
     var otaFailure: OtaStatus? = null               // FINISH fails with this
     var otaStepMs = 50L                             // fake transfer: 10 steps of this
+    var otaReplyLost = false                        // the link drops after FINISH, before its reply
+    var otaCleanup: CompletableDeferred<Unit>? = null   // a stopped transfer's clean-up waits for this
     var failNext: DeviceError? = null               // the next suspend call throws this
 
     val commands: List<Command> get() = sentCommands
+    var otaStarts = 0; private set                  // startOta collections that got the link
+    private val otaLock = Mutex()
     val updates: List<SettingsUpdate> get() = writtenUpdates
     private val sentCommands = mutableListOf<Command>()
     private val writtenUpdates = mutableListOf<SettingsUpdate>()
@@ -190,18 +202,34 @@ class FakeDeviceSession(
         publishStatus()
     }
 
-    override fun startOta(image: FirmwareImage): Flow<OtaProgress> = flow {
+    override fun startOta(image: FirmwareImage): Flow<OtaProgress> = flow { otaLock.withLock { ota(image) } }
+
+    // Like BleDeviceSession: one transfer at a time, the next after the stopped one's clean-up.
+    private suspend fun FlowCollector<OtaProgress>.ota(image: FirmwareImage) {
         requireLink(secure = true)
+        otaStarts++
         val total = image.size
         emit(OtaProgress(OtaProgress.Phase.STARTING, 0, total, 0f))
-        for (i in 1..10) {
-            delay(otaStepMs)
-            val done = (total.toLong() * i / 10).toInt()
-            emit(OtaProgress(OtaProgress.Phase.SENDING, done, total, done / (i * otaStepMs / 1000f)))
+        try {
+            for (i in 1..10) {
+                delay(otaStepMs)
+                val done = (total.toLong() * i / 10).toInt()
+                emit(OtaProgress(OtaProgress.Phase.SENDING, done, total, done / (i * otaStepMs / 1000f)))
+            }
+        } catch (e: CancellationException) {
+            // Like BleDeviceSession: ABORT and indications off before the flow ends.
+            otaCleanup?.let { withContext(NonCancellable) { it.await() } }
+            throw e
         }
         val rate = total / (10 * otaStepMs / 1000f)
         emit(OtaProgress(OtaProgress.Phase.VERIFYING, total, total, rate))
         delay(otaStepMs)
+        if (otaReplyLost) {
+            // The device installs the image unless its check fails; the app cannot tell.
+            if (otaFailure == null) deviceInfo = deviceInfo.copy(firmwareRevision = image.version)
+            dropLink(DeviceError.Link(DisconnectReason.LINK_LOSS), reconnecting = true)
+            throw OtaException(OtaClient.UNCONFIRMED, unconfirmed = true)
+        }
         otaFailure?.let { throw OtaException("FINISH failed: ${it.message}", it) }
         emit(OtaProgress(OtaProgress.Phase.DONE, total, total, rate))
         deviceInfo = deviceInfo.copy(firmwareRevision = image.version)

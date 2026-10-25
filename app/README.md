@@ -167,9 +167,9 @@ None of this could be checked without a phone and a board.
    app shows the "remove the pairing in Bluetooth settings" steps
    (`GattErrors` guesses 0x05/0x0F/0x0C/0x08/137, or HCI 0x05/0x06/0x3D on
    the drop).
-7. **Status 0x85** on the command characteristic is the device's BAD_ARG
-   but Android's GATT_ERROR elsewhere; check that a real phone error is not
-   shown as "bad argument".
+7. **Status 0x85** is the device's BAD_ARG on the command characteristic,
+   but also Android's GATT_ERROR; the app always shows it as a phone
+   Bluetooth error. Note when a real phone reports it on a command.
 8. **Live data**: mode tabs, zero / clear zero, colours against the device
    screen, the NO SENSOR panel, yaw drift warning.
 9. **Calibration**: sensor calibration tile progress and result, mount
@@ -182,8 +182,10 @@ None of this could be checked without a phone and a board.
     4 s after the device is back), factory reset.
 12. **Firmware update**: picking a `.bin` through the system file picker,
     the image checks, throughput (KB/s), cancel (ABORT), the screen staying
-    on, the reboot and the reconnect with the new version shown, and a
-    failed update leaving the old firmware running.
+    on, the reboot and the reconnect with the new version shown, a link
+    drop while the device checks the image (the app decides from the
+    version after the reconnect), and a failed update leaving the old
+    firmware running.
 13. **Reconnect**: walk out of range and back. The tabs stay with a
     "Reconnecting…" bar while the session retries (backoff 1, 2, 4, 8, 15 s)
     and switch to the connect screen once it gives up. After the device

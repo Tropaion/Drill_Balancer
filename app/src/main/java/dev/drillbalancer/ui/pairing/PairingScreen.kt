@@ -10,7 +10,6 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -26,10 +25,12 @@ import androidx.compose.ui.unit.dp
 import dev.drillbalancer.ui.PairingPrompt
 import dev.drillbalancer.ui.PairingPrompt.Stage
 import dev.drillbalancer.ui.components.ActionButton
+import dev.drillbalancer.ui.components.BusyPanel
 import dev.drillbalancer.ui.components.ButtonKind
 import dev.drillbalancer.ui.components.DbIcons
 import dev.drillbalancer.ui.components.MessageBanner
 import dev.drillbalancer.ui.components.Panel
+import dev.drillbalancer.ui.components.TouchHeight
 import dev.drillbalancer.ui.components.UiMessage
 import dev.drillbalancer.ui.theme.Blue
 
@@ -53,7 +54,7 @@ fun PairingScreen(
             TopAppBar(
                 title = { Text("Pairing") },
                 navigationIcon = {
-                    IconButton(onCancel, Modifier.size(56.dp)) { Icon(DbIcons.Back, contentDescription = "Cancel") }
+                    IconButton(onCancel, Modifier.size(TouchHeight)) { Icon(DbIcons.Back, contentDescription = "Cancel") }
                 },
             )
         },
@@ -103,11 +104,7 @@ private fun Explain(prompt: PairingPrompt, onPair: () -> Unit, onCancel: () -> U
 
 @Composable
 private fun Waiting(onCancel: () -> Unit) {
-    Panel(border = Blue) {
-        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-            CircularProgressIndicator(Modifier.size(32.dp), color = Blue)
-            Text("Waiting for pairing…", style = MaterialTheme.typography.titleMedium)
-        }
+    BusyPanel("Waiting for pairing…") {
         Text(
             "Enter the 6-digit code shown on the DrillBalancer screen in the Android pairing dialog.",
             style = MaterialTheme.typography.bodyLarge,

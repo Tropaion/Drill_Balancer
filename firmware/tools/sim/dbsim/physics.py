@@ -28,6 +28,8 @@ import random
 ODR_HZ = 448.4            # imu.c IMU_ODR_HZ (QMI8658 6DOF, 448.4 Hz)
 SAMPLE_PERIOD_S = 1.0 / ODR_HZ
 G = 9.80665
+ACCEL_NOISE_G = 0.0015    # default sensor noise (the panel's noise level 1)
+GYRO_NOISE_RAD_S = 0.002
 
 # ---- quaternions (w, x, y, z), body -> world -----------------------------------------
 
@@ -180,8 +182,8 @@ class DrillPhysics:
         self.accel_bias = [0.0, 0.0, 0.0]
         self.accel_scale = [1.0, 1.0, 1.0]
         self.gyro_bias = [0.0, 0.0, 0.0]
-        self.accel_noise_g = 0.0015
-        self.gyro_noise_rad_s = 0.002
+        self.accel_noise_g = ACCEL_NOISE_G
+        self.gyro_noise_rad_s = GYRO_NOISE_RAD_S
         # drill motor: accel vibration amplitude (g) at ~100-300 Hz, aliased by the ODR.
         # No on-chip LPF here: the firmware's vibration detector sees these tones in
         # full, where the board's 11.9 Hz accel LPF would remove most of them.
@@ -191,6 +193,8 @@ class DrillPhysics:
 
         self.t = 0.0
         self._motions = []                   # [(motion, start time)]
+        # target() runs every sample: the static pose is kept until a field changes.
+        self._mount_key = self._target_key = None
         self._q = self.target()[0]
         self._phase = [self.rng.uniform(0, 2 * math.pi) for _ in range(6)]
 
@@ -214,7 +218,10 @@ class DrillPhysics:
 
     def mount_rotation(self):
         """Drill frame <- board frame."""
-        return q_euler_xyz(*self.mount_offset)
+        key = tuple(self.mount_offset)      # tests assign lists
+        if key != self._mount_key:
+            self._mount_key, self._mount_q = key, q_euler_xyz(*key)
+        return self._mount_q
 
     def expected_drill_axis(self):
         """The bit direction in the board frame: what the mount calibration should find."""
@@ -222,6 +229,12 @@ class DrillPhysics:
 
     def target(self):
         """Target orientation (board -> world) and linear acceleration (world, g)."""
+        key = None
+        if not self._motions:
+            key = (self.board_face, tuple(self.face_tilt), self.elevation, self.yaw, self.roll,
+                   tuple(self.mount_offset))
+            if key == self._target_key:
+                return self._target_q, [0.0, 0.0, 0.0]
         roll = self.roll
         wobble = None
         lin = [0.0, 0.0, 0.0]
@@ -240,6 +253,8 @@ class DrillPhysics:
             q = q_mul(drill_to_world(self.elevation, self.yaw, roll), self.mount_rotation())
         if wobble is not None:
             q = q_mul(wobble, q)
+        if key is not None:
+            self._target_key, self._target_q = key, q
         return q, lin
 
     @property

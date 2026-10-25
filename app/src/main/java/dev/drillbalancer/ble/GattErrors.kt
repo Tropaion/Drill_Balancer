@@ -6,6 +6,7 @@ import dev.drillbalancer.protocol.AttError
 import dev.drillbalancer.protocol.Command
 import dev.drillbalancer.protocol.SettingsField
 import dev.drillbalancer.protocol.SettingsUpdate
+import dev.drillbalancer.protocol.hexByte
 import no.nordicsemi.android.ble.callback.FailCallback
 import no.nordicsemi.android.ble.observer.ConnectionObserver
 
@@ -29,7 +30,8 @@ enum class GattOp(val label: String, val secure: Boolean) {
  * error (133 GATT_ERROR, 137 GATT_AUTH_FAIL), a negative FailCallback.REASON_*, or, when the
  * link dropped during the request, the HCI disconnect reason. Android's own GATT_* names
  * for 0x80..0x87 (GATT_NO_RESOURCES .. GATT_ILLEGAL_PARAMETER) collide with the device's
- * application codes, so those are only trusted for the operation that can produce them.
+ * application codes, so those are only trusted for the operation that can produce them,
+ * and 0x85 (GATT_ERROR, the device's BAD_ARG) not even there.
  */
 object GattErrors {
     const val GATT_INSUFFICIENT_AUTHORIZATION = 0x08
@@ -72,10 +74,15 @@ object GattErrors {
             if (status == GATT_INSUFFICIENT_AUTHORIZATION) AttError.INSUFFICIENT_AUTHENTICATION.code else status,
         )
         status in 0x80..0x83 && op == GattOp.CONFIG_WRITE -> DeviceError.Att(status)
-        status in 0x84..0x86 && op == GattOp.COMMAND -> DeviceError.Att(status)
+        // 0x85 is also the device's BAD_ARG, but the app only sends arguments the firmware
+        // knows (an older firmware aside), so Android's common GATT_ERROR is far likelier.
+        status == GATT_ERROR && op == GattOp.COMMAND -> DeviceError.Link(
+            "The command failed (Bluetooth error ${hexByte(GATT_ERROR)}). Try again; if it keeps failing, update the device's firmware.",
+        )
+        (status == AttError.UNKNOWN_CMD.code || status == AttError.BUSY.code) && op == GattOp.COMMAND -> DeviceError.Att(status)
         status == AttError.UNAVAILABLE.code && op == GattOp.OTA -> DeviceError.Att(status)
         status in 0x01..0x7F -> DeviceError.Att(status)   // standard ATT error from the device
-        else -> DeviceError.Link("Bluetooth error ${hex(status)} during the ${op.label}.")
+        else -> DeviceError.Link("Bluetooth error ${hexByte(status)} during the ${op.label}.")
     }
 
     /**
@@ -111,8 +118,6 @@ object GattErrors {
         reason == ConnectionObserver.REASON_NOT_SUPPORTED -> DeviceError.Link(DisconnectReason.NOT_SUPPORTED)
         else -> DeviceError.Link(DisconnectReason.OTHER)
     }
-
-    private fun hex(v: Int) = "0x" + (v and 0xFF).toString(16).padStart(2, '0').uppercase()
 }
 
 /** The drop that follows a successful [command], if the device closes the link for it. */

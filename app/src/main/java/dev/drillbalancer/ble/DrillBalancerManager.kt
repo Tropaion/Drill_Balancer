@@ -7,6 +7,7 @@ import android.bluetooth.BluetoothGattService
 import android.content.Context
 import android.os.Handler
 import android.util.Log
+import dev.drillbalancer.device.DeviceInfo
 import dev.drillbalancer.protocol.Uuids
 import no.nordicsemi.android.ble.BleManager
 import no.nordicsemi.android.ble.ConnectionPriorityRequest
@@ -148,12 +149,12 @@ internal class DrillBalancerManager(
 
     suspend fun readBattery(): ByteArray? = battery?.let { read(it) }
 
-    /** Manufacturer, model, firmware revision; null if the service is missing. */
-    suspend fun readDeviceInfo(): Triple<String, String, String>? {
+    /** Null if the service is missing. */
+    suspend fun readDeviceInfo(): DeviceInfo? {
         val m = manufacturer ?: return null
         val mo = model ?: return null
         val fw = firmwareRev ?: return null
-        return Triple(read(m).decodeToString(), read(mo).decodeToString(), read(fw).decodeToString())
+        return DeviceInfo(read(m).decodeToString(), read(mo).decodeToString(), read(fw).decodeToString())
     }
 
     /**

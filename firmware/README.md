@@ -112,7 +112,7 @@ Tasks:
 
 | Task | Priority / core | Job |
 |---|---|---|
-| `sensor` (main/sensor_task.c) | 10, core 1 | Every 20 ms (50 Hz): drains the IMU FIFO, applies the accel calibration, runs fusion, computes the level reading and publishes it; feeds the calibration collectors and the vibration detector, and notes motion as activity. |
+| `sensor` (main/sensor_task.c) | 10, core 1 | Every 20 ms (50 Hz): drains the IMU FIFO, applies the accel calibration, runs fusion, computes the level reading and publishes it; feeds the calibration collectors, the vibration detector and the turn detector, and notes a turn as activity. |
 | LVGL (esp_lvgl_adapter) | 6 | The UI. Reads `app_state` snapshots about 15 times a second. |
 | `control` (main/control.c) | 5 | Executes app commands (from the UI and BLE). Polls the AXP2101 every 200 and 500 ms. Runs the power policy. |
 | NimBLE host | IDF default, core 0 | GATT, pairing, OTA writes |
@@ -150,6 +150,10 @@ are described above.
   2nd-order high-pass (6 Hz) removes gravity and handling; a 0.5 s window is
   shaking when at least half its samples exceed 0.05 g. Three shaking windows
   in a row read RUNNING, four calm ones QUIET.
+- `turn`: the turn detector on the bias-corrected gyro, for the power
+  policy. A 2nd-order low-pass (3 Hz) keeps rotation sustained over a tenth
+  of a second or more and averages out the motor's vibration; above
+  0.3 rad/s the device is turning.
 
 **app_core**: the shared snapshot. Each producer has one setter, and every
 consumer gets a consistent copy. The control task also publishes which
@@ -322,7 +326,7 @@ IMU re-initialisation, the yaw reads invalid until you zero again.
 
 | State | Entered when | Behaviour |
 |---|---|---|
-| ACTIVE | Boot, or any activity: touch, BLE write, turning the device faster than 0.3 rad/s while it does not vibrate, USB plugged in or out, PWR key; a running drill (vibration) within 3 min of the last other activity | Brightness `bright` (default 100 %) |
+| ACTIVE | Boot, or any activity: touch, BLE write, turning the device faster than 0.3 rad/s (low-passed gyro), USB plugged in or out, PWR key; a running drill (vibration) within 3 min of the last other activity | Brightness `bright` (default 100 %) |
 | DIM | No activity for `dim_s` (default 30 s) | Brightness `dim_bright` (default 20 %); the UI keeps running |
 | SLEEP | No activity for `sleep_s` (default 120 s), and no OTA, calibration, authenticated BLE link with a write in the last 10 min, or USB power | BLE off, display at brightness 0, unused rails off, IMU wake-on-motion (150 mg), ESP32 deep sleep. Motion wakes the device (it reboots). After `off_min` (default 60 min) a timer wake powers it off. |
 | OFF | Battery below 5 %, not charging and no USB power, even if the charger pauses (armed 5 s after start-up); a PWR key long press; or the BLE power-off command | AXP2101 power-off. The PWR key turns the device on again. |
@@ -333,17 +337,17 @@ at most 3 min (`VIB_HOLD_MS` in `control.c`) after the last other activity.
 A vibration credit does not extend that hold, so vibration alone never keeps
 the device awake: put away in a running van, it dims at most 3 min + `dim_s`
 and sleeps at most 3 min + `sleep_s` after it was last touched or moved.
-- Turning only counts while the accelerometer is calm, since a running motor
-  can shake the gyro past 0.3 rad/s: its own 20 ms batch and its 0.5 s
-  window must both stay below the detector's duty (`vib_calm()`). The
-  detector's running/quiet state is not used for this, so moving to the next
-  hole counts from the first calm window after the motor stops, not 2 s
-  later. A turn whose window is not decided yet (right after the motor
-  stopped, after start-up or an IMU restart) is counted when that window
-  closes calm and dropped if it shook.
-- A turn while the device lies calm is real activity, also a vehicle
-  turning at a stop. A van that stops and turns every few minutes can
-  therefore keep it awake; step 14 measures this.
+- A running motor can shake the gyro past 0.3 rad/s sample by sample, so
+  the turn detector (`components/level/src/turn.c`) low-passes the
+  bias-corrected rate at 3 Hz first. Handling is a rotation sustained over a
+  tenth of a second or more and passes; the motor's vibration (tens to
+  hundreds of Hz, close to no net angle) averages out. A turn therefore
+  counts whatever the accelerometer reads: carried or repositioned briskly,
+  while the motor runs, straight after it stops, and right after start-up
+  or an IMU restart (the filter starts at rest).
+- A vehicle turning a corner turns the device as well and counts. A drive
+  with a turn every few minutes can therefore keep it awake; step 14
+  measures this.
 - A wake on motion is a reboot and not activity, so it never arms the hold.
   Woken straight into drilling, the screen can still dim once; a tap fixes
   it.
@@ -433,15 +437,15 @@ Every `TODO(hw)` in the tree is covered below, with its file. Grep for
 13. **Partial FIFO read** (`imu.c`). Check that the samples left unread stay
     queued. This only happens if the 64-sample batch is smaller than the
     FIFO content, for example after a stall.
-14. **LPF and vibration detector** (`imu.c`, gyro 24 Hz / accel 12 Hz;
-    `components/level/src/vibration.c`, hp_hz 6 Hz / amp_g 0.05 g;
-    `main/sensor_task.c`, ACTIVITY_GYRO_RAD_S). Tune the LPF first, on a
-    running drill: the reading should stay steady without lagging too much.
-    The detector only sees what the accel LPF passes, so tune it after the
-    LPF, and again whenever the LPF changes:
+14. **LPF, vibration and turn detectors** (`imu.c`, gyro 24 Hz / accel
+    12 Hz; `components/level/src/vibration.c`, hp_hz 6 Hz / amp_g 0.05 g;
+    `components/level/src/turn.c`, lp_hz 3 Hz / rate_rad_s 0.3 rad/s). Tune
+    the LPF first, on a running drill: the reading should stay steady
+    without lagging too much. The detectors only see what the LPFs pass, so
+    tune them after the LPF, and again whenever it changes:
     - The sensor task logs `vibration running/quiet, duty NN %` on every
-      change, and each 0.5 s window's duty and largest gyro rate
-      (`vibration duty NN %, gyro max X.XX rad/s`) at debug level
+      change, and each 0.5 s window's duty and largest low-passed turn rate
+      (`vibration duty NN %, turn rate max X.XX rad/s`) at debug level
       (`CONFIG_LOG_MAXIMUM_LEVEL_DEBUG`, then
       `esp_log_level_set("sensor", ESP_LOG_DEBUG)`).
     - Record the duty for: the drill held still at its lowest and highest
@@ -454,16 +458,21 @@ Every `TODO(hw)` in the tree is covered below, with its file. Grep for
     - Too little drill signal: lower amp_g first (bench and handling still
       at 0.2 or less), then raise the aLPF one step if the steadiness still
       holds. A gyro channel would be a separate change.
-    - In calm windows (duty below 50 %) in the car, next to a running
-      machine and while the motor starts and stops, the gyro maximum must
-      stay below 0.3 rad/s.
+    - The turn rate maximum must stay below 0.3 rad/s with the drill held
+      still at every speed, in wood and in masonry, also while the motor
+      starts and stops and in hammer mode; on a bench next to a running
+      machine; and in a car going straight. If it does not, lower lp_hz
+      (short flicks of the wrist stop counting below about 1.5 Hz) before
+      raising rate_rad_s.
+    - It must pass 0.3 rad/s at least every few seconds while the drill is
+      carried, picked up and repositioned briskly between holes, without a
+      touch: the screen must not dim during handling.
     - Release the trigger and move straight to the next hole: the move must
-      count (no dim 3 min + `dim_s` later). Note the drill's spin-down time;
-      a move counts only from the first calm window after it.
+      count (no dim 3 min + `dim_s` later).
     - End to end: a 60 s hole held still does not dim; put away in a running
       vehicle, the device sleeps within 3 min + `sleep_s`. On a drive with
-      stops and turns, note whether and when it sleeps (a turn at a stop is
-      real activity) and how often wake-on-motion wakes it.
+      turns, note whether and when it sleeps (a vehicle turning a corner is a
+      real turn) and how often wake-on-motion wakes it.
 15. **Gyro offset for the sensor calibration** (`accel_cal.h`,
     ACCEL_CAL_MAX_GYRO_RAD_S). Every pose of the six-side calibration must be
     accepted. If a pose never turns green, raise the limit.

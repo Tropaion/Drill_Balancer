@@ -3,6 +3,7 @@ package dev.drillbalancer.ble
 import android.Manifest
 import android.annotation.SuppressLint
 import android.bluetooth.BluetoothAdapter
+import android.bluetooth.BluetoothDevice
 import android.bluetooth.BluetoothManager
 import android.content.Context
 import android.content.Intent
@@ -32,10 +33,15 @@ object BlePermissions {
     @SuppressLint("InlinedApi")   // only names, returned for API 31+ only
     fun required(sdkInt: Int = Build.VERSION.SDK_INT): List<String> =
         if (sdkInt >= Build.VERSION_CODES.S) {
-            listOf(Manifest.permission.BLUETOOTH_SCAN, Manifest.permission.BLUETOOTH_CONNECT)
+            listOf(scanPermission(sdkInt), Manifest.permission.BLUETOOTH_CONNECT)
         } else {
-            listOf(Manifest.permission.ACCESS_FINE_LOCATION)
+            listOf(scanPermission(sdkInt))
         }
+
+    /** The one runtime permission a scan needs on [sdkInt]. */
+    @SuppressLint("InlinedApi")
+    fun scanPermission(sdkInt: Int = Build.VERSION.SDK_INT): String =
+        if (sdkInt >= Build.VERSION_CODES.S) Manifest.permission.BLUETOOTH_SCAN else Manifest.permission.ACCESS_FINE_LOCATION
 
     /** Whether scanning needs location services on (API <= 30). */
     fun needsLocationServices(sdkInt: Int = Build.VERSION.SDK_INT): Boolean = sdkInt < Build.VERSION_CODES.S
@@ -43,6 +49,8 @@ object BlePermissions {
     fun missing(context: Context): List<String> = required().filter { !isGranted(context, it) }
 
     fun hasAll(context: Context): Boolean = missing(context).isEmpty()
+
+    fun canScan(context: Context): Boolean = isGranted(context, scanPermission())
 
     /** BLUETOOTH_CONNECT on API 31+; implied by the install-time permissions before. */
     fun canConnect(context: Context): Boolean =
@@ -87,6 +95,15 @@ object BlePermissions {
     /** The app's own settings page, for permissions the user denied permanently. */
     fun appSettingsIntent(context: Context): Intent =
         Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, android.net.Uri.fromParts("package", context.packageName, null))
+
+    /** Whether the phone holds a bond for [device]; false without BLUETOOTH_CONNECT. */
+    internal fun isBonded(context: Context, device: BluetoothDevice): Boolean =
+        canConnect(context) &&
+            try {
+                device.bondState == BluetoothDevice.BOND_BONDED
+            } catch (_: SecurityException) {
+                false
+            }
 
     internal fun isGranted(context: Context, permission: String) =
         ContextCompat.checkSelfPermission(context, permission) == PackageManager.PERMISSION_GRANTED

@@ -145,7 +145,7 @@ def _load():
         "sim_note_activity": (None, [ctypes.c_uint32]),
         "sim_set_battery": (None, [ctypes.c_int] * 6),
         "sim_pwrkey": (None, [ctypes.c_int]),
-        "sim_brightness": (ctypes.c_int, []),
+        "sim_power": (ctypes.c_int, []),
         "sim_config_read": (ctypes.c_int, [ctypes.c_int, ctypes.c_char_p, ctypes.c_int]),
         "sim_settings_json": (ctypes.c_int, [ctypes.c_char_p, ctypes.c_int]),
         "sim_config_write": (ctypes.c_int, [u8p, ctypes.c_int, ctypes.c_uint32]),
@@ -157,7 +157,6 @@ def _load():
         "sim_ota_set_mtu": (None, [ctypes.c_int]),
         "sim_ota_tick": (None, [ctypes.c_uint32]),
         "sim_ota_reboot_pending": (ctypes.c_int, []),
-        "sim_ota_state": (ctypes.c_int, []),
         "sim_link_connect": (ctypes.c_int, [ctypes.c_uint32]),
         "sim_link_disconnect": (None, [ctypes.c_uint32]),
         "sim_link_passkey": (None, [ctypes.c_uint32, ctypes.c_uint32]),
@@ -269,8 +268,9 @@ class Core:
         self._lib.sim_pwrkey(int(long_press))
 
     @property
-    def brightness(self) -> int:
-        return self._lib.sim_brightness()
+    def power(self) -> int:
+        """app_power_t; POWER_NAMES has the names."""
+        return self._lib.sim_power()
 
     # ---- BLE service ----
     def config_read(self, offset: int = 0) -> bytes:
@@ -326,10 +326,6 @@ class Core:
     @property
     def ota_reboot_pending(self) -> bool:
         return bool(self._lib.sim_ota_reboot_pending())
-
-    @property
-    def ota_state(self) -> int:
-        return self._lib.sim_ota_state()
 
     def link_connect(self, now_ms: int) -> bool:
         """Returns False if the link must be terminated at once (BLE disabled)."""

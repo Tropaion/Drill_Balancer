@@ -1,6 +1,5 @@
 package dev.drillbalancer.protocol
 
-import java.security.MessageDigest
 
 /**
  * An ESP32-S3 app image (build/drillbalancer.bin) checked before an OTA, so a wrong file
@@ -75,7 +74,7 @@ class FirmwareImage private constructor(
                     idfVersion = bytes.cString(DESC_OFFSET + IDF_OFFSET, 32),
                     buildDate = bytes.cString(DESC_OFFSET + DATE_OFFSET, 16),
                     buildTime = bytes.cString(DESC_OFFSET + TIME_OFFSET, 16),
-                    sha256 = MessageDigest.getInstance("SHA-256").digest(bytes),
+                    sha256 = bytes.sha256(),
                 ),
             )
         }

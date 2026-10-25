@@ -246,12 +246,9 @@ class DbSimDevice:
         self._push_battery()
         self.state = "running"
         self.connected = False
-        self._subs.clear()
-        self._ind.clear()
-        self._ind_busy = False
+        self._clear_link()
         self._reboot_armed = self._reboot_posted = False
         self._reboot_timer = None
-        self._ota_fifo.clear()
         self._last_power = None
         now = self.now_ms
         self._next = {"pass": now + self.PASS_MS, "control": now, "ota": now + self.OTA_TICK_MS}
@@ -326,7 +323,7 @@ class DbSimDevice:
     def _control(self):
         self.core.control_step(self.core_now)
         # The power state only changes in the control task.
-        power = C.POWER_NAMES[self.core.snapshot()["power"]]
+        power = C.POWER_NAMES[self.core.power]
         if power != self._last_power:
             self._last_power = power
             self._emit("power", {"state": power})
@@ -467,6 +464,13 @@ class DbSimDevice:
                              (C.FAULT_FLASH if self._flash_fail else 0))
 
     # ---- BLE link (called by the BLE layer) ----------------------------------------
+    def _clear_link(self):
+        """Drops the per-link transport state: subscriptions, indications, OTA writes."""
+        self._subs.clear()
+        self._ind.clear()
+        self._ind_busy = False
+        self._ota_fifo.clear()
+
     def connect(self) -> bool:
         """A central connected. False: terminate the link at once."""
         if self.state != "running":
@@ -478,9 +482,7 @@ class DbSimDevice:
             return False
         self.connected = True
         self.mtu = 23
-        self._subs.clear()
-        self._ind.clear()
-        self._ind_busy = False
+        self._clear_link()
         self._next["notify"] = self.now_ms + self.NOTIFY_MS
         self._emit("connected")
         self._drain()
@@ -491,10 +493,7 @@ class DbSimDevice:
         if not self.connected:
             return
         self.connected = False
-        self._subs.clear()
-        self._ind.clear()
-        self._ind_busy = False
-        self._ota_fifo.clear()
+        self._clear_link()
         self._next.pop("notify", None)
         self.core.link_disconnect(self.core_now)
         self._emit("disconnected")

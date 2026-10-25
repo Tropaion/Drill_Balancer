@@ -1,5 +1,7 @@
 package dev.drillbalancer.protocol
 
+import java.security.MessageDigest
+
 // Little-endian helpers for the wire formats (all integers are LE).
 
 internal fun ByteArray.u8(i: Int): Int = this[i].toInt() and 0xFF
@@ -23,6 +25,12 @@ internal fun ByteArray.put32(i: Int, v: Long) {
 }
 
 internal fun ByteArray.toHex(): String = joinToString("") { (it.toInt() and 0xFF).toString(16).padStart(2, '0') }
+
+/** A status byte as users see it, e.g. "0x0D". */
+internal fun hexByte(v: Int): String = "0x" + (v and 0xFF).toString(16).padStart(2, '0').uppercase()
+
+/** The image digest the device checks at FINISH. */
+internal fun ByteArray.sha256(): ByteArray = MessageDigest.getInstance("SHA-256").digest(this)
 
 /** Result of decoding bytes from the device. Bad input is reported, never thrown. */
 sealed interface Decoded<out T> {

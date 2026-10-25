@@ -179,7 +179,8 @@ Full guide: [Getting Started](https://github.com/Tropaion/Drill_Balancer/wiki/Ge
 - A running drill counts as activity for up to 3 min after the last touch
   or movement, so the screen stays on mid-hole. Vibration alone never keeps
   it awake: put away in a running van, it sleeps within 3 min + the sleep
-  time (a turn while the van stands counts as movement).
+  time. Turning the drill always counts, also while the motor runs; so does
+  the van turning a corner.
 - PWR key: short press = sleep, hold 1.5 s = power off. The key cannot wake
   the device from deep sleep; move it instead.
 

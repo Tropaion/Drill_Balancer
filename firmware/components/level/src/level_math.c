@@ -104,3 +104,20 @@ float wrap_deg(float deg)
     }
     return deg;
 }
+
+float level_rc_tau_s(float corner_hz)
+{
+    return corner_hz > 0.0f ? 1.0f / (LEVEL_TWO_PI * corner_hz) : 0.0f;
+}
+
+float level_rc_alpha(float tau_s, float dt_s)
+{
+    if (!(dt_s > 0.0f)) {
+        dt_s = 0.0f;   // also NaN: the filter holds
+    }
+    float alpha = dt_s / (tau_s + dt_s);
+    if (!(alpha <= 1.0f)) {
+        alpha = 1.0f;   // corner <= 0 and dt 0: 0/0
+    }
+    return alpha;
+}

@@ -169,6 +169,20 @@ class PanelTest(DeviceTest):
         self.settle(2600)
         self.assertIs(self.panel.state()["snap"]["vibrating"], False)
 
+    def test_screen_texts_come_from_ui_logic(self):
+        # The panel draws these as ui_logic.c formats them on the board.
+        self.assertEqual(self.write_config(tol=0.25, dim_s=90, sleep_s=3600, off_min=0), 0)
+        ui = self.snap()["ui"]
+        self.assertEqual(ui["settings_text"],
+                         ["0.25°", "2.00°", "45.0°", "100 %", "90 s", "1 h", "Never"])
+        self.assertEqual(self.touch("tap"), "zero")
+        self.cmd(cmd="pose", yaw=-12.34)
+        self.settle(3000)
+        r = self.snap()["reading"]
+        self.assertTrue(r["yaw_valid"])
+        self.assertEqual(self.snap()["ui"]["yaw_tenths"], round(r["yaw"] * 10))
+        self.assertLess(self.snap()["ui"]["yaw_tenths"], -100)
+
     def test_state_is_json_without_nan(self):
         st = self.panel.state()
         json.loads(json.dumps(st, allow_nan=False))

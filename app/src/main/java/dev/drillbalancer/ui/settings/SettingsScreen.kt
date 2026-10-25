@@ -17,14 +17,10 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
-import androidx.compose.material3.SegmentedButton
-import androidx.compose.material3.SegmentedButtonDefaults
-import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
@@ -50,6 +46,7 @@ import dev.drillbalancer.ui.components.ActionButton
 import dev.drillbalancer.ui.components.ButtonKind
 import dev.drillbalancer.ui.components.InfoRow
 import dev.drillbalancer.ui.components.MessageBanner
+import dev.drillbalancer.ui.components.ModeSelector
 import dev.drillbalancer.ui.components.Panel
 import dev.drillbalancer.ui.components.SectionTitle
 import dev.drillbalancer.ui.components.TouchHeight
@@ -224,29 +221,11 @@ private fun StepButton(symbol: String, description: String, enabled: Boolean, on
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun ModeRow(mode: LevelMode, changed: Boolean, onMode: (LevelMode) -> Unit) {
     Panel(border = if (changed) Amber else Dark) {
         Label(SettingsField.MODE.label, changed)
-        SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
-            LevelMode.entries.forEachIndexed { i, m ->
-                SegmentedButton(
-                    selected = m == mode,
-                    onClick = { onMode(m) },
-                    shape = SegmentedButtonDefaults.itemShape(i, LevelMode.entries.size),
-                    modifier = Modifier.heightIn(min = TouchHeight),
-                    icon = {},
-                    colors = SegmentedButtonDefaults.colors(
-                        activeContainerColor = MaterialTheme.colorScheme.primary,
-                        activeContentColor = Color.Black,
-                        inactiveContainerColor = MaterialTheme.colorScheme.surface,
-                    ),
-                ) {
-                    Text(m.key.replaceFirstChar { it.uppercase() }, maxLines = 1)
-                }
-            }
-        }
+        ModeSelector(mode, onMode, MaterialTheme.colorScheme.surface)
     }
 }
 

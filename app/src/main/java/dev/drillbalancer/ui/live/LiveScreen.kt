@@ -10,17 +10,12 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.SegmentedButton
-import androidx.compose.material3.SegmentedButtonDefaults
-import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
@@ -43,6 +38,7 @@ import dev.drillbalancer.ui.components.ButtonKind
 import dev.drillbalancer.ui.components.DbIcons
 import dev.drillbalancer.ui.components.FitNumber
 import dev.drillbalancer.ui.components.MessageBanner
+import dev.drillbalancer.ui.components.ModeSelector
 import dev.drillbalancer.ui.components.Panel
 import dev.drillbalancer.ui.formatDeg
 import dev.drillbalancer.ui.formatYaw
@@ -92,35 +88,10 @@ fun LiveScreen(
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun ModeTabs(selected: LevelMode, onMode: (LevelMode) -> Unit) {
-    SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
-        LevelMode.entries.forEachIndexed { i, mode ->
-            SegmentedButton(
-                selected = mode == selected,
-                onClick = { onMode(mode) },
-                shape = SegmentedButtonDefaults.itemShape(i, LevelMode.entries.size),
-                modifier = Modifier.heightIn(min = 56.dp),
-                icon = {},
-                colors = SegmentedButtonDefaults.colors(
-                    activeContainerColor = MaterialTheme.colorScheme.primary,
-                    activeContentColor = Color.Black,
-                    inactiveContainerColor = MaterialTheme.colorScheme.surfaceContainer,
-                ),
-            ) {
-                Text(mode.title, style = MaterialTheme.typography.titleMedium, maxLines = 1)
-            }
-        }
-    }
+    ModeSelector(selected, onMode, MaterialTheme.colorScheme.surfaceContainer, MaterialTheme.typography.titleMedium)
 }
-
-private val LevelMode.title: String
-    get() = when (this) {
-        LevelMode.WALL -> "Wall"
-        LevelMode.FLOOR -> "Floor"
-        LevelMode.ANGLE -> "Angle"
-    }
 
 fun StatusColors.of(status: LevelStatus?): Color = when (status) {
     LevelStatus.ON_TARGET -> onTarget

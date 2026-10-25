@@ -536,15 +536,25 @@ class BluezPeripheral:
                 "advertising": self._adv_mode, "bonds": sorted(self.bonds)}
 
     # ---- GATT (called by the D-Bus objects) -------------------------------------------
+    def _from_link(self, opts: dict) -> bool:
+        """Whether BlueZ got this access over the link the device holds (it names
+        the peer in options["device"]). The board never sees one from another
+        connection: one the PC opened itself, or a central _is_ours turned away."""
+        return self.link is not None and self.dev.connected and opts.get("device") == self.link
+
     def _note_access(self, opts: dict):
         mtu = opts.get("mtu")
-        if mtu and self.dev.connected and mtu != self.dev.mtu:
+        if mtu and mtu != self.dev.mtu:
             self.dev.set_mtu(int(mtu))
             self._event("mtu", peer=self._link_addr, mtu=int(mtu))
 
     def gatt_read(self, name: str, opts: dict) -> bytes:
-        self._note_access(opts)
         offset = int(opts.get("offset", 0))
+        if not self._from_link(opts):
+            self.log(f"{name} read from {self._peer(opts.get('device') or '?')}, "
+                     "not the link: refused", "W")
+            raise att_error(0x0E)
+        self._note_access(opts)
         if self.dev.state != "running":
             self._event("read", peer=self._link_addr, char=name, offset=offset, att=0x0E)
             raise att_error(0x0E)
@@ -558,12 +568,18 @@ class BluezPeripheral:
         return value
 
     def gatt_write(self, name: str, value: bytes, opts: dict):
+        if not self._from_link(opts):
+            self.log(f"{name} write from {self._peer(opts.get('device') or '?')}, not the link: "
+                     f"{'dropped' if name == 'ota_data' else 'refused'}", "W")
+            if name == "ota_data":
+                return   # write without response
+            raise att_error(0x0E)
         self._note_access(opts)
         if opts.get("offset", 0):
             # BlueZ hands a long write over in one piece at offset 0; NimBLE
             # refuses anything else as well.
             raise att_error(0x07)
-        if name in PROTECTED and not self.dev.link_trusted and self.dev.connected:
+        if name in PROTECTED and not self.dev.link_trusted:
             if name == "ota_data":
                 # Write without response: nothing to answer, the chunk is just gone.
                 self.log("ota_data write on an unauthenticated link dropped", "W")
@@ -770,9 +786,9 @@ class BluezPeripheral:
                 if self.link == path and self._passkey is None:
                     self._on_encrypted()
             return
-        while self.link == path:
+        while self.link == path and not self._encrypted:   # stays encrypted until the link goes
             conn = self.hci.peripheral_link(self._link_addr)
-            if conn and conn["encrypted"] and not self._encrypted:
+            if conn and conn["encrypted"]:
                 self._encrypted = True
                 self._on_encrypted()
             await asyncio.sleep(POLL_S)

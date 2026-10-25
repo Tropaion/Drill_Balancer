@@ -5,6 +5,7 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.emptyFlow
+import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.TestScope
@@ -14,6 +15,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Assert.fail
 import org.junit.Test
+import java.io.IOException
 import kotlin.random.Random
 import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
@@ -275,6 +277,63 @@ class OtaClientTest {
         val img = image(1000)
         client(link).send(img)
         dev.assertReceived(img)
+    }
+
+    @Test
+    fun replyToFinishLostWithTheLinkIsUnconfirmed() = runTest {
+        // The link drops while the device verifies, and the reply goes with it. The device
+        // installs the image anyway: no 30 s wait for a failure, and no ABORT.
+        val dev = device()
+        val lost = MutableSharedFlow<Unit>(replay = 1)
+        var gone = false
+        val link = object : OtaTransport by dev {
+            override val ctrlIndications: Flow<ByteArray> = dev.ctrlIndications.filter { !gone }
+            override val linkLost: Flow<Unit> = lost
+            override suspend fun writeCtrl(value: ByteArray) {
+                if (value[0].toInt() == OtaOp.FINISH) {
+                    gone = true
+                    lost.emit(Unit)
+                }
+                dev.writeCtrl(value)
+            }
+        }
+        val e = expectUnconfirmed(link, image(1000))
+        assertEquals(OtaClient.UNCONFIRMED, e.message)
+        assertTrue(testScheduler.currentTime.toString(), testScheduler.currentTime <= 1_000)
+        assertEquals(FakeOtaDevice.State.DONE, dev.state)
+        assertEquals(OtaOp.FINISH, dev.ctrlWrites.last()[0].toInt())
+    }
+
+    @Test
+    fun finishWriteFailedWithTheLinkIsUnconfirmed() = runTest {
+        // The link drops before the write's answer: the device may have the FINISH anyway.
+        val dev = device()
+        val link = object : OtaTransport by dev {
+            override suspend fun writeCtrl(value: ByteArray) {
+                dev.writeCtrl(value)
+                if (value[0].toInt() == OtaOp.FINISH) {
+                    dev.loseLink()
+                    throw IOException("The connection was lost during the firmware update.")
+                }
+            }
+        }
+        val e = expectUnconfirmed(link, image(1000))
+        assertTrue(e.cause is IOException)
+        assertEquals(0, testScheduler.currentTime)
+        assertEquals(FakeOtaDevice.State.DONE, dev.state)
+        assertEquals(OtaOp.FINISH, dev.ctrlWrites.last()[0].toInt())
+    }
+
+    private suspend fun TestScope.expectUnconfirmed(link: OtaTransport, img: ByteArray): OtaException {
+        try {
+            client(link).send(img)
+        } catch (e: OtaException) {
+            assertTrue(e.message!!, e.unconfirmed)
+            assertEquals(null, e.status)
+            return e
+        }
+        fail("transfer should have been unconfirmed")
+        throw AssertionError()
     }
 
     @Test

@@ -28,7 +28,7 @@ class PowerTest(PowerEvents, DeviceTest):
         self.assertEqual(self.snap()["brightness"], 20)
         self.assertEqual(self.status().power_state, 1)
 
-        # Picking it up is activity (gyro above 0.3 rad/s): back to full brightness.
+        # Picking it up is activity (low-passed gyro above 0.3 rad/s): back to full brightness.
         t_move = self.dev.now_ms
         self.dev.physics.pick_up()
         self.settle(500)
@@ -187,15 +187,14 @@ class VibrationHoldTest(PowerEvents, DeviceTest):
 
     def test_strong_vibration_gyro_noise_does_not_keep_awake(self):
         # At 1 g the sim's gyro vibration noise passes 0.3 rad/s in about a
-        # quarter of the batches: that must not count while it vibrates.
+        # quarter of the batches: the turn detector's low-pass averages it out.
         self.vibrate(1.0)
         self.until(self.t_write + self.HOLD_MS + 10_500)
         self.assert_at(self.first("dim"), self.t_write + self.HOLD_MS + 5000, msg="dim")
         self.assert_at(self.first("sleep"), self.t_write + self.HOLD_MS + 10_000, msg="sleep")
 
     def test_strong_vibration_on_and_off_does_not_keep_awake(self):
-        # Each motor start and stop passes partly calm windows while the gyro
-        # noise still runs: the batch's own duty keeps that out.
+        # Each motor start and stop switches the gyro noise on or off: no turn.
         while self.dev.now_ms < self.t_write + self.HOLD_MS + 10_500:
             self.vibrate(1.0)
             self.settle(20_000)
@@ -217,13 +216,13 @@ class VibrationHoldTest(PowerEvents, DeviceTest):
         self.until(t_pick + self.HOLD_MS + 6000)
         t_dim = self.first("dim")
         self.assertIsNotNone(t_dim)
-        # The stamp is the last batch above 0.3 rad/s during the 0.8 s pick-up.
+        # The stamp is the last batch that read turning during the 0.8 s pick-up.
         self.assertTrue(t_pick + self.HOLD_MS + 4800 <= t_dim <= t_pick + self.HOLD_MS + 6000,
                         t_dim - t_pick)
 
     def test_pick_up_right_after_motor_stop_rearms(self):
-        # Straight to the next hole: the detector still reads running for 2 s
-        # after the motor stops, but the move falls in calm windows.
+        # Straight to the next hole: the vibration detector still reads
+        # running for 2 s after the motor stops, but the move counts at once.
         self.vibrate()
         self.until(self.t_write + 100_000)
         self.vibrate(0)
@@ -237,31 +236,29 @@ class VibrationHoldTest(PowerEvents, DeviceTest):
         self.until(t_pick + self.HOLD_MS + 7000)
         t_dim = self.first("dim")
         self.assertIsNotNone(t_dim)
-        # Counted when the 0.5 s window of the last turning batch closes.
-        self.assertTrue(t_pick + self.HOLD_MS + 4800 <= t_dim <= t_pick + self.HOLD_MS + 6600,
+        self.assertTrue(t_pick + self.HOLD_MS + 4800 <= t_dim <= t_pick + self.HOLD_MS + 6000,
                         t_dim - t_pick)
 
-    def test_turning_while_vibrating_does_not_rearm(self):
-        # The gyro passes 0.3 rad/s while the motor runs: not counted, since a
-        # running motor can do that by itself.
-        self.vibrate()
+    def test_turning_while_vibrating_rearms(self):
+        # Rolling the drill while the motor runs strongly is handling: it
+        # counts whatever the accelerometer reads.
+        self.vibrate(1.0)
         self.until(self.t_write + 100_000)
-        self.dev.physics.roll_back_and_forth()
-        self.until(self.t_write + self.HOLD_MS + 6000)
-        self.assert_at(self.first("dim"), self.t_write + self.HOLD_MS + 5000, msg="dim")
+        t_end = self.dev.now_ms + 12_000
+        self.dev.physics.roll_back_and_forth()   # 3 x 4 s
+        self.until(t_end + self.HOLD_MS + 6000)
+        self.assert_at(self.first("dim"), t_end + self.HOLD_MS + 5000, msg="dim")
 
-    def test_turning_while_the_motor_stutters_does_not_rearm(self):
-        # 60 ms on, 20 ms off: the off batches are calm, but their windows
-        # shake, so a turn there is held and then dropped.
+    def test_motor_stuttering_does_not_rearm(self):
+        # 60 ms on, 20 ms off at 1 g, the drill held still: every batch
+        # switches the gyro noise on or off, and none of it is a turn.
         self.vibrate()
         self.until(self.t_write + 100_000)
-        self.dev.physics.roll_back_and_forth()
-        while self.dev.physics.moving:
+        while self.dev.now_ms < self.t_write + self.HOLD_MS + 6000:
+            self.vibrate(1.0)
             self.settle(60)
             self.vibrate(0)
             self.settle(20)
-            self.vibrate()
-        self.until(self.t_write + self.HOLD_MS + 6000)
         self.assert_at(self.first("dim"), self.t_write + self.HOLD_MS + 5000, msg="dim")
 
     def test_touch_rearms_while_vibrating(self):
@@ -294,20 +291,16 @@ class VibrationHoldTest(PowerEvents, DeviceTest):
         self.assertIsNone(self.first("dim", since=t_boot), "dimmed while drilling")
         self.assertTrue(self.snap()["vibrating"])
 
-    def test_motion_wake_straight_into_drilling_dims(self):
-        # The conservative side: the motor already runs when the detector
-        # first decides, so the turn may have been the motor and is dropped.
+    def test_pick_up_while_drilling_after_motion_wake_arms(self):
+        # Woken straight into drilling: the motor already runs when the drill
+        # is moved, and the move still counts.
         t_boot = self.sleep_and_wake_by_pick_up()
-        self.vibrate()
+        self.vibrate(1.0)
         self.settle(200)
         self.dev.physics.pick_up()
-        self.until(t_boot + 6000)
+        self.until(t_boot + 30_000)
+        self.assertIsNone(self.first("dim", since=t_boot), "dimmed while drilling")
         self.assertTrue(self.snap()["vibrating"])
-        self.assert_at(self.first("dim", since=t_boot), t_boot + 5000, msg="dim")
-        # The dropped turn stays dropped when the motor stops later.
-        self.vibrate(0)
-        self.until(t_boot + 10_500)
-        self.assert_at(self.first("sleep", since=t_boot), t_boot + 10_000, msg="sleep")
 
     def test_imu_restart_resets_detector(self):
         self.vibrate()
