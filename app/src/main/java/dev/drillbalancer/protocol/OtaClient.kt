@@ -5,6 +5,7 @@ import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -30,6 +31,13 @@ interface OtaTransport {
 
     /** Write without response to ota_data; returns once the stack took it. */
     suspend fun writeData(value: ByteArray)
+
+    /**
+     * Emits when the link the transfer started on is gone. The device then ends the
+     * transfer (ota_update.c ota_update_on_disconnect), so writes on a new link get at most
+     * a BAD_STATE NACK (or nothing, if ota_ctrl is not subscribed there).
+     */
+    val linkLost: Flow<Unit> get() = emptyFlow()
 }
 
 data class OtaProgress(
@@ -50,8 +58,9 @@ class OtaException(message: String, val status: OtaStatus? = null) : Exception(m
  * Sends an app image over the OTA service, like tools/ble/db_client.py ota_transfer():
  * START -> stream chunks at most 2 * ack_every ahead of the last ACK, rewinding to a
  * NACK's expected_seq or, when the device goes quiet, to the last ACK -> FINISH. On any
- * failure or cancellation it sends ABORT (best effort). After a successful FINISH the
- * device reboots into the new image.
+ * failure or cancellation it sends ABORT (best effort); a lost link fails the transfer at
+ * once, until FINISH goes out. After a successful FINISH the device reboots into the new
+ * image.
  */
 class OtaClient(
     private val transport: OtaTransport,
@@ -75,8 +84,12 @@ class OtaClient(
                     OtaMessage.decode(raw).getOrNull()?.let { inbox.send(it) }
                 }
             }
+            // Not after FINISH: the device may install the image whatever happens to the link.
+            val watchdog = launch(start = CoroutineStart.UNDISPATCHED) {
+                transport.linkLost.collect { throw OtaException(LINK_LOST) }
+            }
             try {
-                transfer(image, inbox, onProgress)
+                transfer(image, inbox, onProgress, beforeFinish = { watchdog.cancel() })
             } catch (e: Throwable) {
                 withContext(NonCancellable) {
                     runCatching { withTimeoutOrNull(ABORT_TIMEOUT) { transport.writeCtrl(OtaMessage.encodeAbort()) } }
@@ -84,11 +97,17 @@ class OtaClient(
                 throw e
             } finally {
                 listener.cancel()
+                watchdog.cancel()
             }
         }
     }
 
-    private suspend fun transfer(image: ByteArray, inbox: Channel<OtaMessage>, onProgress: suspend (OtaProgress) -> Unit) {
+    private suspend fun transfer(
+        image: ByteArray,
+        inbox: Channel<OtaMessage>,
+        onProgress: suspend (OtaProgress) -> Unit,
+        beforeFinish: () -> Unit,
+    ) {
         val size = image.size
         onProgress(OtaProgress(OtaProgress.Phase.STARTING, 0, size, 0f))
         val sha = MessageDigest.getInstance("SHA-256").digest(image)
@@ -173,6 +192,7 @@ class OtaClient(
 
         val rate = size / (t0.elapsedNow().inWholeMilliseconds.coerceAtLeast(1) / 1000f)
         onProgress(OtaProgress(OtaProgress.Phase.VERIFYING, size, size, rate))
+        beforeFinish()
         transport.writeCtrl(OtaMessage.encodeFinish())
         val fin = awaitReply(inbox, OtaOp.FINISH, finishTimeout)
         if (fin.status != OtaStatus.OK.code) {
@@ -194,6 +214,8 @@ class OtaClient(
         // NACK BAD_REQUEST for the same chunk this many times in a row: give up instead
         // of resending a chunk the device will never take.
         const val MAX_BAD_REQUESTS = 3
+        const val LINK_LOST = "The connection dropped during the transfer, so the device stopped the update. " +
+            "Start it again once the app has reconnected."
         private val ABORT_TIMEOUT = 2.seconds
     }
 }

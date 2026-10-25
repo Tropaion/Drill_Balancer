@@ -45,6 +45,8 @@ class FakeOtaDevice(
     private val ackEvery = if (ackEvery == 0) 1 else ackEvery
     private val indications = MutableSharedFlow<ByteArray>(extraBufferCapacity = 1 shl 20)
     override val ctrlIndications: Flow<ByteArray> = indications
+    private val lost = MutableSharedFlow<Unit>(replay = 1)
+    override val linkLost: Flow<Unit> = lost
 
     var state = State.IDLE
         private set
@@ -99,6 +101,12 @@ class FakeOtaDevice(
     fun disconnect() {
         if (state == State.RECEIVING) endTransfer()
         if (state == State.IDLE) nackSent = false
+    }
+
+    /** The link drops and the session reconnects: later writes reach the device again. */
+    fun loseLink() {
+        disconnect()
+        lost.tryEmit(Unit)
     }
 
     // ---- ota_proto.c ----

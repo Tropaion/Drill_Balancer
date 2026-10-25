@@ -46,7 +46,8 @@ fun firmwareBytes(
     descMagic: Long = 0xABCD5432L,
 ): ByteArray = ByteArray(size).also {
     it[0] = magic.toByte()
-    it[1] = 3                                        // segment count
+    it[1] = 3                                        // segment count: 3 empty segments, so
+                                                     // FirmwareImage sees a 64-byte image + trailing data
     it.put16(12, chip)
     if (size >= 32 + 256) {
         it.put32(32, descMagic)

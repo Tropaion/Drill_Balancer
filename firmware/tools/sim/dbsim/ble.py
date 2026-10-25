@@ -26,6 +26,8 @@ How the board's behaviour maps onto BlueZ (5.87):
 - Subscriptions: BlueZ calls StartNotify/StopNotify only on changes and keeps a
   bonded peer's CCCDs across reconnects (NimBLE restores them too), so they are
   remembered per peer here and restored into the device on reconnect.
+  BlueZ drops an indication for a client whose CCCD is off without a Confirm,
+  so turning ota_ctrl off ends the indication in flight.
 - Advertising: BlueZ puts the service UUID in the advertising data and the name
   in the scan response (the board does it the other way round); both reach an
   active scanner such as Android's.
@@ -585,6 +587,12 @@ class BluezPeripheral:
         (subs.add if on else subs.discard)(char.key)
         if self.dev.connected:
             self.dev.subscribe_char(char.key, on)
+            if char.key == "ota_ctrl" and not on:
+                # BlueZ sends an indication only while the client's CCCD is on and
+                # never calls Confirm for one it did not send. One in flight now
+                # would keep the device's queue busy until the next connection; on
+                # the board NimBLE sends it anyway and the phone confirms it.
+                self.dev.indication_confirmed()
         self._event("subscribe", peer=self._link_addr, char=char.key, on=on)
 
     def gatt_confirmed(self, char: Characteristic):

@@ -249,6 +249,30 @@ class BleTest(unittest.IsolatedAsyncioTestCase):
         ctrl.Confirm.__dict__["__DBUS_METHOD"].fn(ctrl)
         self.assertFalse(self.dev._ind_busy)
 
+    @unittest.skipUnless(FIRMWARE_IMAGE.exists(), "needs firmware/build/drillbalancer.bin")
+    async def test_unsubscribe_ends_the_unconfirmed_indication(self):
+        # The app turns indications off right after its ABORT. An indication BlueZ gets
+        # after that goes to no one and is never confirmed; the next transfer must still
+        # get its replies (the board sends it anyway and the phone confirms it).
+        self.connect()
+        self.write("command", b"\x01")   # authenticated link
+        ctrl = self.p.chars["ota_ctrl"]
+        confirm = ctrl.Confirm.__dict__["__DBUS_METHOD"].fn
+        image = FIRMWARE_IMAGE.read_bytes()[:4096]
+        start = dc.encode_ota_start(len(image), hashlib.sha256(image).digest())
+        self.p.gatt_subscribe(ctrl, True)
+        self.write("ota_ctrl", start)
+        self.write("ota_ctrl", bytes([dc.OTA_OP_ABORT]))   # its reply waits behind START's
+        self.p.gatt_subscribe(ctrl, False)              # no Confirm for the START reply
+        self.assertFalse(self.dev._ind_busy)
+        confirm(ctrl)   # one BlueZ did send after all, confirmed late: changes nothing
+        self.sent.clear()
+        self.p.gatt_subscribe(ctrl, True)
+        self.write("ota_ctrl", start)
+        replies = [dc.decode_ota_msg(v) for n, v in self.sent if n == "ota_ctrl"]
+        self.assertEqual(len(replies), 1)
+        self.assertEqual((replies[0]["op"], replies[0]["status"]), (dc.OTA_OP_START, dc.OTA_STATUS_OK))
+
     # ---- subscriptions across links ----
     async def test_bonded_peer_gets_its_subscriptions_back(self):
         self.connect(Paired=True, Bonded=True)

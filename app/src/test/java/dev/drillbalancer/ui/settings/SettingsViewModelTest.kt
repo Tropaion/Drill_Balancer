@@ -159,14 +159,59 @@ class SettingsViewModelTest {
         vm.set(SettingsField.NEAR, 0.8f)
         vm.save()
         // The device rejects {"near":0.8} (near < tol). The app reads again: the edit stays,
-        // moved up to the device's tolerance.
+        // moved up to the device's tolerance, and the message says so.
         val s = vm.state.value
-        assertEquals(AttError.JSON_RANGE.message, s.message?.text)
+        assertEquals(
+            "Not saved: the settings were changed on the device, so the app read them again. " +
+                "To fit the device's values, Near band (amber) is now 1.00°. Check your changes and tap Save again.",
+            s.message?.text,
+        )
         assertEquals(1f, s.base!!.toleranceDeg)
         assertEquals(1f, s.edited!!.nearDeg)
         assertEquals(setOf(SettingsField.NEAR), s.changed)
         vm.save()
         assertEquals("""{"near":1}""", fake.updates.single().toJson())
+    }
+
+    @Test
+    fun conflictThatLeavesNothingToSaveSaysSo() = runTest(main.dispatcher) {
+        val (fake, _, vm) = setUp()
+        // tol and near set to 3 on the device; the app still has 0.5 / 2.0.
+        fake.changeOnDevice { it.copy(toleranceDeg = 3f, nearDeg = 3f) }
+        vm.set(SettingsField.NEAR, 2.5f)
+        vm.save()
+        // {"near":2.5} is rejected; after the read the edit is moved up to 3, which the
+        // device already has: no "out of range" left on screen with nothing to fix.
+        val s = vm.state.value
+        assertEquals(
+            "Not saved: the settings were changed on the device, so the app read them again. " +
+                "To fit the device's values, Near band (amber) is now 3.00°. Nothing is left to save.",
+            s.message?.text,
+        )
+        assertEquals(3f, s.edited!!.nearDeg)
+        assertTrue(s.changed.isEmpty())
+        assertFalse(s.loading)
+        assertTrue(fake.updates.isEmpty())
+    }
+
+    @Test
+    fun conflictNamesTheFieldTheRuleMoved() = runTest(main.dispatcher) {
+        val (fake, _, vm) = setUp()
+        // tol 2.5 is fine against the app's near 3, but near was lowered on the device.
+        fake.changeOnDevice { it.copy(nearDeg = 3f) }
+        vm.reload()
+        fake.changeOnDevice { it.copy(nearDeg = 2f) }
+        vm.set(SettingsField.TOL, 2.5f)
+        vm.save()
+        val s = vm.state.value
+        assertEquals(
+            "Not saved: the settings were changed on the device, so the app read them again. " +
+                "To fit the device's values, Near band (amber) is now 2.50°. Check your changes and tap Save again.",
+            s.message?.text,
+        )
+        assertEquals(setOf(SettingsField.TOL, SettingsField.NEAR), s.changed)
+        vm.save()
+        assertEquals("""{"tol":2.5,"near":2.5}""", fake.updates.single().toJson())
     }
 
     @Test

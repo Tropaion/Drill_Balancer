@@ -5,7 +5,8 @@ import java.security.MessageDigest
 /**
  * An ESP32-S3 app image (build/drillbalancer.bin) checked before an OTA, so a wrong file
  * fails here instead of after the transfer. The device checks the same app descriptor
- * (ota_update.c: magic word, project_name equal to the running firmware's).
+ * (ota_update.c: magic word, project_name equal to the running firmware's), and at FINISH
+ * esp_ota_end() walks the segment table: a file cut off in copying fails here too.
  */
 class FirmwareImage private constructor(
     val bytes: ByteArray,
@@ -36,6 +37,13 @@ class FirmwareImage private constructor(
         const val DESC_SIZE = 256
         const val APP_DESC_MAGIC = 0xABCD5432L
 
+        // esp_image_header_t: segment_count at 1, hash_appended at 23; ESP_IMAGE_MAX_SEGMENTS.
+        private const val SEGMENT_COUNT_OFFSET = 1
+        private const val HASH_APPENDED_OFFSET = 23
+        private const val SEGMENT_HEADER_SIZE = 8
+        private const val MAX_SEGMENTS = 16
+        private const val HASH_SIZE = 32
+
         // esp_app_desc_t field offsets
         private const val CHIP_ID_OFFSET = 12
         private const val VERSION_OFFSET = 16
@@ -54,6 +62,11 @@ class FirmwareImage private constructor(
             }
             val project = bytes.cString(DESC_OFFSET + PROJECT_OFFSET, 32)
             if (project != PROJECT_NAME) return FirmwareParseResult.WrongProject(project)
+            val segments = bytes.u8(SEGMENT_COUNT_OFFSET)
+            if (segments == 0 || segments > MAX_SEGMENTS) return FirmwareParseResult.NotEspImage
+            val needed = imageLength(bytes, segments)
+            if (needed > maxSize) return FirmwareParseResult.NotEspImage
+            if (needed > bytes.size) return FirmwareParseResult.Truncated(bytes.size, needed.toInt())
             return FirmwareParseResult.Ok(
                 FirmwareImage(
                     bytes = bytes,
@@ -65,6 +78,22 @@ class FirmwareImage private constructor(
                     sha256 = MessageDigest.getInstance("SHA-256").digest(bytes),
                 ),
             )
+        }
+
+        /**
+         * The image's length from its segment table, as esp_image_verify() walks it: the
+         * segments, zero padding up to the checksum byte that ends a 16-byte block, then the
+         * SHA-256 if hash_appended. A table cut off in a segment header gives the length up
+         * to that header's end, the least the file would need.
+         */
+        private fun imageLength(bytes: ByteArray, segments: Int): Long {
+            var pos = IMAGE_HEADER_SIZE.toLong()
+            repeat(segments) {
+                if (pos + SEGMENT_HEADER_SIZE > bytes.size) return pos + SEGMENT_HEADER_SIZE
+                pos += SEGMENT_HEADER_SIZE + bytes.u32(pos.toInt() + 4)
+            }
+            pos += 16 - pos % 16
+            return if (bytes.u8(HASH_APPENDED_OFFSET) != 0) pos + HASH_SIZE else pos
         }
     }
 }
@@ -90,6 +119,13 @@ sealed interface FirmwareParseResult {
 
     data object NoAppDescriptor : Error {
         override val message = "The image has no app descriptor."
+    }
+
+    /** Shorter than its segment table says ([needed] is a lower bound if the table itself is cut). */
+    data class Truncated(val size: Int, val needed: Int) : Error {
+        override val message get() =
+            "The file is cut off: it has $size bytes, but the image needs at least $needed. " +
+                "Copy build/drillbalancer.bin to the phone again."
     }
 
     data class WrongProject(val projectName: String) : Error {

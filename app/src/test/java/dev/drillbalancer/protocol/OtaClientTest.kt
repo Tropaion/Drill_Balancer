@@ -3,6 +3,7 @@ package dev.drillbalancer.protocol
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.launch
@@ -242,6 +243,38 @@ class OtaClientTest {
         assertTrue(e.message!!, "stopped acknowledging" in e.message!!)
         assertEquals(400, testScheduler.currentTime)
         assertArrayEquals(OtaMessage.encodeAbort(), dev.ctrlWrites.last())
+    }
+
+    @Test
+    fun lostLinkFailsAtOnce() = runTest {
+        // Without the watchdog the chunks after a reconnect reach an idle device: it NACKs
+        // BAD_STATE, which is misleading.
+        val dev = device()
+        dev.drop = { seq, n -> if (seq == 20 && n == 0) dev.loseLink(); false }
+        val e = expectFailure(dev, image(1000))
+        assertEquals(null, e.status)
+        assertEquals(OtaClient.LINK_LOST, e.message)
+        assertEquals(0, testScheduler.currentTime)
+        assertEquals(FakeOtaDevice.State.IDLE, dev.state)
+        assertTrue(dev.writeCalls <= 21)
+        assertArrayEquals(OtaMessage.encodeAbort(), dev.ctrlWrites.last())
+    }
+
+    @Test
+    fun lostLinkAfterFinishIsLeftToTheReply() = runTest {
+        // Once FINISH is out the device may install the image: its reply decides.
+        val dev = device()
+        val lost = MutableSharedFlow<Unit>(replay = 1)
+        val link = object : OtaTransport by dev {
+            override val linkLost: Flow<Unit> = lost
+            override suspend fun writeCtrl(value: ByteArray) {
+                if (value[0].toInt() == OtaOp.FINISH) lost.emit(Unit)
+                dev.writeCtrl(value)
+            }
+        }
+        val img = image(1000)
+        client(link).send(img)
+        dev.assertReceived(img)
     }
 
     @Test

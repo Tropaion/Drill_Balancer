@@ -63,16 +63,7 @@ class SettingsViewModel(private val session: DeviceSession, private val gate: Pa
      */
     fun reload() {
         if (_state.value.loading) return
-        viewModelScope.launch {
-            _state.update { it.copy(loading = true) }
-            try {
-                val s = session.readSettings()
-                _state.update { it.copy(loading = false) }
-                rebase(s)
-            } catch (e: DeviceError) {
-                _state.update { it.copy(loading = false, message = UiMessage(e.message ?: "Could not read the settings.")) }
-            }
-        }
+        viewModelScope.launch { read() }
     }
 
     fun save() {
@@ -104,9 +95,43 @@ class SettingsViewModel(private val session: DeviceSession, private val gate: Pa
             } else if (conflict) {
                 // Most likely changed on the device since the last read: read what it has now.
                 // The edits stay on top, and fixup() adds the field the rule needs.
-                reload()
+                val before = now.base ?: return@launch
+                val device = read() ?: return@launch
+                if (device != before) {
+                    // Not the generic "out of range": say what changed, and whether the
+                    // edit still needs saving (fixup() may have made it the device's value).
+                    val rebased = update.applyTo(device)
+                    val moved = SettingsUpdate.diff(rebased, rebased.fixup()).fields
+                    _state.update { s -> s.copy(message = UiMessage(conflictMessage(moved, s))) }
+                }
             }
         }
+    }
+
+    // Reads the settings; on failure the message says so and null comes back.
+    private suspend fun read(): DeviceSettings? {
+        _state.update { it.copy(loading = true) }
+        return try {
+            session.readSettings().also { s ->
+                _state.update { it.copy(loading = false) }
+                rebase(s)
+            }
+        } catch (e: DeviceError) {
+            _state.update { it.copy(loading = false, message = UiMessage(e.message ?: "Could not read the settings.")) }
+            null
+        }
+    }
+
+    // After a 0x82 caused by a change on the device. [moved]: the fields fixup() moved to fit it.
+    private fun conflictMessage(moved: Set<SettingsField>, s: SettingsUiState): String {
+        val edited = s.edited
+        val fit = if (edited == null || moved.isEmpty()) {
+            ""
+        } else {
+            " To fit the device's values, " + moved.joinToString(" and ") { "${it.label} is now ${edited.display(it)}" } + "."
+        }
+        val next = if (s.changed.isEmpty()) " Nothing is left to save." else " Check your changes and tap Save again."
+        return "Not saved: the settings were changed on the device, so the app read them again.$fit$next"
     }
 
     private fun edit(change: (DeviceSettings) -> DeviceSettings) = _state.update { s ->

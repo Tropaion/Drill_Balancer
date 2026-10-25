@@ -9,10 +9,10 @@ readings, settings, calibration and firmware updates.
 > **Status: pre-hardware.** The board has not arrived yet, and nothing in this
 > repo has run on real hardware. The firmware is written, builds and passes
 > its host tests on a PC. The Android app passes its JVM and screenshot tests
-> and is being tested end-to-end on a real phone against the
+> and has been tested end-to-end on a real phone against the
 > [PC simulator](firmware/tools/sim/README.md). Hardware bring-up will follow
 > the [checklist in firmware/README.md](firmware/README.md#bring-up-checklist-hardware).
-> Battery life, accuracy and OTA speed are **not measured yet**.
+> Battery life, accuracy and OTA speed on the board are **not measured yet**.
 
 <p align="center">
   <img src="docs/images/device-overview.png" alt="Device screen renders: wall, floor and angle mode, and the settings list" width="720">
@@ -259,7 +259,9 @@ More: [Development and Testing](https://github.com/Tropaion/Drill_Balancer/wiki/
 - [x] Python BLE client with OTA
 - [x] Android app with JVM and screenshot tests
 - [x] PC simulator
-- [ ] App end-to-end on a real phone against the simulator (in progress)
+- [x] App end-to-end on a real phone against the simulator: scan, pairing,
+      live values, settings, both calibrations, OTA (about 100 KiB/s at
+      MTU 517 with the PC's adapter) and the fault cases
 - [ ] Hardware bring-up following the
       [checklist](firmware/README.md#bring-up-checklist-hardware) (all
       `TODO(hw)` items)

@@ -38,7 +38,9 @@ import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
@@ -142,6 +144,9 @@ class BleDeviceSession(
         override val ctrlIndications: Flow<ByteArray> = otaIndications
         override suspend fun writeCtrl(value: ByteArray) = gatt(GattOp.OTA) { writeOtaCtrl(value) }
         override suspend fun writeData(value: ByteArray) = gatt(GattOp.OTA) { writeOtaData(value) }
+
+        // Any state but Connected: the transfer's link is gone (a reconnect is a new link).
+        override val linkLost: Flow<Unit> = _connection.filter { it !is ConnectionState.Connected }.map { }
     }
 
     init {
