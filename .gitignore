@@ -11,3 +11,15 @@ firmware/build-test*/
 .vscode/
 .idea/
 .cache/
+
+# Android app (Gradle)
+app/.gradle/
+app/build/
+app/.kotlin/
+app/local.properties
+app/.idea/
+app/*.iml
+app/captures/
+# Roborazzi comparison output, should it land next to the reference images
+app/src/test/screenshots/*_compare.png
+app/src/test/screenshots/*_actual.png

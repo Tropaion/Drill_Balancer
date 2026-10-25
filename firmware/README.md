@@ -90,6 +90,13 @@ Linux, see [tools/ble/README.md](tools/ble/README.md).
 `python3 db_client.py --dry-run` and
 `python3 -m unittest test_db_client` run without Bluetooth.
 
+### Android app
+
+The Android companion app (live view, settings, calibration, firmware
+update) is in [../app](../app/README.md). Its conformance tests read the
+headers listed under [BLE protocol](#ble-protocol), so run them after a
+protocol change.
+
 ## Architecture
 
 Tasks:

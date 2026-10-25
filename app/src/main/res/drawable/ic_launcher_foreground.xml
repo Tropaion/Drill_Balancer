@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Bubble level on the 108dp adaptive icon canvas (safe zone = centre 66dp) -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- Vial outline -->
+    <path
+        android:strokeColor="#00E676"
+        android:strokeWidth="4"
+        android:pathData="M40,42 L68,42 A12,12 0 0 1 68,66 L40,66 A12,12 0 0 1 40,42 Z" />
+    <!-- Centre marks -->
+    <path
+        android:strokeColor="#FFFFFF"
+        android:strokeWidth="2"
+        android:pathData="M45,46 L45,62 M63,46 L63,62" />
+    <!-- Bubble -->
+    <path
+        android:fillColor="#00E676"
+        android:pathData="M54,48 A6,6 0 1 1 54,60 A6,6 0 1 1 54,48 Z" />
+</vector>

@@ -1,0 +1,117 @@
+package dev.drillbalancer.ble
+
+import dev.drillbalancer.device.DeviceError
+import dev.drillbalancer.device.DisconnectReason
+import dev.drillbalancer.protocol.AttError
+import dev.drillbalancer.protocol.Command
+import dev.drillbalancer.protocol.SettingsField
+import dev.drillbalancer.protocol.SettingsUpdate
+import no.nordicsemi.android.ble.callback.FailCallback
+import no.nordicsemi.android.ble.observer.ConnectionObserver
+
+/** What a failed request was doing: it decides which device error codes it can carry. */
+enum class GattOp(val label: String, val secure: Boolean) {
+    CONNECT("connect", false),
+    READ("read", false),
+    SUBSCRIBE("subscribe", false),
+    CONFIG_WRITE("settings write", true),
+    COMMAND("command", true),
+    OTA("firmware update", true),
+    PAIRING("pairing", true),
+}
+
+/**
+ * Turns the status of a failed Nordic request into a DeviceError. Pure, so the mapping is
+ * unit-tested; the BLE glue only supplies whether the link is still up and whether the
+ * phone holds a bond for the device.
+ *
+ * The status is overloaded: an ATT error from the device (ble_protocol.h), an Android stack
+ * error (133 GATT_ERROR, 137 GATT_AUTH_FAIL), a negative FailCallback.REASON_*, or, when the
+ * link dropped during the request, the HCI disconnect reason. Android's own GATT_* names
+ * for 0x80..0x87 (GATT_NO_RESOURCES .. GATT_ILLEGAL_PARAMETER) collide with the device's
+ * application codes, so those are only trusted for the operation that can produce them.
+ */
+object GattErrors {
+    const val GATT_INSUFFICIENT_AUTHORIZATION = 0x08
+    const val GATT_ERROR = 0x85
+    const val GATT_AUTH_FAIL = 0x89
+
+    // HCI disconnect reasons meaning the stored keys did not work.
+    const val HCI_AUTH_FAILURE = 0x05
+    const val HCI_PIN_OR_KEY_MISSING = 0x06
+    const val HCI_MIC_FAILURE = 0x3D
+
+    private val AUTH_CODES = setOf(
+        AttError.INSUFFICIENT_AUTHENTICATION.code,
+        AttError.INSUFFICIENT_ENCRYPTION.code,
+        AttError.INSUFFICIENT_KEY_SIZE.code,
+        GATT_INSUFFICIENT_AUTHORIZATION,
+        GATT_AUTH_FAIL,
+    )
+    private val KEY_FAILURES = setOf(HCI_AUTH_FAILURE, HCI_PIN_OR_KEY_MISSING, HCI_MIC_FAILURE, GATT_AUTH_FAIL)
+
+    fun requestError(status: Int, op: GattOp, linkUp: Boolean, phoneBonded: Boolean): DeviceError = when {
+        status == FailCallback.REASON_BLUETOOTH_DISABLED -> DeviceError.Link(DisconnectReason.BLUETOOTH_OFF)
+        status == FailCallback.REASON_NULL_ATTRIBUTE || status == FailCallback.REASON_DEVICE_NOT_SUPPORTED ->
+            DeviceError.Link(DisconnectReason.NOT_SUPPORTED)
+        // 133 and friends, or the 15 s timeout: the device was not there.
+        op == GattOp.CONNECT ->
+            DeviceError.Link("Could not connect. Is the device switched on and in range?", DisconnectReason.LINK_LOSS)
+        status == FailCallback.REASON_TIMEOUT -> DeviceError.Timeout(op.label)
+        // The bond broadcast failed the request: pairing was cancelled or the code was wrong.
+        status == FailCallback.REASON_REQUEST_FAILED && op.secure && !phoneBonded -> DeviceError.PairingFailed()
+        // Stored keys rejected, either answered on the link or as the reason it dropped. An
+        // ATT answer needs a live link; 0x08 as a drop reason is a plain connection timeout.
+        op.secure && phoneBonded && (if (linkUp) status in AUTH_CODES else status in KEY_FAILURES) ->
+            DeviceError.StaleBond()
+        status == FailCallback.REASON_REQUEST_FAILED && linkUp ->
+            DeviceError.Link("The phone's Bluetooth stack refused the ${op.label}. Try again.")
+        status < 0 || !linkUp -> DeviceError.Link("The connection was lost during the ${op.label}.", DisconnectReason.LINK_LOSS)
+        status == GATT_AUTH_FAIL -> DeviceError.PairingFailed()
+        status in AUTH_CODES -> DeviceError.Att(
+            if (status == GATT_INSUFFICIENT_AUTHORIZATION) AttError.INSUFFICIENT_AUTHENTICATION.code else status,
+        )
+        status in 0x80..0x83 && op == GattOp.CONFIG_WRITE -> DeviceError.Att(status)
+        status in 0x84..0x86 && op == GattOp.COMMAND -> DeviceError.Att(status)
+        status == AttError.UNAVAILABLE.code && op == GattOp.OTA -> DeviceError.Att(status)
+        status in 0x01..0x7F -> DeviceError.Att(status)   // standard ATT error from the device
+        else -> DeviceError.Link("Bluetooth error ${hex(status)} during the ${op.label}.")
+    }
+
+    /**
+     * The error a session that ended by itself reports (ConnectionObserver.REASON_*).
+     * [expected] is the drop the last command, settings write or update announced;
+     * [bluetoothOn] whether the phone's adapter is still enabled.
+     */
+    fun disconnectError(reason: Int, expected: DisconnectReason?, bluetoothOn: Boolean): DeviceError.Link = when {
+        expected != null -> DeviceError.Link(expected)
+        // The phone's own stack ended the link (our own closes never get here). That is the
+        // adapter turning off, but also a bond removed in the settings or Android's ATT
+        // timeout, which are worth a retry.
+        reason == ConnectionObserver.REASON_TERMINATE_LOCAL_HOST ->
+            DeviceError.Link(if (bluetoothOn) DisconnectReason.OTHER else DisconnectReason.BLUETOOTH_OFF)
+        reason == ConnectionObserver.REASON_TERMINATE_PEER_USER -> DeviceError.Link(DisconnectReason.DEVICE_CLOSED)
+        // UNSUPPORTED_CONFIGURATION: Nordic's name for a supervision timeout once the PHY
+        // went to 2M before service discovery, which the device asks for on every connect.
+        reason == ConnectionObserver.REASON_LINK_LOSS || reason == ConnectionObserver.REASON_TIMEOUT ||
+            reason == ConnectionObserver.REASON_UNSUPPORTED_CONFIGURATION ->
+            DeviceError.Link(DisconnectReason.LINK_LOSS)
+        reason == ConnectionObserver.REASON_NOT_SUPPORTED -> DeviceError.Link(DisconnectReason.NOT_SUPPORTED)
+        else -> DeviceError.Link(DisconnectReason.OTHER)
+    }
+
+    private fun hex(v: Int) = "0x" + (v and 0xFF).toString(16).padStart(2, '0').uppercase()
+}
+
+/** The drop that follows a successful [command], if the device closes the link for it. */
+fun expectedDrop(command: Command): DisconnectReason? = when (command) {
+    Command.Sleep -> DisconnectReason.SLEEP
+    Command.PowerOff -> DisconnectReason.POWER_OFF
+    Command.Reboot -> DisconnectReason.REBOOT
+    Command.FactoryReset -> DisconnectReason.FACTORY_RESET
+    else -> null
+}
+
+/** ble=false: the device stores it, answers the write, then closes the link. */
+fun expectedDrop(update: SettingsUpdate): DisconnectReason? =
+    if (SettingsField.BLE in update.fields && !update.values.bleEnabled) DisconnectReason.BLE_DISABLED else null
