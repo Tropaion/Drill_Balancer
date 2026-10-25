@@ -3,7 +3,8 @@
 
 The OTA sender runs against a simulated device that follows ota_proto.h
 (ACK every ack_every chunks and after the last one, one NACK per gap, old seq
-ignored) and can drop writes, as a congested link would.
+ignored, a lost ACK repeated for resent chunks) and can drop writes and ACKs,
+as a congested link would.
 """
 
 import asyncio
@@ -18,7 +19,7 @@ import db_client as dc
 
 class FakeOtaDevice:
     def __init__(self, max_chunk=20, ack_every=4, drop=None, finish_status=0,
-                 accept_max=None, mtu_size=None):
+                 accept_max=None, mtu_size=None, lose_ack=None):
         self.max_chunk = max_chunk          # announced in the START reply
         # Longest payload actually accepted (a link at a smaller MTU, or a
         # device whose limit shrank); longer chunks get NACK BAD_REQUEST.
@@ -28,6 +29,8 @@ class FakeOtaDevice:
         self.bad_requests = 0
         self.ack_every = ack_every
         self.drop = drop or (lambda seq, n: False)
+        # An ACK sent but never delivered (a full indication queue on the device).
+        self.lose_ack = lose_ack or (lambda next_seq, received: False)
         self.finish_status = finish_status
         self.cb = None
         self.reset()
@@ -40,6 +43,7 @@ class FakeOtaDevice:
         self.next_seq = 0
         self.since_ack = 0
         self.nack_sent = False
+        self.dup_seq = None     # seq of the last retransmission since an accepted chunk
         self.writes_per_seq = {}
         self.aborted = False
 
@@ -91,7 +95,14 @@ class FakeOtaDevice:
             return
         diff = (seq - self.next_seq) & 0xFFFF
         if diff >= 0x8000:
-            return  # retransmission of an accepted chunk
+            # Retransmission of an accepted chunk. Right after an ACK the client
+            # lost it: the ACK goes again, once per resend round.
+            if self.since_ack == 0:
+                step = None if self.dup_seq is None else (seq - self.dup_seq) & 0xFFFF
+                if step is None or step == 0 or step >= 0x8000:
+                    self._ack()
+                self.dup_seq = seq
+            return
         if diff != 0:
             if not self.nack_sent:
                 self.nack_sent = True
@@ -107,9 +118,14 @@ class FakeOtaDevice:
         self.buf += payload
         self.next_seq = (self.next_seq + 1) & 0xFFFF
         self.nack_sent = False
+        self.dup_seq = None
         self.since_ack += 1
         if self.since_ack >= self.ack_every or len(self.buf) >= self.size:
             self.since_ack = 0
+            self._ack()
+
+    def _ack(self):
+        if not self.lose_ack(self.next_seq, len(self.buf)):
             self._send(bytes([0x81]) + struct.pack("<HI", self.next_seq, len(self.buf)))
 
 
@@ -164,6 +180,16 @@ class OtaTransferTest(unittest.TestCase):
         dev = FakeOtaDevice(drop=lambda seq, n: seq == last and n == 0)
         run(dev, img, stall_s=0.05)
         self.assertEqual(bytes(dev.buf), img)
+
+    def test_lost_final_ack_recovers_by_stall_timeout(self):
+        # Every chunk arrived, the final ACK (and its first repeat) did not.
+        img = self.image(205)
+        lost = []
+        dev = FakeOtaDevice(lose_ack=lambda seq, rx: rx == len(img) and len(lost) < 2
+                            and not lost.append(rx))
+        run(dev, img, stall_s=0.05)
+        self.assertEqual(bytes(dev.buf), img)
+        self.assertEqual(len(lost), 2)
 
     def test_random_loss(self):
         rnd = random.Random(7)

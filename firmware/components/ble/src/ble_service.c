@@ -392,7 +392,8 @@ static void ota_reply(void *ctx, const uint8_t *msg, size_t len)
     }
     taskEXIT_CRITICAL(&s_mux);
     if (!queued) {
-        // The client recovers through its stall timeout and resend.
+        // The client recovers through its stall timeout and resend; a lost
+        // ACK is sent again for the resent chunks (ota_proto.h).
         ESP_LOGW(TAG, "ota reply queue full, 0x%02x dropped", msg[0]);
         return;
     }

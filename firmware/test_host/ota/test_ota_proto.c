@@ -417,6 +417,38 @@ static void test_duplicate_and_old_seq_ignored(void)
     assert_flash_is_image(500);
 }
 
+static void test_lost_ack_is_repeated_once_per_resend_round(void)
+{
+    make_image(1000, 12);               // 10 chunks of 100, ack_every 8
+    start(1000, image_sha);
+    n_msgs = 0;
+    send_range(0, 800, 100, 0);
+    expect_ack(0, 8, 800);              // lost on the way to the client
+    // The client resends from its previous ACK: the round gets the ACK once.
+    send_range(0, 800, 100, 0);
+    TEST_ASSERT_EQUAL(2, n_msgs);
+    expect_ack(1, 8, 800);
+    // That one was lost too: the next round (starting further back) gets it again.
+    send_range(400, 400, 100, 4);
+    TEST_ASSERT_EQUAL(3, n_msgs);
+    expect_ack(2, 8, 800);
+    TEST_ASSERT_EQUAL(8, sink.write_calls);
+    // Once a new chunk is accepted, old ones are silent again.
+    chunk(8, &image[800], 100);
+    chunk(7, &image[700], 100);
+    TEST_ASSERT_EQUAL(3, n_msgs);
+    // The final ACK is repeated the same way.
+    chunk(9, &image[900], 100);
+    expect_ack(3, 10, 1000);
+    chunk(9, &image[900], 100);
+    TEST_ASSERT_EQUAL(5, n_msgs);
+    expect_ack(4, 10, 1000);
+    TEST_ASSERT_EQUAL(10, sink.write_calls);
+    op(OTA_OP_FINISH);
+    expect_reply(n_msgs - 1, OTA_OP_FINISH, OTA_STATUS_OK);
+    assert_flash_is_image(1000);
+}
+
 static void test_seq_wraps_past_65535(void)
 {
     const uint32_t size = 70000;
@@ -895,6 +927,7 @@ int main(void)
     RUN_TEST(test_seq_gap_nacks_once_and_resend_recovers);
     RUN_TEST(test_second_gap_after_recovery_nacks_again);
     RUN_TEST(test_duplicate_and_old_seq_ignored);
+    RUN_TEST(test_lost_ack_is_repeated_once_per_resend_round);
     RUN_TEST(test_seq_wraps_past_65535);
     RUN_TEST(test_gap_across_wrap);
     RUN_TEST(test_bad_chunks_nack_bad_request_and_transfer_continues);

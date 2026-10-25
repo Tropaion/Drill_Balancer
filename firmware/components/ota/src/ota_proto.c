@@ -117,6 +117,7 @@ static void on_start(ota_proto_t *p, const uint8_t *data, size_t len, uint32_t n
     p->next_seq = 0;
     p->since_ack = 0;
     p->nack_sent = false;
+    p->dup_seen = false;
     p->last_rx_ms = now_ms;
 
     uint8_t m[7] = {OTA_MSG_REPLY, OTA_OP_START, OTA_STATUS_OK};
@@ -214,7 +215,19 @@ void ota_proto_on_data(ota_proto_t *p, const uint8_t *data, size_t len, uint32_t
     uint16_t seq = (uint16_t)(data[0] | data[1] << 8);
     uint16_t ahead = (uint16_t)(seq - p->next_seq);
     if (ahead >= 0x8000u) {
-        return;     // retransmission of an accepted chunk
+        // Retransmission of an accepted chunk. Right after an ACK it means the
+        // client lost that ACK and resends from an older one; without the ACK
+        // again it would never move on. Once per resend round, so a resent
+        // window does not flood the indication queue.
+        if (p->since_ack == 0) {
+            uint16_t step = (uint16_t)(seq - p->dup_seq);
+            if (!p->dup_seen || step == 0 || step >= 0x8000u) {
+                send_ack(p);
+            }
+            p->dup_seen = true;
+            p->dup_seq = seq;
+        }
+        return;
     }
     if (ahead != 0) {
         if (!p->nack_sent) {
@@ -246,6 +259,7 @@ void ota_proto_on_data(ota_proto_t *p, const uint8_t *data, size_t len, uint32_t
     p->received += (uint32_t)n;
     p->next_seq++;
     p->nack_sent = false;
+    p->dup_seen = false;
     p->last_rx_ms = now_ms;
     p->since_ack++;
     if (p->since_ack >= p->cfg.ack_every || p->received == p->image_size) {

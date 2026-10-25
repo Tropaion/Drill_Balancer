@@ -47,7 +47,11 @@
 //   change the state (an empty write is answered with request_opcode 0).
 // - Data while IDLE gets one NACK BAD_STATE (expected_seq 0), then silence.
 // - seq older than expected (up to 32768 behind, modulo 65536) is a
-//   retransmission and is ignored; nothing is ever written twice.
+//   retransmission and is ignored; nothing is ever written twice. If no
+//   chunk was accepted since the last ACK, the client evidently missed that
+//   ACK (an indication can be dropped) and went back to an older one: the
+//   ACK is sent again, once per resend round (a round starts with a seq at or
+//   before that of the previous retransmission).
 // - seq ahead of expected is a gap: one NACK SEQ_ERROR, further chunks are
 //   ignored until the expected seq arrives.
 // - A chunk at the expected seq that is empty, shorter than the 2-byte seq or
@@ -55,7 +59,7 @@
 //   the client resends from expected_seq. max_chunk is the value sent in the
 //   START reply; ota_proto_set_max_chunk() only affects later STARTs.
 // - An ACK is sent every ack_every accepted chunks and after the chunk that
-//   completes image_size (never twice for the same chunk).
+//   completes image_size (again only for a retransmission, as above).
 // - The SHA-256 runs over accepted chunks in seq order. timeout_ms 0
 //   disables the timeout; ack_every 0 is treated as 1.
 
@@ -137,6 +141,8 @@ typedef struct {
     uint16_t next_seq;
     uint16_t since_ack;
     bool nack_sent;                 // one NACK per gap until it is filled
+    bool dup_seen;                  // a retransmission since the last accepted chunk
+    uint16_t dup_seq;               // its seq
     uint32_t last_rx_ms;
 } ota_proto_t;
 
