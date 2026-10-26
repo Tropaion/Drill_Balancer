@@ -42,7 +42,8 @@ match; change the contract there, never here.
   exists is skipped.
 - Editing labels in the app rewrites `events.json` (and `meta.json`) only;
   the data files never change.
-- On every push to `recordings/**` the Action validates the new and changed
+- On every push to `recordings/**`, `taxonomy/**`, `schema/**` or the
+  workflow itself, the Action checks the contract and validates the new and changed
   recordings with `dbdata.validate` from the main repo (pinned tag
   `dataset-v1`), then regenerates `index.csv` and `stats.md` and commits
   them. An invalid recording stays in the repo with `valid=0` in the index;

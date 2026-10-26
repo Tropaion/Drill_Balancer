@@ -13,7 +13,12 @@ name: validate
 on:
   push:
     branches: [main]
-    paths: ["recordings/**"]
+    # a recording, or anything the check of every recording depends on
+    paths:
+      - "recordings/**"
+      - "taxonomy/**"
+      - "schema/**"
+      - ".github/workflows/validate.yml"
   workflow_dispatch:
     inputs:
       all:

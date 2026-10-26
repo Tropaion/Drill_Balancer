@@ -70,7 +70,9 @@ class BootstrapTest(F.TempDirTest):
 
     def test_workflow_essentials(self):
         y = WORKFLOW.read_text()
-        for needle in ('paths: ["recordings/**"]', "group: index", "contents: write",
+        # a recording, the contract copies or the workflow itself start a run
+        for needle in ('- "recordings/**"', '- "taxonomy/**"', '- "schema/**"',
+                       '- ".github/workflows/validate.yml"', "group: index", "contents: write",
                        "DBDATA_REPO: Tropaion/Drill_Balancer", "DBDATA_REF: dataset-v1",
                        "sparse-checkout-cone-mode: false", "/recordings/**/meta.json", "filter: blob:none",
                        "python -m dbdata.validate --contract .", "python -m dbdata.index . --report",

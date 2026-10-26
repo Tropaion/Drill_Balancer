@@ -90,7 +90,8 @@ The recording id is `YYYYMMDDTHHMMSSZ_<install4>_<rand4>`: the UTC start,
 The phone only adds `recordings/...` (one commit per recording), so it never
 conflicts with the index.
 
-On a push to `recordings/**` the Action (concurrency group `index`):
+On a push to `recordings/**`, `taxonomy/**`, `schema/**` or the workflow
+file the Action (concurrency group `index`):
 1. checks out `meta.json`/`events.json` of every recording (sparse,
    blobless) plus the data files of the recordings to validate: those
    changed in the push, plus every recording `index --list-unchecked`
