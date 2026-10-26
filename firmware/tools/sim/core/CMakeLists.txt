@@ -43,6 +43,7 @@ target_compile_options(dbsim_thirdparty PRIVATE -w)
 
 add_library(dbsim SHARED
     sim_core.c
+    sim_audio.c
     ${C}/level/src/level_math.c
     ${C}/level/src/fusion.c
     ${C}/level/src/level.c
@@ -56,6 +57,10 @@ add_library(dbsim SHARED
     ${C}/ui/src/ui_logic.c
     ${C}/board/src/pmu_events.c
     ${C}/imu/src/imu_frame.c
+    ${C}/recorder/src/rec_stream.c
+    ${C}/recorder/src/rec_ring.c
+    ${C}/recorder/src/rec_fsm.c
+    ${C}/recorder/src/rec_ts.c
     $<TARGET_OBJECTS:dbsim_thirdparty>)
 target_include_directories(dbsim PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}

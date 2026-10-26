@@ -14,7 +14,11 @@ checks, indexes and loads it for training:
   `validate`, `index`, `stats`, and `dbrec`: the decoder of the device's
   recording stream (`.dbrec`, the format of
   `firmware/components/recorder/include/rec_stream.h`), which also exports a
-  take as a recording folder (IMU and audio cut to the time both cover).
+  take as a recording folder (IMU and audio cut to the time both cover);
+  `autodetect`, the auto-labeller (the reference for the app's Kotlin port),
+  and `synth`, synthetic recordings with ground truth from the simulator.
+- `dbdata/contract/autodetect_params.json`: the auto-detector's parameters,
+  versioned; `fixtures/autodetect/`: its golden fixtures for the app.
 - `repo_template/`: README, `.github/workflows/validate.yml` and git
   attributes for the data repo; `bootstrap_repo.py` copies them, plus the
   contract, into a clone of it.
@@ -48,6 +52,14 @@ commands below from this folder, or put it on `PYTHONPATH`.
 .venv/bin/python -m dbdata.dbrec --self-check         # decoder vs rec_stream.h
 .venv/bin/python -m dbdata.dbrec info SESSION.dbrec   # records, losses, takes
 .venv/bin/python -m dbdata.dbrec export SESSION.dbrec ROOT --take 0 --recording-id ID --session-id SID
+.venv/bin/python -m dbdata.autodetect REC [REC...]           # what the auto-detector finds
+.venv/bin/python -m dbdata.autodetect REC --write [--force]  # (re)label: events.json, meta review + derived
+.venv/bin/python -m dbdata.autodetect REC --score            # event F1 and phases against REC's labels
+.venv/bin/python -m dbdata.autodetect --check-fixtures       # replay fixtures/autodetect
+.venv/bin/python -m dbdata.autodetect --update-fixtures      # rewrite their expected output
+.venv/bin/python -m dbdata.synth ROOT [--set eval|fixtures] [--count N]   # synthetic recordings
+.venv/bin/python -m dbdata.synth fixtures fixtures/autodetect             # regenerate the fixtures
+.venv/bin/python -m dbdata.synth --list
 ```
 
 `validate` takes recording folders or any folder above them; every folder
@@ -216,6 +228,7 @@ the LEVEL rows with `IMU_OK` only:
 | `E_LEVEL_FORMAT`, `E_LEVEL_ZERO` | level rows in time order with all columns; the `zero_*` columns are 0 on rows without `ZERO_SET` |
 | `E_DERIVED` | derived labels match a recomputation |
 | `E_DEVICE_EVENTS` | `device_events.csv` parses, is in time order, uses known codes |
+| `W_REVIEW_STATUS`, `W_DETECTOR` | `review.status` `auto_only` means the detector's labels as it wrote them: no `user`, `edited` or `confirmed` label, and `events.detector` set; `meta.review.detector` names the same detector |
 | `E_INTERNAL` | the validator itself failed on this recording (reported, never raised) |
 | `W_UNCHECKED` | (index only) no full check of the recording's current files yet (`checked` is empty) |
 
@@ -279,6 +292,130 @@ track = phase_track(rec.t_us, rec.events, boundary_policy="soft")   # per-sample
 `write_recording(dest, meta, events, imu, level=..., audio=..., audio_sync=...,
 derive=True)` writes a complete folder and fills `meta.files` (and
 `meta.derived`); the tests and the synthetic-data generator use it.
+
+## Auto-detector
+
+`dbdata.autodetect` labels a recording from its signals: it writes a
+complete `events.json` (`source: auto`, a `confidence` per label,
+`detector: {version, params_sha256}`) and the derived labels. The app runs
+the same algorithm in Kotlin right after a take (milestone 6), and a
+person reviews the labels there; `--write` relabels recordings on the PC
+(`review.status` becomes `auto_only`; reviewed or edited labels need
+`--force`), and validate checks that `auto_only` labels are untouched
+(`W_REVIEW_STATUS`, `W_DETECTOR`). The algorithm, step by step, is the
+module docstring of `dbdata/autodetect.py`; every number it uses is in
+`dbdata/contract/autodetect_params.json`, whose sha256 (CRLF normalised to
+LF) goes into each `events.json`. Change a value, bump its `version` for an
+algorithm change, and regenerate the fixtures' expected output.
+
+In short, on 10 ms frames:
+- features: IMU energy above 20 Hz, the thrust along the bit (2-20 Hz),
+  the roll rate about the bit, a hammer-blow periodicity; MIC1's level,
+  the motor's fundamental f0 (harmonic product spectrum over a 32 ms
+  window, zero-padded to 2048), the cutting band (1-6 kHz), spectral flux;
+  z-scores against the quietest 0.5 s; where the transport lost data
+  (`gaps.audio_gap_frames`, frames without IMU samples) there are no
+  features, and the motor hysteresis waits the gap out;
+- motor runs by hysteresis on the louder stream (a run the IMU never
+  confirms is sound alone, e.g. speech), the motor_off walked back to where
+  the energy and then f0 start to fall;
+- contact when a weighted score of f0 sag, cutting noise, IMU energy and
+  thrust (or the hammer blows) holds for 200 ms; the load end when f0 and
+  the cutting noise recover; a breakthrough when an impulse comes with it
+  (axial, radial gyro or a sound burst), else a retract;
+- a stuck span (voiced f0 far below the free run or, with the harmonics
+  gone, the IMU below its free-run level while the motor runs; also while
+  hammering, and a stalling motor is no load end), restarts in the hole
+  (or a retract when the bit was pulled out with the motor off), kickbacks
+  (roll about the bit), and the suggestions wobble, wander and speech
+  (confidence at most 0.5).
+
+What it achieves on synthetic takes (`synth`'s `eval` set: 21 takes, drill
+and hammer, 147/180/233 Hz motors with 10-30 % sag, blind holes, stuck bits
+(also while hammering, and a quiet slow motor restarting in the hole),
+kickbacks, quiet and noisy rooms, floor and ceiling, RAW897), with the
+contract's tolerances (motor ±30 ms, contact ±100 ms, breakthrough ±50 ms;
+retract and kickback ±100 ms, spans at IoU ≥ 0.5):
+
+| | event F1 | mean timing error |
+|---|---|---|
+| motor (on + off) | 0.959 (on 0.919, off 1.0) | on 10 ms, off 4 ms |
+| contact | 1.0 | 4 ms |
+| breakthrough | 1.0 | 0.2 ms |
+| retract, kickback, stuck | 1.0 | 17 ms, 2 ms |
+| phases (10 ms frames) | accuracy 0.993 per take on average, 0.974 the lowest | |
+
+Three more seed sets of the same scenarios gave motor_on 0.892, 0.892 and
+0.865, phases 0.971-0.979 at the lowest, and the rest unchanged; so did 60
+random takes around them (motor_on 0.81) and 36 takes of stalls (drill and
+hammer, a quiet slow motor) and blind holes with a small sag.
+`tests/test_autodetect.py` holds the eval set one miss below the worst of
+the four seed sets, and a holdout in a room twice as loud.
+
+Known limits:
+- motor_on comes late when the room is loud or the drill quiet: the first
+  part of the spin-up drowns (the motor's vibration stays below the 20 Hz
+  high-pass for its first ~10 % of speed, and its sound below the room).
+  On the eval scenarios with the room's sound scaled (everything else
+  unchanged):
+
+  | room | motor_on F1 (±30 ms) | median / 90th percentile lateness |
+  |---|---|---|
+  | ×1 | 0.92 | 9 ms / 26 ms |
+  | ×1.5 | 0.81 | 25 ms / 72 ms |
+  | ×2 | 0.62 | 25 ms / 82 ms |
+  | ×3 | 0.19 | 54 ms / 85 ms |
+
+  motor_off, contact, breakthrough, retract and stuck stay at 1.0 up to ×3.
+  The simulator's spin-up starts gently (a smoothstep from standstill);
+  whether a real motor is found earlier is for milestone 8.
+- Without audio only the motor runs are found, about 60 ms (on) and 200 ms
+  (off) late (contact needs the microphone).
+- Labels inside a transport gap cannot be found; a gap within about
+  0.5 s of a contact or a load end can move or hide it.
+- The noise floor and the free-run level come from the take itself: a
+  take with no 0.5 s of motor off (the motor runs from its first to its
+  last frame) gets no labels at all, and a take that starts with the
+  motor running needs about 0.15 s of free run before the contact (one
+  sooner is missed, and the rest of that hole with it).
+- The device's level is no reference while hammer blows shake it, so
+  wander is not looked for in hammered holes.
+- Every number comes from the simulator: thresholds, the noise floor
+  rules, the stall levels and the hammer cue must be checked on real takes
+  (milestone 8).
+
+## Synthetic recordings and the golden fixtures
+
+`dbdata.synth` writes complete recordings with ground truth. There is one
+drilling model, the simulator's (`firmware/tools/sim`: `DrillScenario` for
+the motion, the motor and the impacts, `core/sim_audio.c` for the
+microphones). synth imports it by path and drives a whole simulated device
+the way the app does: recorder session over the simulated link, a take, a
+scenario played during it, the stream pulled in process. The take then
+goes through `dbrec`'s decoder and export like a real one (the FIFO-loss
+model's filled samples, the profile switch, the DMA block timestamps, the
+device's own LEVEL rows), and the scenario's truth becomes `events.json`
+(`source: user`, confidence 1, `review.status: reviewed`, `app.tool:
+dbdata.synth`). It needs the simulator's C core (`libdbsim.so`, built on
+demand with cmake and the ESP-IDF tree, see `tools/sim/README.md`) and
+nothing from the simulator's Python requirements. Its tests are skipped
+without it. `Spec` describes a take (scenario arguments, IMU profile,
+microphones, noise and the room's sound, pose, labels; a mount
+calibration first, a take that starts after the scenario or stops before
+its end, a stalled stream client with a small ring for a transport gap,
+and the injected wobble / wander / speech the simulator has no model
+for); `SETS` holds the evaluation and fixture sets.
+
+`fixtures/autodetect/<name>/` are eight short takes for the app's
+`AutoDetectVectorsTest`: the recording's files (input), `spec.json`,
+`events.json` (the truth), and the detector's expected output,
+`expected.json` and `features.csv.gz` (every frame's features). The
+fixtures, what each covers, the format and the tolerances are in
+`fixtures/autodetect/README.md`.
+`python -m dbdata.synth fixtures fixtures/autodetect` regenerates them
+(the simulator); after a change to the detector, `python -m
+dbdata.autodetect --update-fixtures` rewrites only the expected output, and
+`--check-fixtures` (also a unit test) replays them.
 
 ## Changing the contract
 

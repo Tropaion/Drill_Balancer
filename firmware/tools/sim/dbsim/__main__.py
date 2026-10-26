@@ -1,5 +1,6 @@
 """python -m dbsim: the simulated DrillBalancer as a BLE peripheral on BlueZ,
-with the web control panel (dbsim/web/, http://127.0.0.1:8765 by default).
+with the web control panel (dbsim/web/, http://127.0.0.1:8765 by default)
+and the recorder's stream server on the LAN (dbsim/recorder.py, port 47100).
 
 The device runs in real time. Passkeys, BLE events and the firmware log are
 printed here; Ctrl+C drops the link, unregisters from BlueZ and restores the
@@ -14,6 +15,7 @@ import traceback
 from pathlib import Path
 
 from .device import DEFAULT_MAC, DbSimDevice
+from .wire import dc
 
 _LEVEL_TAG = {"I": " ", "W": "!", "E": "E"}
 
@@ -50,6 +52,25 @@ def _printer(quiet: bool):
     return on_event
 
 
+async def start_recorder(dev, args):
+    """The stream server, or None: one that cannot start (the port in use, an
+    address that is not this PC's IPv4) leaves the simulator running without
+    it, every OPEN failing as AP_FAIL."""
+    from .recorder import RecorderServer
+    try:
+        rec = await RecorderServer(dev, args.rec_host, args.rec_port, ap=args.rec_ap,
+                                   ap_ifname=args.rec_ap_ifname).start()
+    except (OSError, ValueError) as e:
+        dev.rec_unavailable = f"stream server on {args.rec_host or 'the LAN'}:{args.rec_port}: {e}"
+        print(f"warning: recorder unavailable ({dev.rec_unavailable}); --rec-port / --rec-host "
+              f"choose another, --no-rec turns it off", file=sys.stderr, flush=True)
+        return None
+    where = "a hotspot (nmcli) at each session" if args.rec_ap else \
+        f"{rec.announce_ip}:{rec.port} (LAN, rec_state flag NO_AP)"
+    print(f"recorder stream: {where}", flush=True)
+    return rec
+
+
 async def run(args) -> int:
     loop = asyncio.get_running_loop()
     stop = asyncio.Event()
@@ -66,6 +87,7 @@ async def run(args) -> int:
         mac = await adapter_address(bus, args.adapter)
 
     dev = DbSimDevice(state_dir=args.state_dir, mac=mac, boot=False)
+    dev.rec_ring_size = max(4, args.rec_ring_kib) * 1024
     ble = None if args.no_ble else BluezPeripheral(dev, args.adapter, bus=bus)
     dev.subscribe(_printer(args.quiet))
     print(f"DrillBalancer simulator: {dev.name} ({dev.mac}), state in {dev.state_dir}", flush=True)
@@ -73,7 +95,10 @@ async def run(args) -> int:
     runner = asyncio.create_task(dev.run())
 
     web = None
+    rec = None
     try:
+        if not args.no_rec:
+            rec = await start_recorder(dev, args)
         if ble is not None:
             await ble.start()
         if not args.no_web:
@@ -94,6 +119,8 @@ async def run(args) -> int:
         print("stopping...", flush=True)
         if web is not None:
             await web.close()
+        if rec is not None:
+            await rec.stop()
         if ble is not None:
             await ble.stop()
         if not runner.done():
@@ -114,6 +141,17 @@ def main(argv=None) -> int:
     p.add_argument("--host", default="127.0.0.1", help="web UI address (default 127.0.0.1)")
     p.add_argument("--web-port", "--port", dest="port", type=int, default=8765,
                    help="web UI port (default 8765)")
+    p.add_argument("--rec-host", default=None,
+                   help="recorder stream address, IPv4 (default: this PC's LAN address)")
+    p.add_argument("--rec-port", type=int, default=dc.REC_STREAM_PORT,
+                   help=f"recorder stream port ({dc.REC_STREAM_PORT})")
+    p.add_argument("--rec-ap", action="store_true",
+                   help="open a Wi-Fi hotspot (nmcli) with the session's credentials, like the "
+                        "board's soft-AP, instead of serving on the LAN")
+    p.add_argument("--rec-ap-ifname", default=None, help="Wi-Fi interface for --rec-ap")
+    p.add_argument("--rec-ring-kib", type=int, default=512,
+                   help="the recorder's stream ring in KiB (the board has 4096)")
+    p.add_argument("--no-rec", action="store_true", help="no recorder stream server")
     p.add_argument("-q", "--quiet", action="store_true", help="only passkeys, warnings and errors")
     return asyncio.run(run(p.parse_args(argv)))
 

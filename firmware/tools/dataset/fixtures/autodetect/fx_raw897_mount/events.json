@@ -1,0 +1,95 @@
+{
+  "schema": "drillbalancer.events/1",
+  "taxonomy_version": 1,
+  "recording_id": "20261026T144503Z_synt_0903",
+  "revision": 1,
+  "coverage_us": [
+    23280620,
+    33367593
+  ],
+  "events": [
+    {
+      "id": "e1",
+      "type": "motor_on",
+      "t_us": 24178678,
+      "source": "user",
+      "confidence": 1.0
+    },
+    {
+      "id": "e2",
+      "type": "contact",
+      "t_us": 25225149,
+      "source": "user",
+      "confidence": 1.0,
+      "hole": 1
+    },
+    {
+      "id": "e3",
+      "type": "breakthrough",
+      "t_us": 26418693,
+      "source": "user",
+      "confidence": 1.0,
+      "hole": 1
+    },
+    {
+      "id": "e4",
+      "type": "motor_off",
+      "t_us": 27304031,
+      "source": "user",
+      "confidence": 1.0
+    },
+    {
+      "id": "e5",
+      "type": "motor_on",
+      "t_us": 28504031,
+      "source": "user",
+      "confidence": 1.0
+    },
+    {
+      "id": "e6",
+      "type": "contact",
+      "t_us": 29597168,
+      "source": "user",
+      "confidence": 1.0,
+      "hole": 2
+    },
+    {
+      "id": "e7",
+      "type": "retract",
+      "t_us": 30641601,
+      "source": "user",
+      "confidence": 1.0,
+      "hole": 2
+    },
+    {
+      "id": "e8",
+      "type": "motor_off",
+      "t_us": 31872979,
+      "source": "user",
+      "confidence": 1.0
+    }
+  ],
+  "spans": [],
+  "holes": [
+    {
+      "hole": 1,
+      "through": true,
+      "material": null,
+      "outcome_tags": [
+        "clean"
+      ],
+      "off_angle_deg": 0.49,
+      "off_angle_source": "computed"
+    },
+    {
+      "hole": 2,
+      "through": false,
+      "material": null,
+      "outcome_tags": [
+        "clean"
+      ],
+      "off_angle_deg": 0.5,
+      "off_angle_source": "computed"
+    }
+  ]
+}

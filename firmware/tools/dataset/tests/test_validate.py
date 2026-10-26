@@ -404,8 +404,33 @@ class ValidateTest(F.TempDirTest):
         data = codes("_check_files", "_check_imu", "_check_audio", "_check_level_derived", "_check_device_events")
         # W_COVERAGE: the data check _validate makes itself; E_INTERNAL: the run failed, whatever it checked
         self.assertEqual(data | {"W_COVERAGE", "E_INTERNAL"}, V.DATA_CODES)
-        light = codes("_validate", "_check_meta_events", "_check_events", "check_privacy", "_tax")
+        light = codes("_validate", "_check_meta_events", "_check_events", "_check_review", "check_privacy", "_tax")
         self.assertEqual(light & V.DATA_CODES, {"W_COVERAGE"})
+
+    def test_review_status_and_detector(self):
+        # auto_only: the detector's labels as it wrote them (dbdata.autodetect --write, the app before review)
+        parts = F.build(review="auto_only")
+        parts["events"]["detector"] = {"version": "dbauto/1.0.0", "params_sha256": "0" * 64}
+        self.assertEqual(self.codes(self.write(self.deep(parts))), set())
+        edited = self.deep(parts)
+        edited["events"]["events"][1].update(edited=True, auto_t_us=edited["events"]["events"][1]["t_us"])
+        self.assertEqual(self.codes(self.write(edited)), {"W_REVIEW_STATUS"})
+        user = self.deep(parts)
+        user["events"]["spans"] = [{"id": "s1", "type": "wobble", "t0_us": F.us(1.7), "t1_us": F.us(2.5),
+                                    "hole": 1, "source": "user", "confidence": 1.0}]
+        self.assertEqual(self.codes(self.write(user)), {"W_REVIEW_STATUS"})
+        undeclared = self.deep(parts)
+        del undeclared["events"]["detector"]
+        self.assertEqual(self.codes(self.write(undeclared)), {"W_DETECTOR"})
+        other = self.deep(parts)
+        other["meta"]["review"]["detector"] = "dbauto/0.9.0"
+        self.assertEqual(self.codes(self.write(other)), {"W_DETECTOR"})
+        # reviewed labels may be edited; an export without labels needs no detector
+        reviewed = self.deep(edited)
+        reviewed["meta"]["review"]["status"] = "reviewed"
+        self.assertEqual(self.codes(self.write(reviewed)), set())
+        empty = F.build(review="auto_only", events=[])
+        self.assertEqual(self.codes(self.write(empty)), set())
 
     def test_light_mode_skips_data(self):
         p = self.write(F.build())

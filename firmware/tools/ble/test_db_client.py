@@ -265,6 +265,18 @@ class CodecTest(unittest.TestCase):
             with self.assertRaises(ValueError, msg=repr(text)):
                 dc.encode_rec("mark", text=text)
 
+    def test_decode_rec_inverts_encode_rec(self):
+        for op, kw in (("open", {}), ("close", {}), ("stop", {}),
+                       ("take-start", {"profile": 3, "mic_mask": 2, "gain_db": 37, "max_s": 1200,
+                                       "take_id": 0xDEADBEEF}),
+                       ("mark", {"code": 0x0102, "text": "ä hole"}), ("mark", {"code": 0, "text": ""})):
+            self.assertEqual(dc.decode_rec(dc.encode_rec(op, **kw)), (op, kw))
+        # what ble_codec_parse_rec refuses by op or length
+        for bad in (b"", b"\x09", b"\x01\x00", b"\x03" + bytes(8), b"\x05\x00",
+                    b"\x05\x00\x00" + b"x" * (dc.REC_MARK_TEXT_MAX + 1)):
+            with self.assertRaises(ValueError, msg=bad.hex()):
+                dc.decode_rec(bad)
+
     def test_is_drillbalancer(self):
         def adv(name=None, uuids=()):
             return SimpleNamespace(local_name=name, service_uuids=list(uuids))
@@ -275,6 +287,44 @@ class CodecTest(unittest.TestCase):
         self.assertTrue(dc.is_drillbalancer(SimpleNamespace(name="DrillBalancer-0001"), adv()))
         self.assertFalse(dc.is_drillbalancer(dev, adv("Other", [dc.SVC_OTA])))
         self.assertFalse(dc.is_drillbalancer(dev, adv()))
+
+
+class RecPullInterruptTest(unittest.TestCase):
+    """rec pull after Ctrl-C: the pull gets a grace for END, then stop ends it."""
+
+    def test_a_pull_that_misses_the_grace_keeps_its_scan(self):
+        async def run():
+            stop, scan = asyncio.Event(), dc.RecScanner()
+
+            async def pull():
+                await stop.wait()               # no END comes: only stop ends it
+                return scan
+
+            fut = asyncio.ensure_future(pull())
+
+            async def main():                   # as cmd_rec runs under asyncio.run()
+                try:
+                    return await asyncio.shield(fut)
+                except asyncio.CancelledError:  # Ctrl-C cancels the main task
+                    return await dc._finish_pull(fut, stop, 0.05)
+
+            task = asyncio.ensure_future(main())
+            await asyncio.sleep(0.01)
+            task.cancel()
+            self.assertIs(await task, scan)
+            self.assertTrue(stop.is_set())
+
+            # END within the grace: stop is never needed
+            stop2 = asyncio.Event()
+
+            async def quick():
+                await asyncio.sleep(0.01)
+                return scan
+
+            self.assertIs(await dc._finish_pull(asyncio.ensure_future(quick()), stop2, 1.0), scan)
+            self.assertFalse(stop2.is_set())
+
+        asyncio.run(run())
 
 
 if __name__ == "__main__":

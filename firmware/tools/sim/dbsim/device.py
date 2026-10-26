@@ -2,8 +2,19 @@
 
 DbSimDevice runs the sensor task (20 ms passes), the control task (200 ms,
 and right after a queued command), the BLE notify timer (100 ms while
-connected) and the OTA timer (1 s) on a virtual millisecond clock. Tests step
-it with advance(ms); run() drives it from asyncio in real time (or faster).
+connected), the OTA timer (1 s), the recorder task (100 ms) and, during a
+take, the microphones' DMA blocks (16 ms) on a virtual millisecond clock.
+Tests step it with advance(ms); run() drives it from asyncio in real time
+(or faster).
+
+The recorder's network side is an endpoint object (dbsim/recorder.py's
+RecorderServer, a TCP server on the LAN) set as rec_endpoint: START_AP calls
+its ap_start(), STOP_AP its ap_stop(), and it reports back with
+rec_endpoint_up() / rec_hello() / rec_client_lost() / rec_endpoint_down()
+and moves the stream with rec_pop(). Without one the endpoint is "up" at
+once on 127.0.0.1 and the caller plays the client with the same methods.
+A DrillScenario (start_scenario()) drives the IMU and the microphones; its
+ground truth for each take goes to state/rec_truth_<take>.json.
 
 The BLE layer calls the link and GATT methods (connect, write_char, ...) and
 reacts to events; the web UI reads snapshot() and uses the pose and fault
@@ -27,16 +38,23 @@ controls. Events go to subscribe() callbacks and events() queues as
   boot              {"version", "reason": "cold" | "motion" | "reboot"}
   log               {"level": "I" | "W" | "E", "msg", "source": "fw" | "sim" | "ble"}
   ble               BLE transport events (ble.py): {"event", "peer", ...}
+  rec               recorder: {"event": "take_start" | "take_end" | "scenario" |
+                    "endpoint" | ..., ...}
 """
 
 from __future__ import annotations
 
 import asyncio
 import collections
+import hashlib
+import json
+import os
+import random
 from pathlib import Path
 
 from . import core as C
-from .physics import DrillPhysics, SAMPLE_PERIOD_S, ODR_HZ
+from .physics import ODR_HZ, DrillPhysics, DrillScenario
+from .wire import dc
 
 DEFAULT_MAC = "3C:0A:F3:D9:F2:A4"
 DEFAULT_IMAGE = C.FIRMWARE_DIR / "build" / "drillbalancer.bin"
@@ -61,8 +79,14 @@ def image_version(path) -> str | None:
 
 # GATT characteristic names used by the BLE layer.
 SUB_BITS = {"angle": C.SUB_ANGLE, "status": C.SUB_STATUS, "battery": C.SUB_BAT,
-            "ota_ctrl": C.SUB_OTA}
+            "ota_ctrl": C.SUB_OTA, "rec_state": C.SUB_REC}
 ATT_UNLIKELY = 0x0E
+LOOPBACK_ENDPOINT = ("127.0.0.1", dc.REC_STREAM_PORT)
+
+
+def board_id(mac: str) -> bytes:
+    """SESSION.board_id: a salted hash of the chip id, never the MAC itself."""
+    return hashlib.sha256(b"drillbalancer-board:" + mac.upper().encode()).digest()[:4]
 
 
 class DbSimDevice:
@@ -71,12 +95,19 @@ class DbSimDevice:
     CONTROL_MS = 200          # control.c CMD_TIMEOUT_MS
     OTA_TICK_MS = 1000        # ota_update.c TICK_PERIOD_US
     CORE_BOOT_MS = 300        # app_now_ms() when app_main starts the tasks
+    # app_now_ms() by which the IMU rate is measured: imu_frame.h
+    # IMU_RATE_MIN_BASELINE_US after the boot, plus a pass
+    IMU_TRUSTED_MS = CORE_BOOT_MS + 2000 + 40
     RESET_MS = 1200           # reset until the firmware runs again (bootloader, init)
     IND_QUEUE_LEN = 8         # ble_service.c IND_QUEUE_LEN
     REBOOT_DELAY_MS = 500     # ble_service.c REBOOT_DELAY_US
     REBOOT_FALLBACK_MS = 3000
     WOM_THRESHOLD_G = 0.150   # power.c WAKE_ON_MOTION_MG
     ACL_BUFFERS = 24          # CONFIG_BT_NIMBLE_TRANSPORT_ACL_FROM_LL_COUNT
+    REC_TICK_MS = 100         # recorder.c task timer
+    AUDIO_BLOCK_MS = 16       # rec_audio.c: 256 frames at 16 kHz per DMA block
+    STOP_AP_MS = 200          # REC_ACT_STOP_AP: what is queued goes out first
+    TRUTH_KEEP = 32           # scenarios kept for the ground truth
 
     def __init__(self, state_dir=None, physics: DrillPhysics | None = None, mac=DEFAULT_MAC,
                  default_version: str | None = None, seed=None, boot=True):
@@ -90,6 +121,20 @@ class DbSimDevice:
         self.name = f"DrillBalancer-{b[4]}{b[5]}"   # ble_service_init(): last 2 MAC bytes
         self.default_version = default_version or image_version(DEFAULT_IMAGE) or "0.0.0-sim"
         self.core = C.Core()
+        self.seed = seed
+        self._rng = random.Random(seed)   # session tokens; os.urandom without a seed
+        self.core.seed(seed if seed is not None else random.getrandbits(32))
+        self.core.set_identity(board_id(self.mac), C.firmware_git())
+
+        # recorder
+        self.rec_endpoint = None          # RecorderServer (recorder.py), or None
+        self.rec_unavailable = None       # why there is no stream server: every OPEN fails
+        self._rec_ring_size = C.REC_RING_DEFAULT
+        self._odr = ODR_HZ                # the simulated chip's sample rate
+        self._take = None                 # the running take, for the ground truth
+        self.last_truth = None
+        # [[DrillScenario, physics start s, stop s or None, its truth() or None until asked]]
+        self._scenarios = []
 
         self.now_ms = 0
         self.state = "off"
@@ -131,7 +176,11 @@ class DbSimDevice:
         self._sleep_ref = None
         self._sleep_since = 0
         self._off_after_s = 0
-        self._next = {}
+        # The sensor pass keeps one cadence from t = 0 through halts and boots:
+        # DrillPhysics.t advances PASS_MS a pass, so it stays on the sim clock
+        # (physics.t * 1000 == now_ms after each pass) that the microphones and
+        # the ground truth use.
+        self._next = {"pass": self.PASS_MS}
         if boot:
             self.power_on()
 
@@ -193,6 +242,13 @@ class DbSimDevice:
             self._run_due()
         self.now_ms = end
 
+    def settle_imu(self):
+        """Runs until the IMU driver has measured the ODR (IMU_TRUSTED_MS): only
+        then does it fill the samples the FIFO loses in read mode, so a move
+        before that integrates ~12 % short and leaves a tilt error the
+        accelerometer takes seconds to remove."""
+        self.advance(max(0, self.IMU_TRUSTED_MS - self.core_now))
+
     def _run_due(self):
         now = self.now_ms
         for t in sorted((t for t in self._timers if t[0] <= now), key=lambda t: (t[0], t[1])):
@@ -214,6 +270,13 @@ class DbSimDevice:
             self._next["ota"] += self.OTA_TICK_MS
             self.core.ota_tick(self.core_now)
             self._drain()
+        if self.state == "running" and self._next.get("rec", now + 1) <= now:
+            self._next["rec"] += self.REC_TICK_MS
+            self.core.rec_tick(self.core_now)
+            self._drain()
+        if self.state == "running" and self._next.get("audio", now + 1) <= now:
+            self._next["audio"] += self.AUDIO_BLOCK_MS
+            self._audio_pass()
         while self.state == "running" and self._ota_fifo and now >= self._ota_busy_until:
             self._ota_flush_one()
 
@@ -240,6 +303,7 @@ class DbSimDevice:
 
     def _boot(self, reason):
         self._boot_at = self.now_ms
+        self.core.rec_set_ring_size(self._rec_ring_size)
         self.core.init(self.state_path, self.ota_image_path, self.default_version,
                        self.core_now, self.imu_present)
         self._apply_faults()
@@ -251,7 +315,10 @@ class DbSimDevice:
         self._reboot_timer = None
         self._last_power = None
         now = self.now_ms
-        self._next = {"pass": now + self.PASS_MS, "control": now, "ota": now + self.OTA_TICK_MS}
+        self._next = {"pass": self._next["pass"], "control": now, "ota": now + self.OTA_TICK_MS,
+                      "rec": now + self.REC_TICK_MS}
+        self._odr = self.core.imu_odr_hz
+        self._take = None
         self._drain()
         self._emit("state", {"state": "running", "reason": reason})
         self._emit("boot", {"version": self.core.fw_version, "reason": reason})
@@ -266,7 +333,7 @@ class DbSimDevice:
         was_connected = self.connected
         self.state = state
         self.connected = False
-        self._next = {"pass": self.now_ms + self.PASS_MS}   # physics keeps running
+        self._next = {"pass": self._next["pass"]}   # physics keeps running, on its cadence
         self._ind.clear()
         self._ind_busy = False
         self._ota_fifo.clear()
@@ -293,14 +360,17 @@ class DbSimDevice:
 
     # ---- task passes --------------------------------------------------------------
     def _pass(self):
-        self._sample_acc += self.PASS_MS / 1000 * ODR_HZ
+        # The samples that arrived at the chip since the last pass, at the
+        # rate of the profile it runs.
+        odr = self._odr
+        self._sample_acc += self.PASS_MS / 1000 * odr
         n = int(self._sample_acc)
         self._sample_acc -= n
-        samples = self.physics.samples(n)
+        samples = self.physics.samples(n, 1.0 / odr)
         if self.state == "running":
             present = self.imu_present
-            self.core.sensor_pass(self.core_now, samples if present else [], SAMPLE_PERIOD_S,
-                                  present)
+            self.core.sensor_pass(self.core_now, samples if present else [], 1.0 / odr, present)
+            self._odr = self.core.imu_odr_hz
             self._drain()
         elif self.state == "sleep":
             self._sleep_pass(samples)
@@ -350,9 +420,15 @@ class DbSimDevice:
         self._drain()
 
     def _drain(self):
-        """Firmware log, OTA replies and core events after every core call."""
+        """Firmware log, OTA replies, rec_state notifications and core events after
+        every core call."""
         for level, msg in self.core.log_lines():
             self._emit("log", {"level": level, "msg": msg, "source": "fw"})
+        if self.connected and self.state == "running":
+            # rec_state goes out on every change (the FSM's NOTIFY), not on a timer.
+            rec = self.core.rec_notify(self.core_now)
+            if rec is not None:
+                self._emit("notify", {"char": "rec_state", "value": rec})
         for msg in self.core.ota_replies():
             self._ota_reply(msg)
         ev = self.core.take_events()
@@ -370,6 +446,15 @@ class DbSimDevice:
                 self._emit("disconnect_request", {"reason": "factory_reset"})
         if ev & C.EV_BLE_ENABLED and not self.core.ble_enabled and self.connected:
             self._emit("disconnect_request", {"reason": "ble_disabled"})
+        if ev & C.EV_REC_TAKE:
+            self._rec_take_changed()
+        if ev & C.EV_REC_AUDIO:
+            if self.core.rec_audio_on:
+                self._next["audio"] = self.now_ms + self.AUDIO_BLOCK_MS
+            else:
+                self._next.pop("audio", None)
+        if ev & C.EV_REC_AP:
+            self._rec_ap_changed()
         if ev & C.EV_SLEEP:
             self._off_after_s = self.core.off_after_s
             self._sleep_since = self.now_ms
@@ -383,9 +468,18 @@ class DbSimDevice:
             self._update_adv()
 
     # ---- user and hardware inputs -------------------------------------------------
-    def touch(self):
-        """A touch on the screen: user activity."""
+    def touch(self) -> bool:
+        """A touch on the screen: user activity. During a take it is an EVENT
+        TOUCH and the UI ignores it (returns True then)."""
+        taken = self.core.rec_note_touch(self.core_now)
         self.core.note_activity(self.core_now)
+        return taken
+
+    def rec_ui_stop(self) -> int:
+        """The 2 s long-press on the REC pill: stops the take."""
+        att = self.core.rec_ui_stop(self.core_now)
+        self._drain()
+        return att
 
     def ui_command(self, cmd_id, arg=0) -> bool:
         """A command from the touch UI (core.APP_CMD_*); counts as a touch."""
@@ -423,6 +517,203 @@ class DbSimDevice:
         b = self.battery
         self.core.set_battery(b["valid"], b["percent"], b["voltage_mv"], b["charging"],
                               b["charge_done"], b["vbus"])
+
+    # ---- recorder: drilling scenarios, microphones, ground truth --------------------
+    def start_scenario(self, **kw) -> DrillScenario:
+        """Starts a DrillScenario (physics.DrillScenario arguments) now, stopping a running one."""
+        self._end_scenario()
+        scn = self.physics.start_scenario(**kw)
+        self._scenarios.append([scn, self.physics.t, None, None])
+        del self._scenarios[:-self.TRUTH_KEEP]
+        self._emit("rec", {"event": "scenario", "params": scn.params, "duration_s": scn.duration})
+        return scn
+
+    def stop_scenario(self):
+        self._end_scenario()
+        self.physics.stop_scenario()
+
+    def _end_scenario(self):
+        # The ground truth of a scenario cut short ends where it stopped.
+        sc = self.physics.scenario
+        for entry in self._scenarios:
+            if sc is not None and entry[0] is sc[0] and entry[2] is None:
+                entry[2], entry[3] = self.physics.t, None
+
+    @property
+    def rec_ring_size(self) -> int:
+        return self._rec_ring_size
+
+    @rec_ring_size.setter
+    def rec_ring_size(self, size: int):
+        """The stream ring's size from the next OPEN (the board has 4 MB)."""
+        self._rec_ring_size = int(size)
+        self.core.rec_set_ring_size(self._rec_ring_size)
+
+    def set_mic_gain(self, mic: int, db: float):
+        """Microphone sensitivity (1 or 2), dB: what reaches the ES7210."""
+        self.core.set_mic_gain(mic, db)
+
+    def _audio_pass(self):
+        # One DMA block, ending now.
+        t1 = self.now_ms / 1000
+        m = self.physics.motor_block(t1 - self.AUDIO_BLOCK_MS / 1000, t1)
+        motor = C.Motor()
+        motor.f0_hz[:] = m["f0_hz"]
+        motor.hum[:] = m["hum"]
+        motor.noise[:] = m["noise"]
+        motor.ambient = m["ambient"]
+        hits = m["impacts"][:C.MAX_IMPACTS]
+        motor.n_impacts = len(hits)
+        for i, (t, amp, tau) in enumerate(hits):
+            motor.impact_s[i], motor.impact_amp[i], motor.impact_tau_s[i] = t, amp, tau
+        self.core.audio_block(self.core_now, motor)
+        self._drain()
+
+    def _core_us(self, t_phys: float) -> int:
+        """esp_timer us of a physics time (DrillPhysics.t runs on the sim clock)."""
+        return int(round((t_phys * 1000 - self._boot_at + self.CORE_BOOT_MS) * 1000))
+
+    def truth_for(self, start_us: int, end_us: int) -> dict:
+        """The ground truth of the scenarios between two device times (esp_timer us)."""
+        events, spans, segments, holes, used = [], [], [], [], []
+        for entry in self._scenarios:
+            t0, tr = entry[1], self._scenario_truth(entry)
+            s0, s1 = self._core_us(t0), self._core_us(t0 + tr["duration_s"])
+            if s1 < start_us or s0 > end_us:
+                continue
+            base = len(used)
+            used.append({"params": dict(tr["params"]), "start_us": s0, "end_us": s1,
+                         **({"stopped_us": s1} if "stopped_s" in tr else {})})
+            for e in tr["events"]:
+                us = self._core_us(t0 + e["t"])
+                if start_us <= us <= end_us:
+                    events.append({"type": e["type"], "t_us": us, "scenario": base,
+                                   **({"hole": e["hole"]} if "hole" in e else {})})
+            for sp in tr["spans"]:
+                a, b = self._core_us(t0 + sp["t0"]), self._core_us(t0 + sp["t1"])
+                if b >= start_us and a <= end_us:
+                    spans.append({"type": sp["type"], "t0_us": a, "t1_us": b, "hole": sp["hole"],
+                                  "scenario": base})
+            for sg in tr["segments"]:
+                a, b = self._core_us(t0 + sg["t0"]), self._core_us(t0 + sg["t1"])
+                if b >= start_us and a <= end_us:
+                    segments.append({"state": sg["state"], "t0_us": a, "t1_us": b, "scenario": base})
+            seen = {e.get("hole") for e in events if e["scenario"] == base}
+            holes += [{**h, "scenario": base} for h in tr["holes"] if h["hole"] in seen]
+        return {"schema": "dbsim.truth/1", "start_us": start_us, "end_us": end_us,
+                "scenarios": used, "events": events, "spans": spans, "holes": holes,
+                "segments": segments}
+
+    def _scenario_truth(self, entry: list) -> dict:
+        """scn.truth() of a scenario entry, kept in it (the panel asks at every push):
+        it changes only when the scenario is stopped (_end_scenario). Read only."""
+        scn, t0, t_stop, truth = entry
+        if truth is None:
+            truth = entry[3] = scn.truth(None if t_stop is None else t_stop - t0)
+        return truth
+
+    def rec_truth(self) -> dict | None:
+        """The ground truth of the running take (so far), else of the last one."""
+        if self._take is not None:
+            t = dict(self._take)
+            return {**t, **self.truth_for(t["start_us"], self.core_now * 1000), "running": True}
+        return self.last_truth
+
+    def _rec_take_changed(self):
+        rec = self.core.snapshot()["rec"]
+        if rec["tap"]:
+            if self._take is None or self._take["take_id"] != rec["take_id"]:
+                self._take = {"take_id": rec["take_id"], "start_us": self.core_now * 1000,
+                              "profile": rec["profile"]}
+                self._emit("rec", {"event": "take_start", "take_id": rec["take_id"]})
+            return
+        if self._take is None:
+            return
+        take, self._take = self._take, None
+        end_us = self.core_now * 1000
+        reason = dc._name(dc.REC_REASONS, rec["reason"])
+        truth = {**take, "end_reason": reason, **self.truth_for(take["start_us"], end_us),
+                 "running": False}
+        self.last_truth = truth
+        path = self.state_dir / f"rec_truth_{take['take_id']}.json"
+        try:
+            path.write_text(json.dumps(truth, indent=1) + "\n")
+        except OSError as e:
+            self._log(f"ground truth not written: {e}", "W")
+        self._emit("rec", {"event": "take_end", "take_id": take["take_id"], "reason": reason,
+                           "truth": str(path), "events": len(truth["events"])})
+
+    # ---- recorder: the network side (rec_wifi.c, the TCP server) ------------------
+    def _rec_ap_changed(self):
+        if self.core.rec_ap_wanted:
+            if self.rec_unavailable:
+                # python -m dbsim could not start its stream server: AP_FAIL, as a
+                # soft-AP that does not come up
+                self._log(f"recorder unavailable: {self.rec_unavailable}", "E")
+                self.rec_endpoint_failed()
+            elif self.rec_endpoint is not None:
+                self.rec_endpoint.ap_start()
+            else:
+                self.rec_endpoint_up(*LOOPBACK_ENDPOINT)
+        elif self.rec_endpoint is not None:
+            self.rec_endpoint.ap_stop()
+        else:
+            self._schedule(self.STOP_AP_MS, self.rec_endpoint_down)
+
+    def _token(self) -> bytes:
+        return self._rng.randbytes(16) if self.seed is not None else os.urandom(16)
+
+    def rec_endpoint_up(self, ip: str, port: int, no_ap: bool = True, channel: int = 0,
+                        ssid: str = "", password: str = "") -> bytes | None:
+        """The endpoint START_AP asked for is up: rec_state announces it with a
+        new session token (returned; None if no session wants one)."""
+        token = self._token()
+        self.core.rec_set_endpoint(no_ap, ip, port, channel, ssid, password)
+        ok = self.core.rec_net(C.NET_UP, token, self.core_now)
+        self._drain()
+        if ok:
+            self._emit("rec", {"event": "endpoint", "up": True, "ip": ip, "port": port,
+                               "no_ap": no_ap})
+        return token if ok else None
+
+    def rec_endpoint_failed(self):
+        self.core.rec_net(C.NET_FAIL, b"", self.core_now)
+        self._drain()
+
+    def rec_endpoint_down(self):
+        """STOP_AP is done: the endpoint is gone."""
+        self.core.rec_net(C.NET_DOWN, b"", self.core_now)
+        self._drain()
+        self._emit("rec", {"event": "endpoint", "up": False})
+
+    def rec_hello(self, data: bytes) -> bool:
+        """A client's first bytes (token + version): True if it may stay."""
+        ok = self.core.rec_net(C.NET_HELLO, bytes(data), self.core_now)
+        self._drain()
+        return ok
+
+    def rec_client_lost(self):
+        """The stream client is gone (its socket is already closed)."""
+        if self.core.rec_net(C.NET_CLIENT_LOST, b"", self.core_now):
+            self._emit("rec", {"event": "client_lost"})
+        self._drain()
+
+    def rec_session(self) -> dict | None:
+        """What rec_state announces to the app (the stream endpoint and the
+        session token), or None without a session: for a client on this PC
+        that does not read it over BLE (db_client.py rec pull --host)."""
+        r = dc.decode_rec_state(self.core.rec_state())
+        if r.state_name == "idle":
+            return None
+        return {"ip": r.ip, "port": r.port, "token": r.token.hex(), "no_ap": "no_ap" in r.flag_names,
+                "ssid": r.ssid}
+
+    def rec_pop(self, cap: int = 65536) -> bytes:
+        """What the sender sends now (whole records or parts; works while halted)."""
+        data = self.core.rec_pop(cap)
+        if data and self.state == "running":
+            self._drain()   # a drained ring moves the FSM on
+        return data
 
     # ---- faults ---------------------------------------------------------------------
     def drop_ota_indications(self, count, after=0):
@@ -525,7 +816,7 @@ class DbSimDevice:
         self.core.ota_set_mtu(mtu)
 
     def subscribe_char(self, char: str, on: bool):
-        """CCCD write: 'angle', 'status', 'battery' (notify), 'ota_ctrl' (indicate)."""
+        """CCCD write: 'angle', 'status', 'battery', 'rec_state' (notify), 'ota_ctrl' (indicate)."""
         if on:
             self._subs.add(char)
         else:
@@ -534,7 +825,7 @@ class DbSimDevice:
 
     # ---- GATT -----------------------------------------------------------------------
     def read_char(self, char: str, offset: int = 0) -> bytes:
-        """'manufacturer', 'model', 'fw_revision', 'battery', 'status', 'config'.
+        """'manufacturer', 'model', 'fw_revision', 'battery', 'status', 'config', 'rec_state'.
 
         Returns the value from offset on, like an ATT read blob; IndexError if
         offset is past the end (ATT 0x07 invalid offset).
@@ -551,6 +842,8 @@ class DbSimDevice:
             value = self.core.status_packet()
         elif char == "config":
             value = self.core.config_read(offset)   # captured at offset 0 (long reads)
+        elif char == "rec_state":
+            value = self.core.rec_state()
         else:
             raise KeyError(char)
         if offset > len(value):
@@ -569,6 +862,8 @@ class DbSimDevice:
             att = self.core.command_write(data, self.core_now)
             if att == 0:
                 self._control_soon()
+        elif char == "rec_ctrl":
+            att = self.core.rec_ctrl_write(data, self.core_now)
         elif char == "ota_ctrl":
             self._ota_flush_all()   # keeps the order behind queued data writes
             att = self.core.ota_ctrl_write(data, self.core_now)
@@ -685,9 +980,30 @@ class DbSimDevice:
             "faults": {"imu_present": self.imu_present, "store_fail": self._store_fail,
                        "flash_fail": self._flash_fail, "ota_write_delay_ms": self.ota_write_delay_ms,
                        "drop_ota_indications": self._drop_ind_count},
+            "recorder": self._rec_snapshot(),
             "physics": {"elevation": p.elevation, "yaw": p.yaw, "roll": p.roll,
                         "board_face": p.board_face, "mount_offset": list(p.mount_offset),
                         "moving": p.moving, "vibration_g": p.vibration_g,
                         "q": list(p.orientation)},
         })
         return snap
+
+    def _rec_snapshot(self) -> dict:
+        sc = self.physics.scenario
+        scenario = None
+        if sc is not None:
+            m, t0 = sc
+            scenario = {"params": m.params, "elapsed_s": round(self.physics.t - t0, 2),
+                        "duration_s": round(m.duration, 2)}
+        truth = self.rec_truth()
+        summary = None
+        if truth is not None:
+            kinds = collections.Counter(e["type"] for e in truth["events"])
+            summary = {"take_id": truth["take_id"], "running": truth["running"],
+                       "events": dict(sorted(kinds.items())), "spans": len(truth["spans"]),
+                       "end_reason": truth.get("end_reason")}
+        ep = self.rec_endpoint
+        return {"endpoint": ep.status() if ep is not None else None, "unavailable": self.rec_unavailable,
+                "session": self.rec_session(),
+                "scenario": scenario,
+                "truth": summary, "take": dict(self._take) if self._take else None}

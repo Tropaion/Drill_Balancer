@@ -7,11 +7,14 @@ its security and the GATT traffic into the device. Behaviour lives in the
 device; this module only translates.
 
 How the board's behaviour maps onto BlueZ (5.87):
-- Security: config, command and ota_ctrl carry 'encrypt-authenticated-write',
-  so BlueZ itself answers 0x05 before such a write reaches us. ota_data is
+- Security: config, command, ota_ctrl and rec_ctrl carry
+  'encrypt-authenticated-write', rec_state 'encrypt-authenticated-read', so
+  BlueZ itself answers 0x05 before such an access reaches us. ota_data is
   write without response only (no reply either way); its check is done here,
   as that flag would add the 'write' property. BlueZ's KeySize (main.conf)
-  defaults to no minimum, so a short key is not refused with 0x0C.
+  defaults to no minimum, so a short key is not refused with 0x0C. The
+  device notifies rec_state (it carries the stream credentials) only to an
+  authenticated link.
 - ATT errors: org.bluez.Error.Failed with "0xNN" becomes 0x80..0x9f,
   InvalidValueLength 0x0D, InvalidOffset 0x07, any other name 0x0E
   (gatt-database.c dbus_error_to_att_ecode).
@@ -67,7 +70,10 @@ def db_uuid(x: int) -> str:
 SVC_MAIN = db_uuid(0x0001)
 
 # ble_service.c s_svcs in its order: (service UUID, ((device char name, UUID, BlueZ flags), ...)).
-# The NimBLE flags in BlueZ terms; SEC_WRITE is 'encrypt-authenticated-write'.
+# The NimBLE flags in BlueZ terms; SEC_WRITE is 'encrypt-authenticated-write', READ_ENC |
+# READ_AUTHEN 'encrypt-authenticated-read'. The recorder service is the one ble_protocol.h
+# plans; ble_service.c gets it in milestone 4 (tests/test_ble.py TableTest compares with
+# whichever is there).
 SERVICES = (
     (sig_uuid(0x180A), (
         ("manufacturer", sig_uuid(0x2A29), ("read",)),
@@ -88,8 +94,13 @@ SERVICES = (
         # Authenticated link required as well, checked in _gatt_write.
         ("ota_data", db_uuid(0x0102), ("write-without-response",)),
     )),
+    (db_uuid(0x0200), (
+        ("rec_ctrl", db_uuid(0x0201), ("encrypt-authenticated-write",)),
+        ("rec_state", db_uuid(0x0202), ("encrypt-authenticated-read", "notify")),
+    )),
 )
-PROTECTED = {"config", "command", "ota_ctrl", "ota_data"}
+PROTECTED = {"config", "command", "ota_ctrl", "ota_data", "rec_ctrl"}
+PROTECTED_READ = {"rec_state"}
 
 # ble_service.c ADV_*: fast right after enable / disconnect, slow after 30 s.
 ADV_FAST_S = 30
@@ -555,6 +566,9 @@ class BluezPeripheral:
                      "not the link: refused", "W")
             raise att_error(0x0E)
         self._note_access(opts)
+        if name in PROTECTED_READ and not self.dev.link_trusted:
+            # BlueZ only lets this through on an authenticated, encrypted link.
+            self._link_trusted("protected read")
         if self.dev.state != "running":
             self._event("read", peer=self._link_addr, char=name, offset=offset, att=0x0E)
             raise att_error(0x0E)

@@ -12,6 +12,8 @@ already recognised by the browser and is handled with the firmware's rules:
   APP_CMD_NEXT_MODE +1 / -1, 1 s hold = settings.
 - The passkey and OTA overlays are modal panels: they swallow touches.
 - ui_settings.c: swipe right (no confirmation shown) = back to the level.
+- During a recorder take every touch is an EVENT TOUCH in the stream and is
+  otherwise ignored; a 2 s long-press on the REC pill stops the take.
 
 The settings screen is reduced to its action buttons; its steppers are not
 mirrored (settings are edited from the app).
@@ -26,6 +28,7 @@ ZERO_FLASH_MS = 700           # ui_level.c
 SOLVE_TIMEOUT_MS = 3000       # ui_cal.c
 ACCEL_CAL_DIR_ALL = 0x3F      # accel_cal.h
 
+REC_RECORDING = 4             # rec_state_t
 UI_C_GREEN = "#00E676"
 UI_C_WHITE = "#FFFFFF"
 
@@ -192,10 +195,18 @@ class DeviceScreen:
         if action == "press":
             # activity_cb: LVGL runs it before anything sees the press.
             self.swallow = snap["power"] == 1
-            self.dev.touch()
-            return "woke the screen" if self.swallow else ""
+            taken = self.dev.touch()
+            return "woke the screen" if self.swallow else "EVENT TOUCH (recording)" if taken else ""
         if self.swallow:
             return "ignored: the press woke the screen"
+        recording = snap.get("rec", {}).get("state") == REC_RECORDING
+        if action == "button" and button == "rec_pill":
+            if not recording:
+                return ""
+            att = self.dev.rec_ui_stop()
+            return "take stopped (REC pill held 2 s)" if att == 0 else f"stop refused 0x{att:02x}"
+        if recording:
+            return "ignored: recording (EVENT TOUCH)"
         if self._modal(snap):
             return "ignored: overlay shown"
         if self.screen == "level":

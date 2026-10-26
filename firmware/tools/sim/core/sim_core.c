@@ -24,8 +24,14 @@
 #include "pmu.h"
 #include "pmu_events.h"
 #include "power_fsm.h"
+#include "rec_fsm.h"
+#include "rec_ring.h"
+#include "rec_stream.h"
+#include "rec_ts.h"
 #include "settings.h"
+#include "sim_audio.h"
 #include "sim_core.h"
+#include "sim_rand.h"
 #include "turn.h"
 #include "ui_logic.h"
 #include "vibration.h"
@@ -441,6 +447,168 @@ static int settings_reset(void)
     return settings_update(reset_to_defaults, NULL);
 }
 
+// ---- imu.c: the QMI8658 and the driver's FIFO read -------------------------------
+
+// The time a FIFO read keeps the chip in read mode, in which every sample
+// that arrives is lost (datasheet 8.7): the CTRL1 / CTRL9 handshake, then 12
+// bytes a frame at 400 kHz (9 clocks a byte), with some jitter from the
+// shared bus. It gives the ~12 % imu_frame.h expects at 448 Hz.
+#define CHIP_READ_OVERHEAD_US 270.0f
+#define CHIP_READ_JITTER_US   120.0f      // +- uniform
+#define CHIP_FRAME_US         270.0f
+#define CHIP_CONFIGURE_MS     180u         // configure(): reset and gyro start-up
+
+static uint32_t s_rng = 0x2545F491u;       // sim_rand.h's generator: sim_seed()
+
+// The chip: what the driver cannot see directly.
+static struct {
+    imu_profile_t profile;      // configured (s_profile of imu.c)
+    bool busy;                  // configure() runs: the sensor task is blocked
+    uint32_t busy_until;
+    uint32_t ts;                // TIMESTAMP of the newest sample, 24 bit
+    uint8_t fifo[IMU_FIFO_MAX_FRAMES][IMU_FRAME_BYTES];
+    size_t head, count;
+    float read_mode;            // sample periods still to come in read mode
+} s_chip;
+
+// imu.c statics
+static imu_gap_t s_gap;
+static imu_rate_t s_rate;
+static imu_sample_t s_last;
+static bool s_have_last;
+static uint32_t s_epoch;          // configure() runs (imu_raw_info_t.epoch)
+static uint8_t s_fifo_buf[IMU_FIFO_MAX_FRAMES * IMU_FRAME_BYTES];
+
+// imu.c IMU_AXIS_MAP (identity until checked on the board, so the chip
+// frame below is the board frame).
+static const imu_axis_map_t IMU_AXIS_MAP = {.x = {0, 1}, .y = {1, 1}, .z = {2, 1}};
+
+static const imu_profile_info_t *profile(void)
+{
+    return imu_profile_info(s_chip.profile);
+}
+
+static float odr_hz(void)
+{
+    return (float)profile()->odr_mhz * 1e-3f;
+}
+
+float sim_imu_odr_hz(void)
+{
+    return odr_hz();
+}
+
+// configure(): the reset restarts TIMESTAMP (TODO(hw) in imu.h: from 0) and
+// empties the FIFO; the gap and ODR bookkeeping start over in a new epoch.
+// wait: the sensor task is blocked for CHIP_CONFIGURE_MS (not at boot, where
+// imu_init() runs before the task).
+static void configure(uint32_t now, bool wait)
+{
+    s_chip.busy = wait;
+    s_chip.busy_until = now + CHIP_CONFIGURE_MS;
+    s_chip.ts = 0;
+    s_chip.head = s_chip.count = 0;
+    s_chip.read_mode = 0.0f;
+    s_gap = (imu_gap_t){0};
+    imu_rate_init(&s_rate, 1.0f / odr_hz());
+    s_have_last = false;
+    s_epoch++;
+}
+
+// imu_sample_period_s() (imu.h declares the driver's own).
+static float drv_sample_period_s(void)
+{
+    return s_rate.period_s;
+}
+
+// The chip's ADC: one value in LSB, rounded and clipped to 16 bits.
+static void put_lsb(uint8_t *p, float v, float lsb_per_unit)
+{
+    float x = roundf(v * lsb_per_unit);
+    int16_t r = x >= 32767.0f ? 32767 : x <= -32768.0f ? -32768 : (int16_t)x;
+    p[0] = (uint8_t)((uint16_t)r & 0xFFu);
+    p[1] = (uint8_t)((uint16_t)r >> 8);
+}
+
+// Samples arriving at the chip: TIMESTAMP counts each, the FIFO (stream
+// mode, the oldest goes when full) keeps those not lost to a read.
+static void chip_feed(const float *v, int n)
+{
+    const imu_profile_info_t *p = profile();
+    for (int i = 0; i < n; i++, v += 6) {
+        if (s_chip.busy) {
+            continue;           // the FIFO is reset when configure() ends
+        }
+        s_chip.ts = (s_chip.ts + 1u) & IMU_TS_MASK;
+        if (s_chip.read_mode >= 1.0f) {
+            s_chip.read_mode -= 1.0f;
+            continue;
+        }
+        if (s_chip.count == IMU_FIFO_MAX_FRAMES) {
+            s_chip.head = (s_chip.head + 1u) % IMU_FIFO_MAX_FRAMES;
+            s_chip.count--;
+        }
+        uint8_t *f = s_chip.fifo[(s_chip.head + s_chip.count) % IMU_FIFO_MAX_FRAMES];
+        for (int k = 0; k < 3; k++) {
+            put_lsb(&f[2 * k], v[k], (float)p->accel_lsb_per_g);
+            put_lsb(&f[6 + 2 * k], LEVEL_RAD2DEG(v[3 + k]), (float)p->gyro_lsb_per_dps);
+        }
+        s_chip.count++;
+    }
+}
+
+// imu_read_fifo_ex() (read_fifo_locked()): the level read (TIMESTAMP and
+// count from one instant), the gap plan, the burst read, the raw runs,
+// decoding and gap filling.
+static void drv_read_fifo(imu_sample_t *out, size_t max, size_t *n_out, imu_raw_info_t *raw,
+                          int64_t now_us)
+{
+    uint32_t ts = s_chip.ts;
+    size_t frames = s_chip.count;
+    imu_rate_update(&s_rate, ts, now_us);
+
+    imu_gap_plan_t plan = imu_gap_plan(&s_gap, ts, frames, s_rate.measured, max);
+    size_t n = plan.n_read;
+    size_t fill = plan.n_fill;
+    for (size_t i = 0; i < n; i++) {
+        memcpy(&s_fifo_buf[i * IMU_FRAME_BYTES],
+               s_chip.fifo[(s_chip.head + i) % IMU_FIFO_MAX_FRAMES], IMU_FRAME_BYTES);
+    }
+    if (n > 0) {
+        s_chip.head = (s_chip.head + n) % IMU_FIFO_MAX_FRAMES;
+        s_chip.count -= n;
+        float us = CHIP_READ_OVERHEAD_US + CHIP_READ_JITTER_US * sim_urand(&s_rng) +
+                   CHIP_FRAME_US * (float)n;
+        s_chip.read_mode += us * 1e-6f * odr_hz();
+    }
+    *raw = (imu_raw_info_t){0};
+    imu_raw_runs(&plan, raw->run);
+    raw->frames = s_fifo_buf;
+    raw->n = (uint16_t)n;
+    raw->map = &IMU_AXIS_MAP;
+    raw->chip_ts = ts;
+    raw->host_us = now_us;
+    raw->epoch = s_epoch;
+
+    const imu_profile_info_t *p = profile();
+    size_t o = 0;
+    for (size_t i = 0; i < n; i++) {
+        imu_sample_t s;
+        imu_decode_frame(&IMU_AXIS_MAP, p, &s_fifo_buf[i * IMU_FRAME_BYTES], &s);
+        if (i == plan.insert_at && fill > 0) {
+            imu_fill_gap(s_have_last ? &s_last : &s, &s, fill, &out[o]);
+            o += fill;
+        }
+        out[o++] = s;
+    }
+    if (o > 0) {
+        s_last = out[o - 1];
+        s_have_last = true;
+    }
+    imu_gap_commit(&s_gap, ts, frames, n);
+    *n_out = o;
+}
+
 // ---- sensor_task.c ---------------------------------------------------------------
 
 #define FIFO_BATCH          64
@@ -465,31 +633,24 @@ static uint32_t s_last_retry, s_last_pub, s_last_data;
 static imu_sample_t s_buf[FIFO_BATCH];
 static vib_detector_t s_vib;
 static turn_detector_t s_turn;
+static imu_profile_t s_profile_req;   // sensor_request_imu_profile(), next pass
+static int s_profile_lag;             // sim_fault_profile_lag()
+static bool s_vib_running;            // what the recorder was told (vib_note())
 
-// imu.c IMU_AXIS_MAP (identity until checked on the board).
-static const imu_axis_map_t IMU_AXIS_MAP = {.x = {0, 1}, .y = {1, 1}, .z = {2, 1}};
+// The recorder's hooks in the sensor task (recorder.c, below).
+static void recorder_imu_block(const imu_raw_info_t *raw);
+static void recorder_imu_state(bool ok);
+static void recorder_vib(bool running);
 
-// The chip's ADC: one value in LSB, rounded and clipped to 16 bits.
-static void put_lsb(uint8_t *p, float v, float lsb_per_unit)
+// sensor_request_imu_profile(): taken at the next pass.
+static void sensor_request_imu_profile(imu_profile_t p)
 {
-    float x = roundf(v * lsb_per_unit);
-    int16_t r = x >= 32767.0f ? 32767 : x <= -32768.0f ? -32768 : (int16_t)x;
-    p[0] = (uint8_t)((uint16_t)r & 0xFFu);
-    p[1] = (uint8_t)((uint16_t)r >> 8);
+    s_profile_req = p;
 }
 
-// What imu_read_fifo() returns for these physical values: a 12-byte FIFO
-// frame in the LEVEL profile's scales decoded by the driver's
-// imu_decode_frame().
-static void imu_sample_from(const float *v, imu_sample_t *out)
+void sim_fault_profile_lag(int passes)
 {
-    const imu_profile_info_t *p = imu_profile_info(IMU_PROFILE_LEVEL);
-    uint8_t frame[IMU_FRAME_BYTES];
-    for (int i = 0; i < 3; i++) {
-        put_lsb(&frame[2 * i], v[i], (float)p->accel_lsb_per_g);
-        put_lsb(&frame[6 + 2 * i], LEVEL_RAD2DEG(v[3 + i]), (float)p->gyro_lsb_per_dps);
-    }
-    imu_decode_frame(&IMU_AXIS_MAP, p, frame, out);
+    s_profile_lag = passes < 0 ? 0 : passes;
 }
 
 static void publish_cal_locked(void)
@@ -542,6 +703,26 @@ static void mount_add_locked(uint32_t now)
     }
 }
 
+// The recorder hears the motor start and stop (VIB_START / VIB_STOP): the
+// detector's RUNNING against everything else. A reset (vib_restart(), its
+// state UNKNOWN) of a running detector is a stop, and the QUIET it decides
+// after a reset is none, so every VIB_START of a take has its VIB_STOP.
+static void vib_note(bool running)
+{
+    if (running != s_vib_running) {
+        s_vib_running = running;
+        recorder_vib(running);
+    }
+}
+
+// vib_reset() where the sensor task restarts what integrates the samples
+// (a profile switch, the IMU lost).
+static void vib_restart(void)
+{
+    vib_reset(&s_vib);
+    vib_note(false);
+}
+
 static void publish_no_imu(uint32_t now)
 {
     level_reading_t r = {.mode = s_level.mode, .status = LEVEL_STATUS_OFF,
@@ -555,6 +736,7 @@ static void sensor_start(const settings_t *s, bool imu_ok)
     s_fusion_ready = false;
     vib_config_t vib_cfg = vib_default_config();
     vib_init(&s_vib, &vib_cfg);
+    s_vib_running = false;
     turn_config_t turn_cfg = turn_default_config();
     turn_init(&s_turn, &turn_cfg);
     level_config_t cfg = settings_level_config(s);
@@ -567,6 +749,12 @@ static void sensor_start(const settings_t *s, bool imu_ok)
     s_collecting = false;
     publish_cal_locked();
 
+    // A boot starts the chip in LEVEL (imu_init() before the task), and a
+    // fault injected before it is gone (as the busy-command fault).
+    s_chip.profile = s_profile_req = IMU_PROFILE_LEVEL;
+    s_profile_lag = 0;
+    s_epoch = 0;
+    configure(app_now_ms(), false);
     s_imu_ok = imu_ok;
     s_last_retry = app_now_ms();
     s_last_pub = 0;
@@ -576,24 +764,27 @@ static void sensor_start(const settings_t *s, bool imu_ok)
 
 void sim_sensor_pass(uint32_t now_ms, const float *samples, int n, float dt, int imu_present)
 {
+    (void)dt;   // the driver measures the period (imu_sample_period_s())
     if (!running(now_ms) || !s_sensor_running) {
         return;
     }
     uint32_t now = now_ms;
-    if (n < 0) {
-        n = 0;
-    }
-    if (n > FIFO_BATCH) {
-        n = FIFO_BATCH;
+    n = n < 0 ? 0 : n > SIM_MAX_PASS_SAMPLES ? SIM_MAX_PASS_SAMPLES : n;
+    if (imu_present) {
+        chip_feed(samples, n);   // the chip runs whatever the task does
     }
 
     if (!s_imu_ok) {
         if (now - s_last_retry >= IMU_RETRY_MS) {
             s_last_retry = now;
             if (imu_present) {
+                // imu_init(): the profile the driver had (and any request since).
+                s_chip.profile = s_profile_req;
+                configure(now, true);
                 LOGI("IMU running");
                 s_imu_ok = true;
                 s_last_data = now;
+                recorder_imu_state(true);
                 return;
             }
             LOGW("IMU init failed: ESP_ERR_TIMEOUT");
@@ -605,31 +796,58 @@ void sim_sensor_pass(uint32_t now_ms, const float *samples, int n, float dt, int
         return;
     }
 
-    if (n > 0) {
+    if (s_chip.busy) {
+        // Blocked in configure(); the next pass reads again.
+        if ((int32_t)(now - s_chip.busy_until) >= 0) {
+            s_chip.busy = false;
+            s_last_data = now;
+        }
+        return;
+    }
+    if (s_profile_req != s_chip.profile && s_profile_lag > 0) {
+        s_profile_lag--;        // a pass that was past its check reads first
+    } else if (s_profile_req != s_chip.profile) {
+        // imu_set_profile(): the new profile restarts what integrates the
+        // samples, as the lost-IMU path does.
+        s_chip.profile = s_profile_req;
+        configure(now, true);
+        LOGI("profile %s, %.1f Hz", profile()->name, (double)odr_hz());
+        s_fusion_ready = false;
+        vib_restart();
+        s_last_data = now;
+        return;
+    }
+
+    size_t got = 0;
+    imu_raw_info_t raw = {0};
+    if (imu_present) {
+        drv_read_fifo(s_buf, FIFO_BATCH, &got, &raw, (int64_t)now * 1000);
+    }
+    if (got > 0) {
         s_last_data = now;
     } else if ((uint32_t)(now - s_last_data) >= IMU_LOST_MS) {
         LOGE("IMU lost: no new samples");
         s_imu_ok = false;
         s_last_retry = now;
         s_fusion_ready = false;
-        vib_reset(&s_vib);
+        vib_restart();
         s_last_pub = now;
         publish_no_imu(now);
+        recorder_imu_state(false);
         return;
     }
-    if (n == 0) {
+    recorder_imu_block(&raw);   // the recorder's tap, right after the read
+    if (got == 0) {
         return;
     }
 
+    float dt_s = drv_sample_period_s();
     level_reading_t reading = {0};
     quat_t q = quat_identity();
     bool still = false;
     bool zero_set = false;
 
-    for (int i = 0; i < n; i++) {
-        imu_sample_from(&samples[6 * i], &s_buf[i]);
-    }
-    bool turning = process_batch_locked(s_buf, (size_t)n, dt);
+    bool turning = process_batch_locked(s_buf, got, dt_s);
     bool ready = s_fusion_ready;
     if (ready) {
         q = s_fusion.q;
@@ -640,14 +858,15 @@ void sim_sensor_pass(uint32_t now_ms, const float *samples, int n, float dt, int
     }
 
     vib_state_t was = vib_state(&s_vib);
-    for (int i = 0; i < n; i++) {
+    for (size_t i = 0; i < got; i++) {
         // The ESP_LOGD duty and turn rate line (and its s_win_max_rate) is left out.
-        vib_add_sample(&s_vib, s_buf[i].accel_g, dt);
+        vib_add_sample(&s_vib, s_buf[i].accel_g, dt_s);
     }
     vib_state_t vib = vib_state(&s_vib);
     if (vib != was) {
         LOGI("vibration %s, duty %d %%", vib == VIB_RUNNING ? "running" : "quiet",
              (int)(s_vib.last_duty * 100.0f + 0.5f));
+        vib_note(vib == VIB_RUNNING);
     }
     if (turning) {
         app_note_activity();
@@ -791,6 +1010,10 @@ static int s_cfg_len = -1;   // -1: rebuild on the next read
 
 static void ota_on_disconnect(void);
 static void ota_set_mtu(uint16_t mtu);
+// recorder.c (below): the link it survives, and rec_state's subscription.
+static void recorder_ble(bool up);
+static void recorder_resend(void);
+static bool recorder_session_open(void);
 
 const char *sim_dis_string(int which)
 {
@@ -889,6 +1112,7 @@ void sim_link_disconnect(uint32_t now_ms)
     if (!app_post_cmd(APP_CMD_CAL_CANCEL, APP_CMD_ARG_FROM_BLE)) {
         LOGW("command queue full, BLE calibration not cancelled");
     }
+    recorder_ble(false);   // a take goes on for REC_BLE_GRACE_MS
 }
 
 void sim_link_passkey(uint32_t passkey, uint32_t now_ms)
@@ -917,6 +1141,7 @@ void sim_link_enc_change(int status, int trusted, uint32_t now_ms)
         s_link_trusted = true;
         s_last_write_ms = app_now_ms();
         app_note_activity();
+        recorder_ble(true);   // the app (an authenticated link) is back
         return;
     }
     s_link_since_ms = app_now_ms();
@@ -928,6 +1153,9 @@ void sim_link_subscribe(int sub_bit, int on)
     s_subs = on ? (uint8_t)(s_subs | bit) : (uint8_t)(s_subs & ~bit);
     if (bit == SIM_SUB_STATUS || bit == SIM_SUB_BAT) {
         s_status_resend = true;
+    }
+    if (bit == SIM_SUB_REC) {
+        recorder_resend();
     }
 }
 
@@ -1224,6 +1452,11 @@ static int sink_begin(void *ctx, uint32_t image_size)
 {
     sink_ctx_t *s = ctx;
     sink_abort(s);
+    if (recorder_session_open()) {
+        // OTA, calibration and a recording session exclude each other.
+        LOGE("esp_ota_begin: refused, a recording session is open");
+        return -1;
+    }
     s->head_len = 0;
     s->desc_ok = false;
     char p[PATH_MAX_LEN + 8];
@@ -1558,6 +1791,763 @@ int sim_ota_reboot_pending(void)
     return ota_proto_state(&s_proto) == OTA_STATE_DONE;
 }
 
+// ---- recorder.c, rec_wifi.c, rec_audio.c -----------------------------------------
+// The ESP glue around the pure recorder (rec_fsm, rec_ring, rec_stream,
+// rec_ts) as the firmware design has it (milestone 4): the FSM's actions run
+// in bit order, every producer pushes whole records into the ring, the
+// sender drains it. The soft-AP and its TCP server are the Python side's
+// endpoint (sim_rec_net()), the I2S capture is sim_audio_block().
+
+#define REC_LEVEL_MS        100u    // LEVEL records, 10 Hz
+#define REC_STATS_MS        1000u   // STATS records, 1 Hz
+#define REC_HEARTBEAT_MS    1000u   // rec_state notification during a take
+#define REC_AUDIO_BITS      16
+
+typedef struct {
+    rec_fsm_t fsm;
+    rec_ring_t ring;
+    uint8_t *buf;                   // allocated at OPEN, freed back in IDLE
+    uint32_t ring_size;
+    rec_ring_stats_t last;          // of the freed ring, for rec_state in IDLE
+    // rec_wifi.c: the endpoint
+    bool ap_wanted;
+    bool client;
+    bool no_ap;
+    uint8_t ip[4];
+    uint16_t port;
+    uint8_t channel;
+    char ssid[17];
+    char pass[25];
+    uint8_t token[REC_HELLO_TOKEN_LEN];
+    // the take's sources
+    bool tap;                       // IMU, LEVEL and STATS records flow
+    bool imu_started;               // EVENT PROFILE sent for imu_epoch
+    uint32_t imu_epoch;
+    bool epoch_flag;                // the next IMU record follows a chip reset
+    rec_ts_ext_t ts_ext;
+    bool have_next;
+    uint32_t next_ts;               // extended TIMESTAMP after the last run
+    uint32_t imu_frames, imu_lost;
+    rec_rate_t imu_rate, audio_rate;
+    bool audio_on;
+    uint8_t mic_mask, gain_db;
+    uint64_t audio_index;
+    uint32_t audio_frames, audio_overflows, audio_clipped;
+    uint32_t last_level_ms, last_stats_ms;
+    // rec_state notifications
+    bool notify;
+    bool sent_valid;
+    db_rec_state_packet_t sent;
+    uint32_t sent_ms;
+} rec_glue_t;
+
+static rec_glue_t s_rec = {.ring_size = SIM_REC_RING_DEFAULT};
+
+static uint8_t s_board_id[4];
+static char s_fw_git[REC_FW_LEN];
+
+void sim_set_identity(const uint8_t *board_id4, const char *fw_git)
+{
+    if (board_id4) {
+        memcpy(s_board_id, board_id4, sizeof(s_board_id));
+    }
+    copy_str(s_fw_git, sizeof(s_fw_git), fw_git);
+}
+
+void sim_seed(uint32_t seed)
+{
+    s_rng = seed ? seed : 0x2545F491u;
+    sim_audio_reset(seed * 2654435761u + 1u);
+}
+
+void sim_set_mic_gain(int mic, float db)
+{
+    sim_audio_set_mic_gain(mic, db);
+}
+
+void sim_rec_set_ring_size(uint32_t bytes)
+{
+    s_rec.ring_size = bytes < 4096u ? 4096u : bytes;
+}
+
+void sim_rec_set_endpoint(int no_ap, const uint8_t *ip4, int port, int channel, const char *ssid,
+                          const char *pass)
+{
+    s_rec.no_ap = no_ap != 0;
+    if (ip4) {
+        memcpy(s_rec.ip, ip4, sizeof(s_rec.ip));
+    }
+    s_rec.port = (uint16_t)(port < 0 ? 0 : port > 0xFFFF ? 0xFFFF : port);
+    s_rec.channel = (uint8_t)(channel < 0 ? 0 : channel > 14 ? 14 : channel);
+    copy_str(s_rec.ssid, sizeof(s_rec.ssid), no_ap ? "" : ssid);
+    copy_str(s_rec.pass, sizeof(s_rec.pass), no_ap ? "" : pass);
+}
+
+int sim_rec_ap_wanted(void)
+{
+    return s_rec.ap_wanted;
+}
+
+int sim_rec_audio_on(void)
+{
+    return s_rec.audio_on;
+}
+
+static uint64_t host_us(void)
+{
+    return (uint64_t)app_now_ms() * 1000u;   // esp_timer_get_time()
+}
+
+static void ring_stats(rec_ring_stats_t *st)
+{
+    if (s_rec.buf) {
+        rec_ring_stats(&s_rec.ring, st);
+    } else {
+        *st = s_rec.last;
+    }
+}
+
+static bool rec_push(uint8_t type, uint8_t ver, const rec_part_t *parts, size_t nparts)
+{
+    return s_rec.buf && rec_ring_push(&s_rec.ring, type, ver, parts, nparts, NULL);
+}
+
+static void rec_event(uint16_t code, uint16_t arg, const char *text)
+{
+    uint8_t e[REC_EVENT_MAX];
+    const rec_part_t p = {e, rec_event_payload(e, host_us(), code, arg, text)};
+    rec_push(REC_T_EVENT, REC_V_EVENT, &p, 1);
+}
+
+// app_state_set_rec() (app_state.c gains it in milestone 4).
+static void recorder_publish(void)
+{
+    const rec_fsm_t *f = &s_rec.fsm;
+    const app_battery_t *b = &s_state.battery;
+    rec_ring_stats_t st;
+    ring_stats(&st);
+    app_rec_status_t r = {
+        .state = (uint8_t)f->state,
+        .reason = f->reason,
+        .flags = (uint8_t)((s_rec.client ? DB_REC_FLAG_CLIENT : 0u) |
+                           (s_rec.audio_on ? DB_REC_FLAG_AUDIO : 0u) |
+                           (f->imu_lost ? DB_REC_FLAG_IMU_LOST : 0u) |
+                           (b->valid && !b->vbus_present && b->percent < REC_BATT_START_PCT
+                                ? DB_REC_FLAG_BATTERY_LOW : 0u)),
+        .sent_bytes = st.sent_bytes,
+        .dropped = st.dropped_records,
+        .ring_pct = rec_ring_pct(st.used, st.cap),
+    };
+    if (f->take_valid) {
+        r.profile = f->profile;
+        r.take_id = f->take_id;
+        r.elapsed_s = rec_fsm_elapsed_s(f, app_now_ms());
+        r.max_s = f->max_s;
+    }
+    if (f->state != REC_STATE_IDLE) {
+        r.flags |= s_rec.no_ap ? DB_REC_FLAG_NO_AP : 0u;
+        r.channel = s_rec.no_ap ? 0 : s_rec.channel;
+        r.port = s_rec.port;
+        memcpy(r.ip, s_rec.ip, sizeof(r.ip));
+        copy_str(r.ssid, sizeof(r.ssid), s_rec.ssid);
+        copy_str(r.pass, sizeof(r.pass), s_rec.pass);
+        memcpy(r.token, s_rec.token, sizeof(r.token));
+    }
+    s_state.rec = r;
+}
+
+// The SESSION record's JSON tail: settings and calibration in effect.
+static int session_json(char *out, size_t cap)
+{
+    char sj[SETTINGS_JSON_MAX];
+    if (settings_to_json(&s_current, sj, sizeof(sj)) < 0) {
+        return 0;
+    }
+    cJSON *root = cJSON_CreateObject();
+    cJSON_AddItemToObject(root, "settings", cJSON_Parse(sj));
+    cJSON *cal = cJSON_AddObjectToObject(root, "cal");
+    cJSON *acc = cJSON_AddObjectToObject(cal, "accel");
+    cJSON_AddBoolToObject(acc, "valid", s_current.accel_cal_valid);
+    cJSON_AddItemToObject(acc, "bias_g", vec_json(s_current.accel_cal.bias));
+    cJSON_AddItemToObject(acc, "scale", vec_json(s_current.accel_cal.scale));
+    cJSON *mnt = cJSON_AddObjectToObject(cal, "mount");
+    cJSON_AddBoolToObject(mnt, "valid", s_current.mount_cal_valid);
+    cJSON_AddItemToObject(mnt, "drill_axis", vec_json(s_current.drill_axis));
+    bool bias = s_fusion_ready && fusion_bias_valid(&s_fusion);
+    cJSON_AddItemToObject(cal, "gyro_bias_rad_s",
+                          bias ? vec_json(s_fusion.gyro_bias) : cJSON_CreateNull());
+    char *text = cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
+    size_t n = text ? strlen(text) : 0;
+    if (n >= cap) {
+        n = 0;
+    }
+    memcpy(out, text ? text : "", n);
+    free(text);
+    return (int)n;
+}
+
+static void act_emit_session(void)
+{
+    const rec_fsm_t *f = &s_rec.fsm;
+    const imu_profile_info_t *p = imu_profile_info((imu_profile_t)f->profile);
+    uint8_t ch = (uint8_t)(((f->mic_mask & REC_MIC_1) ? 1u : 0u) + ((f->mic_mask & REC_MIC_2) ? 1u : 0u));
+    rec_session_t s = {
+        .take_id = f->take_id,
+        .start_us = host_us(),
+        .profile = f->profile,
+        .ctrl2 = p->ctrl2,
+        .ctrl3 = p->ctrl3,
+        .ctrl5 = p->ctrl5,
+        .odr_mhz = p->odr_mhz,
+        .accel_lsb_per_g = p->accel_lsb_per_g,
+        .gyro_lsb_per_dps = p->gyro_lsb_per_dps,
+        .axis = {{IMU_AXIS_MAP.x.src, IMU_AXIS_MAP.x.sign},
+                 {IMU_AXIS_MAP.y.src, IMU_AXIS_MAP.y.sign},
+                 {IMU_AXIS_MAP.z.src, IMU_AXIS_MAP.z.sign}},
+        .audio_rate_hz = ch ? SIM_AUDIO_RATE : 0u,
+        .audio_channels = ch,
+        .audio_bits = REC_AUDIO_BITS,
+        .mic_mask = f->mic_mask,
+        .gain_db = f->gain_db,
+        .audio_block_frames = SIM_AUDIO_BLOCK,
+        .max_s = f->max_s,
+    };
+    memcpy(s.board_id, s_board_id, sizeof(s.board_id));
+    rec_fw_text(s.fw, sim_fw_version(), s_fw_git);
+    char tail[REC_MAX_PAYLOAD - sizeof(rec_session_t)];
+    const rec_part_t parts[] = {{&s, sizeof(s)}, {tail, (size_t)session_json(tail, sizeof(tail))}};
+    rec_ring_begin_take(&s_rec.ring);
+    rec_push(REC_T_SESSION, REC_V_SESSION, parts, 2);
+
+    // The take's counters and its sources start over.
+    s_rec.imu_started = s_rec.epoch_flag = s_rec.have_next = false;
+    s_rec.ts_ext = (rec_ts_ext_t){0};
+    s_rec.imu_frames = s_rec.imu_lost = 0;
+    s_rec.audio_frames = s_rec.audio_overflows = s_rec.audio_clipped = 0;
+    rec_rate_reset(&s_rec.imu_rate);
+    rec_rate_reset(&s_rec.audio_rate);
+    s_rec.last_level_ms = s_rec.last_stats_ms = app_now_ms();
+    LOGI("recorder: take %lu, %s, mics 0x%x, %u dB, max %u s", (unsigned long)f->take_id, p->name,
+         (unsigned)f->mic_mask, (unsigned)f->gain_db, (unsigned)f->max_s);
+}
+
+// The take's profile at its start, LEVEL at its end: the IMU records start
+// once it is in effect (recorder_imu_block), and stop at once at the end,
+// with LEVEL and STATS.
+static void act_set_profile(void)
+{
+    sensor_request_imu_profile((imu_profile_t)rec_fsm_profile(&s_rec.fsm));
+    bool take = s_rec.fsm.state == REC_STATE_RECORDING;
+    if (s_rec.tap && !take) {
+        LOGI("recorder: take %lu ended (reason %u)", (unsigned long)s_rec.fsm.take_id,
+             (unsigned)s_rec.fsm.reason);
+    }
+    s_rec.tap = take;
+    s_events |= SIM_EV_REC_TAKE;
+}
+
+static void act_audio(bool on)
+{
+    // rec_audio.c: the I2S channel and the ES7210 only during a take.
+    s_rec.audio_on = on;
+    if (on) {
+        s_rec.mic_mask = s_rec.fsm.mic_mask;
+        s_rec.gain_db = s_rec.fsm.gain_db;
+        s_rec.audio_index = 0;
+    }
+    s_events |= SIM_EV_REC_AUDIO;
+}
+
+static void act_emit_end(void)
+{
+    rec_ring_stats_t st;
+    ring_stats(&st);
+    const rec_end_t e = {
+        .host_us = host_us(),
+        .reason = s_rec.fsm.reason,
+        .records = st.next_seq + 1u,     // END gets next_seq (one producer at a time here)
+        .dropped_records = st.dropped_records,
+        .dropped_bytes = st.dropped_bytes,
+        .imu_frames = s_rec.imu_frames,
+        .imu_lost = s_rec.imu_lost,
+        .audio_frames = s_rec.audio_frames,
+        .audio_overflows = s_rec.audio_overflows,
+    };
+    const rec_part_t p = {&e, sizeof(e)};
+    rec_push(REC_T_END, REC_V_END, &p, 1);
+}
+
+static void act_start_ap(void)
+{
+    // Allocated at OPEN (4 MB of PSRAM on the board), whole for the session.
+    if (!s_rec.buf) {
+        s_rec.buf = malloc(s_rec.ring_size);
+    }
+    if (!s_rec.buf) {
+        LOGE("recorder: no memory for the stream ring");
+        return;
+    }
+    rec_ring_init(&s_rec.ring, s_rec.buf, s_rec.ring_size, NULL, NULL, NULL);
+    memset(s_rec.token, 0, sizeof(s_rec.token));
+    s_rec.client = false;
+    s_rec.ap_wanted = true;
+    s_events |= SIM_EV_REC_AP;
+    LOGI("recorder: session open, %lu KiB stream ring", (unsigned long)(s_rec.ring_size / 1024u));
+}
+
+static void act_stop_ap(void)
+{
+    s_rec.ap_wanted = false;
+    s_events |= SIM_EV_REC_AP;
+    LOGI("recorder: session closing (reason %u)", (unsigned)s_rec.fsm.reason);
+}
+
+static void recorder_free(void)
+{
+    if (s_rec.buf) {
+        rec_ring_stats(&s_rec.ring, &s_rec.last);
+        s_rec.last.used = 0;
+        free(s_rec.buf);
+        s_rec.buf = NULL;
+    }
+    s_rec.ap_wanted = s_rec.client = false;
+}
+
+// The FSM's actions, in bit order (rec_fsm.h).
+static void recorder_execute(const rec_out_t *o, const rec_cmd_t *cmd)
+{
+    uint32_t a = o->actions;
+    if (a & REC_ACT_AUDIO_OFF) {
+        act_audio(false);
+    }
+    if (a & REC_ACT_EMIT_SESSION) {
+        act_emit_session();
+    }
+    if (a & REC_ACT_SET_PROFILE) {
+        act_set_profile();
+    }
+    if ((a & REC_ACT_RING_RESET) && s_rec.buf) {
+        rec_ring_reset(&s_rec.ring);
+    }
+    if ((a & REC_ACT_RING_FLUSH) && s_rec.buf) {
+        rec_ring_flush(&s_rec.ring);
+    }
+    if (a & REC_ACT_AUDIO_ON) {
+        act_audio(true);
+    }
+    if (a & REC_ACT_EMIT_EVENT) {
+        bool mark = o->event_code == REC_EV_MARK && cmd;
+        rec_event(o->event_code, o->event_arg, mark ? cmd->text : NULL);
+    }
+    if (a & REC_ACT_EMIT_END) {
+        act_emit_end();
+    }
+    if (a & REC_ACT_START_AP) {
+        act_start_ap();
+    }
+    if (a & REC_ACT_STOP_AP) {
+        act_stop_ap();
+    }
+    if (a & REC_ACT_NOTIFY) {
+        s_rec.notify = true;
+    }
+    if (s_rec.fsm.state == REC_STATE_IDLE) {
+        recorder_free();
+    }
+    recorder_publish();
+}
+
+static rec_err_t recorder_input(rec_input_kind_t kind, const rec_cmd_t *cmd)
+{
+    rec_ring_stats_t st;
+    ring_stats(&st);
+    const app_battery_t *b = &s_state.battery;
+    const rec_env_t env = {
+        .battery_valid = b->valid,
+        .battery_pct = b->percent,
+        .vbus = b->vbus_present,
+        .ota_active = s_state.ota_active,
+        .calibrating = s_state.cal.kind != APP_CAL_IDLE,
+        .ring_empty = st.used == 0,
+    };
+    const rec_input_t in = {.kind = kind, .cmd = cmd};
+    rec_out_t o = rec_fsm_step(&s_rec.fsm, &in, &env, app_now_ms());
+    recorder_execute(&o, cmd);
+    return o.err;
+}
+
+// The sender saw the ring empty.
+static void recorder_check_drained(void)
+{
+    rec_ring_stats_t st;
+    ring_stats(&st);
+    if (s_rec.fsm.state == REC_STATE_DRAINING && st.used == 0) {
+        recorder_input(REC_IN_DRAINED, NULL);
+    }
+}
+
+static void recorder_init(bool imu_ok)
+{
+    recorder_free();
+    uint32_t size = s_rec.ring_size;
+    s_rec = (rec_glue_t){.ring_size = size};
+    rec_fsm_init(&s_rec.fsm, app_now_ms());
+    if (!imu_ok) {
+        recorder_input(REC_IN_IMU_LOST, NULL);
+    }
+    recorder_publish();
+}
+
+// recorder_shutdown(): sleep, power-off and reboot end a take with END,
+// best effort (STOP_AP gives the queue 200 ms).
+static void recorder_shutdown(void)
+{
+    if (rec_fsm_session_open(&s_rec.fsm)) {
+        LOGI("recorder: shutdown");
+        recorder_input(REC_IN_SHUTDOWN, NULL);
+    }
+}
+
+static void recorder_ble(bool up)
+{
+    recorder_input(up ? REC_IN_BLE_BACK : REC_IN_BLE_LOST, NULL);
+}
+
+static void recorder_resend(void)
+{
+    s_rec.sent_valid = false;
+}
+
+static bool recorder_session_open(void)
+{
+    return rec_fsm_session_open(&s_rec.fsm);
+}
+
+static void recorder_imu_state(bool ok)
+{
+    recorder_input(ok ? REC_IN_IMU_BACK : REC_IN_IMU_LOST, NULL);
+}
+
+static void recorder_vib(bool on)
+{
+    if (s_rec.tap) {
+        rec_event(on ? REC_EV_VIB_START : REC_EV_VIB_STOP, 0, NULL);
+    }
+}
+
+// recorder_imu_block(): the sensor tap, a non-blocking copy of one FIFO
+// read's raw frames, one IMU record per timestamp run.
+static void recorder_imu_block(const imu_raw_info_t *raw)
+{
+    imu_profile_t want = (imu_profile_t)s_rec.fsm.profile;
+    if (!s_rec.tap || raw->n == 0 || s_chip.profile != want || s_profile_req != want) {
+        return;     // no take, or its profile is not in effect yet
+    }
+    if (!s_rec.imu_started || raw->epoch != s_rec.imu_epoch) {
+        // A new chip clock: the take's first read, or the first after a reset.
+        s_rec.epoch_flag = s_rec.imu_started;
+        s_rec.imu_started = true;
+        s_rec.imu_epoch = raw->epoch;
+        s_rec.ts_ext = (rec_ts_ext_t){0};
+        s_rec.have_next = false;
+        rec_event(REC_EV_PROFILE, want, NULL);
+    }
+    uint32_t chip = rec_ts_extend(&s_rec.ts_ext, raw->chip_ts);
+    for (int k = 0; k < 2; k++) {
+        const imu_raw_run_t *run = &raw->run[k];
+        if (run->count == 0) {
+            continue;
+        }
+        uint32_t first = rec_ts_near(chip, run->ts_first);
+        uint16_t flags = run->discontinuous ? REC_IMU_DISCONT : 0u;
+        if (s_rec.epoch_flag) {
+            flags |= REC_IMU_EPOCH | REC_IMU_DISCONT;
+            s_rec.epoch_flag = false;
+        }
+        if (s_rec.have_next && !(flags & REC_IMU_DISCONT)) {
+            s_rec.imu_lost += first - s_rec.next_ts;
+        }
+        s_rec.next_ts = first + run->count;
+        s_rec.have_next = true;
+        int16_t frames[IMU_FIFO_MAX_FRAMES][6];
+        for (uint16_t i = 0; i < run->count; i++) {
+            imu_map_frame_i16(raw->map, &raw->frames[(size_t)(run->first + i) * IMU_FRAME_BYTES],
+                              frames[i]);
+        }
+        const rec_imu_t h = {.ts_first = first, .chip_ts = chip, .host_us = (uint64_t)raw->host_us,
+                             .n = run->count, .flags = flags};
+        const rec_part_t p[] = {{&h, sizeof(h)}, {frames, (size_t)run->count * REC_IMU_FRAME_LEN}};
+        rec_push(REC_T_IMU, REC_V_IMU, p, 2);
+        s_rec.imu_frames += run->count;
+    }
+    rec_rate_update(&s_rec.imu_rate, raw->epoch, chip, raw->host_us);
+}
+
+static void emit_level(void)
+{
+    db_angle_packet_t a;
+    ble_codec_angle(&s_state, 0, app_now_ms(), &a);
+    bool z = s_level.zero_set;
+    const rec_level_t l = {
+        .host_us = host_us(),
+        .mode = a.mode,
+        .flags = a.flags,
+        .elevation_cdeg = a.elevation_cdeg,
+        .yaw_cdeg = a.yaw_cdeg,
+        .bubble_x_cdeg = a.bubble_x_cdeg,
+        .bubble_y_cdeg = a.bubble_y_cdeg,
+        .deviation_cdeg = a.deviation_cdeg,
+        .zero_elevation_cdeg = z ? ble_codec_cdeg(s_level.zero_elevation_deg) : 0,
+        .zero_bubble_x_cdeg = z ? ble_codec_cdeg(s_level.zero_bubble_x_deg) : 0,
+        .zero_bubble_y_cdeg = z ? ble_codec_cdeg(s_level.zero_bubble_y_deg) : 0,
+    };
+    const rec_part_t p = {&l, sizeof(l)};
+    rec_push(REC_T_LEVEL, REC_V_LEVEL, &p, 1);
+}
+
+static void emit_stats(void)
+{
+    rec_ring_stats_t st;
+    ring_stats(&st);
+    const app_battery_t *b = &s_state.battery;
+    const rec_stats_t s = {
+        .host_us = host_us(),
+        .imu_frames = s_rec.imu_frames,
+        .imu_lost = s_rec.imu_lost,
+        .imu_period_ns = rec_rate_period_ns(&s_rec.imu_rate),
+        .audio_frames = s_rec.audio_frames,
+        .audio_overflows = s_rec.audio_overflows,
+        .audio_rate_mhz = rec_rate_mhz(&s_rec.audio_rate),
+        .audio_clipped = s_rec.audio_clipped,
+        .ring_high_water = (uint32_t)st.high_water,
+        .ring_size = (uint32_t)st.cap,
+        .dropped_records = st.dropped_records,
+        .dropped_bytes = st.dropped_bytes,
+        .battery_mv = b->voltage_mv,
+        .battery_pct = b->percent,
+        .power_flags = (uint8_t)((b->valid ? REC_STATS_BATTERY_VALID : 0u) |
+                                 (b->vbus_present ? REC_STATS_VBUS : 0u) |
+                                 (b->charging ? REC_STATS_CHARGING : 0u)),
+    };
+    const rec_part_t p = {&s, sizeof(s)};
+    rec_push(REC_T_STATS, REC_V_STATS, &p, 1);
+}
+
+void sim_rec_tick(uint32_t now_ms)
+{
+    if (!running(now_ms)) {
+        return;
+    }
+    recorder_input(REC_IN_TICK, NULL);
+    uint32_t now = app_now_ms();
+    if (s_rec.tap && now - s_rec.last_level_ms >= REC_LEVEL_MS) {
+        s_rec.last_level_ms += REC_LEVEL_MS;
+        emit_level();
+    }
+    if (s_rec.tap && now - s_rec.last_stats_ms >= REC_STATS_MS) {
+        s_rec.last_stats_ms += REC_STATS_MS;
+        emit_stats();
+    }
+    recorder_check_drained();
+    recorder_publish();
+}
+
+int sim_rec_pop(uint8_t *buf, int cap)
+{
+    if (!s_rec.buf || cap <= 0) {
+        return 0;
+    }
+    size_t got = 0;
+    while (got < (size_t)cap) {
+        const uint8_t *d;
+        size_t n = rec_ring_peek(&s_rec.ring, &d, (size_t)cap - got);
+        if (n == 0) {
+            break;
+        }
+        memcpy(&buf[got], d, n);
+        rec_ring_consume(&s_rec.ring, n);
+        got += n;
+    }
+    if (s_run == SIM_STATE_RUNNING) {
+        recorder_check_drained();
+    }
+    return (int)got;
+}
+
+static bool token_ok(const uint8_t *t)
+{
+    uint8_t d = 0;
+    for (size_t i = 0; i < REC_HELLO_TOKEN_LEN; i++) {
+        d |= (uint8_t)(t[i] ^ s_rec.token[i]);
+    }
+    return d == 0;
+}
+
+int sim_rec_net(int kind, const uint8_t *data, int len, uint32_t now_ms)
+{
+    if (!running(now_ms)) {
+        return 0;
+    }
+    switch (kind) {
+    case SIM_NET_UP:
+        if (!s_rec.ap_wanted || !data || len != REC_HELLO_TOKEN_LEN) {
+            return 0;
+        }
+        memcpy(s_rec.token, data, sizeof(s_rec.token));
+        LOGI("recorder: endpoint %u.%u.%u.%u:%u%s", s_rec.ip[0], s_rec.ip[1], s_rec.ip[2],
+             s_rec.ip[3], (unsigned)s_rec.port, s_rec.no_ap ? " (LAN, no AP)" : "");
+        recorder_input(REC_IN_AP_UP, NULL);
+        return 1;
+    case SIM_NET_FAIL:
+        LOGE("recorder: endpoint failed");
+        recorder_input(REC_IN_AP_FAIL, NULL);
+        return 1;
+    case SIM_NET_HELLO: {
+        bool ok = s_rec.fsm.state == REC_STATE_WAIT_CLIENT && !s_rec.client && data &&
+                  len == REC_HELLO_LEN && token_ok(data) &&
+                  (data[16] | (data[17] << 8)) == REC_STREAM_VERSION;
+        if (!ok) {
+            LOGW("recorder: stream client refused");
+            return 0;
+        }
+        s_rec.client = true;
+        LOGI("recorder: stream client connected");
+        recorder_input(REC_IN_HELLO_OK, NULL);
+        return 1;
+    }
+    case SIM_NET_CLIENT_LOST:
+        if (!s_rec.client) {
+            return 0;
+        }
+        s_rec.client = false;
+        LOGW("recorder: stream client lost");
+        recorder_input(REC_IN_CLIENT_LOST, NULL);
+        return 1;
+    case SIM_NET_DOWN:
+        s_rec.client = false;
+        recorder_input(REC_IN_AP_DOWN, NULL);
+        return 1;
+    default:
+        return 0;
+    }
+}
+
+int sim_rec_ctrl_write(const uint8_t *data, int len, uint32_t now_ms)
+{
+    if (!gatt_write_begin(now_ms)) {
+        return ATT_ERR_UNLIKELY;
+    }
+    if (!flatten_ok(len)) {
+        return BLE_CODEC_ATT_INVALID_LEN;
+    }
+    rec_cmd_t cmd;
+    uint8_t att = ble_codec_parse_rec(data, (size_t)len, &cmd);
+    if (att != 0) {
+        LOGW("rec_ctrl 0x%02x rejected: 0x%02x", data[0], att);
+        return att;
+    }
+    rec_err_t err = recorder_input(REC_IN_CMD, &cmd);
+    if (err == REC_OK && cmd.op == REC_CMD_OPEN && s_rec.fsm.state == REC_STATE_AP_STARTING &&
+        !s_rec.buf) {
+        err = REC_ERR_RADIO;    // the ring could not be allocated
+        recorder_input(REC_IN_AP_FAIL, NULL);
+    }
+    att = ble_codec_rec_att_err(err);
+    if (att != 0) {
+        LOGW("rec_ctrl 0x%02x refused: 0x%02x", data[0], att);
+    } else {
+        LOGI("rec_ctrl 0x%02x", data[0]);
+    }
+    return att;
+}
+
+void sim_rec_state_read(uint8_t *out86)
+{
+    db_rec_state_packet_t p;
+    ble_codec_rec_state(&s_state.rec, &p);
+    memcpy(out86, &p, sizeof(p));
+}
+
+int sim_rec_notify(uint32_t now_ms, uint8_t *out86)
+{
+    if (!running(now_ms)) {
+        return 0;
+    }
+    bool pending = s_rec.notify;
+    s_rec.notify = false;
+    // It carries the credentials: authenticated links only.
+    if (!s_connected || !s_link_trusted || !(s_subs & SIM_SUB_REC)) {
+        s_rec.sent_valid = false;
+        return 0;
+    }
+    // Computed when it is sent: the heartbeat's elapsed_s is the current
+    // second, not the one of the last publish.
+    recorder_publish();
+    db_rec_state_packet_t p;
+    ble_codec_rec_state(&s_state.rec, &p);
+    uint32_t now = app_now_ms();
+    bool take = p.state == REC_STATE_RECORDING || p.state == REC_STATE_DRAINING;
+    if (!pending && s_rec.sent_valid && !ble_codec_rec_state_changed(&s_rec.sent, &p) &&
+        !(take && now - s_rec.sent_ms >= REC_HEARTBEAT_MS)) {
+        return 0;
+    }
+    s_rec.sent = p;
+    s_rec.sent_valid = true;
+    s_rec.sent_ms = now;
+    memcpy(out86, &p, sizeof(p));
+    return 1;
+}
+
+int sim_rec_note_touch(uint32_t now_ms)
+{
+    if (!running(now_ms) || s_rec.fsm.state != REC_STATE_RECORDING) {
+        return 0;
+    }
+    rec_event(REC_EV_TOUCH, 0, NULL);
+    return 1;
+}
+
+int sim_rec_ui_stop(uint32_t now_ms)
+{
+    if (!running(now_ms)) {
+        return ATT_ERR_UNLIKELY;
+    }
+    const rec_cmd_t c = {.op = REC_CMD_STOP};
+    return ble_codec_rec_att_err(recorder_input(REC_IN_CMD, &c));
+}
+
+int sim_audio_block(uint32_t now_ms, const sim_motor_t *m)
+{
+    if (!running(now_ms) || !s_rec.audio_on || !m) {
+        return 0;
+    }
+    float f[SIM_AUDIO_BLOCK * 2];
+    int16_t rec[SIM_AUDIO_BLOCK * 2];
+    sim_audio_synth(m, SIM_AUDIO_BLOCK, f);
+    // The ES7210 PGA, then the 16-bit converter.
+    float gain = powf(10.0f, (float)s_rec.gain_db / 20.0f) * 32767.0f;
+    bool both = (s_rec.mic_mask & REC_MIC_ALL) == REC_MIC_ALL;
+    int only = (s_rec.mic_mask & REC_MIC_1) ? 0 : 1;
+    size_t k = 0;
+    for (int i = 0; i < SIM_AUDIO_BLOCK * 2; i++) {
+        float v = roundf(f[i] * gain);
+        int16_t pcm = v >= 32767.0f ? 32767 : v <= -32768.0f ? -32768 : (int16_t)v;
+        if (both || i % 2 == only) {
+            rec[k++] = pcm;
+            s_rec.audio_clipped += (pcm >= 32767 || pcm <= -32767) ? 1u : 0u;
+        }
+    }
+    const rec_audio_t h = {.sample_index = s_rec.audio_index, .host_us = host_us(),
+                           .n = SIM_AUDIO_BLOCK, .flags = 0};
+    const rec_part_t p[] = {{&h, sizeof(h)}, {rec, k * sizeof(int16_t)}};
+    rec_push(REC_T_AUDIO, REC_V_AUDIO, p, 2);
+    s_rec.audio_index += SIM_AUDIO_BLOCK;
+    s_rec.audio_frames += SIM_AUDIO_BLOCK;
+    rec_rate_update(&s_rec.audio_rate, 0, s_rec.audio_index, (int64_t)h.host_us);
+    return SIM_AUDIO_BLOCK;
+}
+
 // ---- control.c -------------------------------------------------------------------
 
 #define PMU_STATUS_PERIOD_MS 500
@@ -1641,6 +2631,7 @@ static app_power_t to_app_power(power_state_t st)
 static void prepare_shutdown(app_power_t p, const char *what)
 {
     LOGI("%s", what);
+    recorder_shutdown();   // first: END while the producers still run
     app_state_set_power(p);
     sensor_stop();
     ble_service_shutdown();
@@ -1685,6 +2676,11 @@ static void change_mode(bool step, int32_t arg)
 
 static void start_cal(app_cal_kind_t kind, int32_t arg)
 {
+    if (recorder_session_open()) {
+        // OTA, calibration and a recording session exclude each other.
+        LOGW("calibration refused: a recording session is open");
+        return;
+    }
     s_cal_from_ble = arg == APP_CMD_ARG_FROM_BLE;
     sensor_cal_start(kind);
 }
@@ -1832,6 +2828,7 @@ static void handle_cmd(const app_cmd_t *cmd)
         break;
     case APP_CMD_REBOOT:
         LOGI("reboot");
+        recorder_shutdown();
         halt(SIM_STATE_REBOOT, SIM_EV_REBOOT);
         break;
     case APP_CMD_FACTORY_RESET:
@@ -1963,6 +2960,7 @@ static void update_power(uint32_t now)
         .ble_connected = snap.ble_holds_awake,
         .ota_active = snap.ota_active,
         .calibrating = snap.cal.kind != APP_CAL_IDLE,
+        .recording = recorder_session_open(),
     };
     power_state_t st = power_fsm_update(&s_fsm, &in, now);
     check_abandoned_cal(&snap, now);
@@ -2051,6 +3049,7 @@ int sim_init(const char *state_path, const char *ota_image_path, const char *def
     sensor_start(&s_current, imu_present != 0);
     ota_update_init();
     ble_service_init(s_current.ble_enabled);
+    recorder_init(imu_present != 0);
     control_start(&s_current);
     s_run = SIM_STATE_RUNNING;
     return 0;
@@ -2178,6 +3177,32 @@ int sim_snapshot_json(char *buf, int cap)
         (int)s->cal.last_result, (int)s->cal.last_kind);
     put(&o, "\"link\":{\"connected\":%s,\"trusted\":%s,\"pairing\":%s,\"subs\":%u},",
         B(s_connected), B(s_link_trusted), B(s_pairing), (unsigned)s_subs);
+
+    // The recorder: rec_state's fields plus what only the device knows.
+    const app_rec_status_t *rc = &s->rec;
+    rec_ring_stats_t rs;
+    ring_stats(&rs);
+    put(&o, "\"rec\":{\"state\":%u,\"reason\":%u,\"flags\":%u,\"take_id\":%lu,\"elapsed_s\":%u,"
+            "\"max_s\":%u,\"profile\":%u,\"take_valid\":%s,\"tap\":%s,\"ap_wanted\":%s,"
+            "\"client\":%s,\"audio_on\":%s,\"mic_mask\":%u,\"gain_db\":%u,",
+        (unsigned)rc->state, (unsigned)rc->reason, (unsigned)rc->flags, (unsigned long)rc->take_id,
+        (unsigned)rc->elapsed_s, (unsigned)rc->max_s, (unsigned)rc->profile,
+        B(s_rec.fsm.take_valid), B(s_rec.tap), B(s_rec.ap_wanted), B(s_rec.client),
+        B(s_rec.audio_on), (unsigned)s_rec.fsm.mic_mask, (unsigned)s_rec.fsm.gain_db);
+    put(&o, "\"sent_bytes\":%llu,\"dropped\":%lu,\"dropped_bytes\":%lu,\"ring_used\":%lu,"
+            "\"ring_size\":%lu,\"ring_pct\":%u,\"high_water\":%lu,\"records\":%lu,",
+        (unsigned long long)rs.sent_bytes, (unsigned long)rs.dropped_records,
+        (unsigned long)rs.dropped_bytes, (unsigned long)rs.used,
+        (unsigned long)(s_rec.buf ? rs.cap : s_rec.ring_size), (unsigned)rc->ring_pct,
+        (unsigned long)rs.high_water, (unsigned long)rs.next_seq);
+    put(&o, "\"imu_frames\":%lu,\"imu_lost\":%lu,\"imu_period_ns\":%lu,\"audio_frames\":%lu,"
+            "\"audio_clipped\":%lu,\"audio_rate_mhz\":%lu,\"imu_profile\":%d,\"imu_epoch\":%lu,"
+            "\"mic_gain_db\":[%.2f,%.2f]},",
+        (unsigned long)s_rec.imu_frames, (unsigned long)s_rec.imu_lost,
+        (unsigned long)rec_rate_period_ns(&s_rec.imu_rate), (unsigned long)s_rec.audio_frames,
+        (unsigned long)s_rec.audio_clipped, (unsigned long)rec_rate_mhz(&s_rec.audio_rate),
+        (int)s_chip.profile, (unsigned long)s_epoch, (double)sim_audio_mic_gain_db(1),
+        (double)sim_audio_mic_gain_db(2));
 
     char json[SETTINGS_JSON_MAX];
     if (settings_to_json(&s_current, json, sizeof(json)) > 0) {

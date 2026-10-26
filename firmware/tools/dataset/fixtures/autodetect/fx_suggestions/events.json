@@ -1,0 +1,83 @@
+{
+  "schema": "drillbalancer.events/1",
+  "taxonomy_version": 1,
+  "recording_id": "20261026T144507Z_synt_0907",
+  "revision": 1,
+  "coverage_us": [
+    3242657,
+    11951441
+  ],
+  "events": [
+    {
+      "id": "e1",
+      "type": "motor_on",
+      "t_us": 4138537,
+      "source": "user",
+      "confidence": 1.0
+    },
+    {
+      "id": "e2",
+      "type": "contact",
+      "t_us": 5424791,
+      "source": "user",
+      "confidence": 1.0,
+      "hole": 1
+    },
+    {
+      "id": "e3",
+      "type": "breakthrough",
+      "t_us": 7041178,
+      "source": "user",
+      "confidence": 1.0,
+      "hole": 1
+    },
+    {
+      "id": "e4",
+      "type": "motor_off",
+      "t_us": 7863568,
+      "source": "user",
+      "confidence": 1.0
+    }
+  ],
+  "spans": [
+    {
+      "id": "s1",
+      "type": "wander",
+      "t0_us": 5424791,
+      "t1_us": 6924791,
+      "hole": 1,
+      "source": "user",
+      "confidence": 1.0
+    },
+    {
+      "id": "s2",
+      "type": "wobble",
+      "t0_us": 5624791,
+      "t1_us": 6941178,
+      "hole": 1,
+      "source": "user",
+      "confidence": 1.0
+    },
+    {
+      "id": "s3",
+      "type": "ignore",
+      "t0_us": 8863568,
+      "t1_us": 11951441,
+      "reason": "speech",
+      "source": "user",
+      "confidence": 1.0
+    }
+  ],
+  "holes": [
+    {
+      "hole": 1,
+      "through": true,
+      "material": null,
+      "outcome_tags": [
+        "clean"
+      ],
+      "off_angle_deg": 1.03,
+      "off_angle_source": "computed"
+    }
+  ]
+}

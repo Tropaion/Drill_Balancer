@@ -22,7 +22,8 @@ LIB_PATH = BUILD_DIR / "libdbsim.so"
 FIRMWARE_DIR = SIM_DIR.parent.parent
 COMPONENTS_DIR = FIRMWARE_DIR / "components"
 # Components compiled into the library (CMakeLists.txt), and the header stubs.
-_SOURCE_COMPONENTS = ("level", "settings", "ota", "ble", "power", "ui", "app_core", "board", "imu")
+_SOURCE_COMPONENTS = ("level", "settings", "ota", "ble", "power", "ui", "app_core", "board", "imu",
+                      "recorder")
 _STUBS_DIR = FIRMWARE_DIR / "test_host" / "stubs"
 
 # sim_core.h
@@ -34,6 +35,9 @@ EV_BLE_ENABLED = 0x10
 EV_SETTINGS = 0x20
 EV_CAL = 0x40
 EV_OTA = 0x80
+EV_REC_AP = 0x100
+EV_REC_AUDIO = 0x200
+EV_REC_TAKE = 0x400
 
 TX_ANGLE = 0x01
 TX_STATUS = 0x02
@@ -46,11 +50,35 @@ SUB_ANGLE = 0x01
 SUB_STATUS = 0x02
 SUB_BAT = 0x04
 SUB_OTA = 0x08
+SUB_REC = 0x10
 
 FAULT_STORE = 0x01
 FAULT_FLASH = 0x02
 
 STATES = ("running", "sleep", "off", "reboot")   # SIM_STATE_*
+
+MAX_PASS_SAMPLES = 256
+REC_RING_DEFAULT = 512 * 1024
+NET_UP = 0
+NET_FAIL = 1
+NET_HELLO = 2
+NET_CLIENT_LOST = 3
+NET_DOWN = 4
+AUDIO_RATE = 16000
+AUDIO_BLOCK = 256
+MAX_IMPACTS = 8
+REC_STATE_SIZE = 86   # db_rec_state_packet_t
+
+
+class Motor(ctypes.Structure):
+    """sim_motor_t: the motor during one audio block (sim_audio_block)."""
+
+    _fields_ = [("f0_hz", ctypes.c_float * 2), ("hum", ctypes.c_float * 2),
+                ("noise", ctypes.c_float * 2), ("ambient", ctypes.c_float),
+                ("n_impacts", ctypes.c_int32),
+                ("impact_s", ctypes.c_float * MAX_IMPACTS),
+                ("impact_amp", ctypes.c_float * MAX_IMPACTS),
+                ("impact_tau_s", ctypes.c_float * MAX_IMPACTS)]
 
 # app_state.h app_cmd_id_t
 APP_CMD_ZERO = 0
@@ -83,7 +111,8 @@ def _tool_env() -> dict:
 
 
 def _sources():
-    for name in ("sim_core.c", "sim_core.h", "CMakeLists.txt"):
+    for name in ("sim_core.c", "sim_core.h", "sim_audio.c", "sim_audio.h", "sim_rand.h",
+                 "CMakeLists.txt"):
         yield CORE_DIR / name
     for d in [COMPONENTS_DIR / c for c in _SOURCE_COMPONENTS] + [_STUBS_DIR]:
         for p in d.rglob("*"):
@@ -114,6 +143,24 @@ def build_lib(quiet: bool = True) -> Path:
     if r.returncode != 0:
         raise RuntimeError("building libdbsim.so failed:\n" + r.stdout)
     return LIB_PATH
+
+
+_fw_git = None
+
+
+def firmware_git() -> str:
+    """`git describe --always --dirty --abbrev=7` of the firmware tree, as the
+    build's REC_FW_GIT (components/recorder/CMakeLists.txt); "" outside git."""
+    global _fw_git
+    if _fw_git is None:
+        try:
+            r = subprocess.run(["git", "describe", "--always", "--dirty", "--abbrev=7", "--match=-"],
+                               cwd=COMPONENTS_DIR / "recorder", capture_output=True, text=True,
+                               timeout=10)
+            _fw_git = r.stdout.strip() if r.returncode == 0 else ""
+        except (OSError, subprocess.SubprocessError):
+            _fw_git = ""
+    return _fw_git
 
 
 _lib = None
@@ -170,6 +217,25 @@ def _load():
         "sim_set_faults": (None, [ctypes.c_uint32]),
         "sim_fault_busy": (None, [ctypes.c_int]),
         "sim_ui_text": (ctypes.c_char_p, [ctypes.c_int, ctypes.c_int]),
+        "sim_seed": (None, [ctypes.c_uint32]),
+        "sim_set_identity": (None, [u8p, ctypes.c_char_p]),
+        "sim_imu_odr_hz": (ctypes.c_float, []),
+        "sim_fault_profile_lag": (None, [ctypes.c_int]),
+        "sim_rec_ctrl_write": (ctypes.c_int, [u8p, ctypes.c_int, ctypes.c_uint32]),
+        "sim_rec_state_read": (None, [u8p]),
+        "sim_rec_notify": (ctypes.c_int, [ctypes.c_uint32, u8p]),
+        "sim_rec_set_endpoint": (None, [ctypes.c_int, u8p, ctypes.c_int, ctypes.c_int,
+                                        ctypes.c_char_p, ctypes.c_char_p]),
+        "sim_rec_set_ring_size": (None, [ctypes.c_uint32]),
+        "sim_rec_net": (ctypes.c_int, [ctypes.c_int, u8p, ctypes.c_int, ctypes.c_uint32]),
+        "sim_rec_ap_wanted": (ctypes.c_int, []),
+        "sim_rec_audio_on": (ctypes.c_int, []),
+        "sim_rec_tick": (None, [ctypes.c_uint32]),
+        "sim_rec_pop": (ctypes.c_int, [u8p, ctypes.c_int]),
+        "sim_rec_note_touch": (ctypes.c_int, [ctypes.c_uint32]),
+        "sim_rec_ui_stop": (ctypes.c_int, [ctypes.c_uint32]),
+        "sim_audio_block": (ctypes.c_int, [ctypes.c_uint32, ctypes.POINTER(Motor)]),
+        "sim_set_mic_gain": (None, [ctypes.c_int, ctypes.c_float]),
     }
     for name, (res, args) in sig.items():
         fn = getattr(lib, name)
@@ -194,6 +260,7 @@ class Core:
 
     def __init__(self):
         self._lib = _load()
+        self._pop_buf = None
 
     # ---- boot and state ----
     def init(self, state_path, ota_image_path, default_version: str, now_ms: int,
@@ -235,19 +302,38 @@ class Core:
         return out
 
     def snapshot(self) -> dict:
-        buf = ctypes.create_string_buffer(8192)
+        buf = ctypes.create_string_buffer(16384)
         n = self._lib.sim_snapshot_json(buf, len(buf))
         if n < 0:
             raise RuntimeError("snapshot does not fit")
         return json.loads(buf.value.decode())
 
+    def seed(self, seed: int) -> None:
+        """The simulated randomness (FIFO read timing, microphone noise); before init()."""
+        self._lib.sim_seed(_u32(seed))
+
+    def set_identity(self, board_id: bytes, fw_git: str) -> None:
+        """SESSION.board_id (4 bytes) and the git revision in SESSION.fw; before init()."""
+        buf, _ = _bytes_arg(bytes(board_id[:4]).ljust(4, b"\0"))
+        self._lib.sim_set_identity(buf, fw_git.encode())
+
     # ---- sensor task ----
     def sensor_pass(self, now_ms: int, samples, dt: float, imu_present: bool = True) -> None:
-        """samples: sequence of (ax, ay, az, gx, gy, gz); empty = empty FIFO read."""
+        """samples: what arrived at the chip since the last pass, a sequence of
+        (ax, ay, az, gx, gy, gz) at imu_odr_hz; empty = nothing arrived."""
         flat = array("f", (v for s in samples for v in s))
-        n = len(flat) // 6
+        n = min(len(flat) // 6, MAX_PASS_SAMPLES)
         ptr = (ctypes.c_float * max(1, len(flat))).from_buffer(flat) if n else None
         self._lib.sim_sensor_pass(_u32(now_ms), ptr, n, dt, int(imu_present))
+
+    @property
+    def imu_odr_hz(self) -> float:
+        """The sample rate of the profile the simulated chip runs."""
+        return float(self._lib.sim_imu_odr_hz())
+
+    def fault_profile_lag(self, passes: int) -> None:
+        """The next passes read before they take a requested profile."""
+        self._lib.sim_fault_profile_lag(int(passes))
 
     # ---- control task ----
     def control_step(self, now_ms: int) -> None:
@@ -378,3 +464,62 @@ class Core:
 
     def ui_text(self, which: int, code: int) -> str:
         return self._lib.sim_ui_text(which, code).decode()
+
+    # ---- recorder ----
+    def rec_ctrl_write(self, data: bytes, now_ms: int) -> int:
+        buf, n = _bytes_arg(data)
+        return self._lib.sim_rec_ctrl_write(buf, n, _u32(now_ms))
+
+    def rec_state(self) -> bytes:
+        out = (ctypes.c_uint8 * REC_STATE_SIZE)()
+        self._lib.sim_rec_state_read(out)
+        return bytes(out)
+
+    def rec_notify(self, now_ms: int) -> bytes | None:
+        """The rec_state notification due now (100 ms timer), or None."""
+        out = (ctypes.c_uint8 * REC_STATE_SIZE)()
+        return bytes(out) if self._lib.sim_rec_notify(_u32(now_ms), out) else None
+
+    def rec_set_endpoint(self, no_ap: bool, ip: str, port: int, channel: int = 0, ssid: str = "",
+                         password: str = "") -> None:
+        buf, _ = _bytes_arg(bytes(int(x) for x in ip.split(".")))
+        self._lib.sim_rec_set_endpoint(int(no_ap), buf, int(port), int(channel), ssid.encode(),
+                                       password.encode())
+
+    def rec_set_ring_size(self, size: int) -> None:
+        self._lib.sim_rec_set_ring_size(int(size))
+
+    def rec_net(self, kind: int, data: bytes = b"", now_ms: int = 0) -> bool:
+        buf, n = _bytes_arg(data)
+        return bool(self._lib.sim_rec_net(kind, buf, n, _u32(now_ms)))
+
+    @property
+    def rec_ap_wanted(self) -> bool:
+        return bool(self._lib.sim_rec_ap_wanted())
+
+    @property
+    def rec_audio_on(self) -> bool:
+        return bool(self._lib.sim_rec_audio_on())
+
+    def rec_tick(self, now_ms: int) -> None:
+        self._lib.sim_rec_tick(_u32(now_ms))
+
+    def rec_pop(self, cap: int = 65536) -> bytes:
+        """Stream bytes the sender takes out of the ring now (at most cap)."""
+        if self._pop_buf is None or len(self._pop_buf) < cap:
+            self._pop_buf = (ctypes.c_uint8 * cap)()
+        n = self._lib.sim_rec_pop(self._pop_buf, cap)
+        return ctypes.string_at(self._pop_buf, n) if n > 0 else b""
+
+    def rec_note_touch(self, now_ms: int) -> bool:
+        return bool(self._lib.sim_rec_note_touch(_u32(now_ms)))
+
+    def rec_ui_stop(self, now_ms: int) -> int:
+        return self._lib.sim_rec_ui_stop(_u32(now_ms))
+
+    def audio_block(self, now_ms: int, motor: Motor) -> int:
+        """One 16 ms microphone block (into the stream). Returns the frames."""
+        return self._lib.sim_audio_block(_u32(now_ms), ctypes.byref(motor))
+
+    def set_mic_gain(self, mic: int, db: float) -> None:
+        self._lib.sim_set_mic_gain(int(mic), float(db))

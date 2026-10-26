@@ -1,0 +1,55 @@
+{
+  "schema": "drillbalancer.events/1",
+  "taxonomy_version": 1,
+  "recording_id": "20261026T144504Z_synt_0904",
+  "revision": 1,
+  "coverage_us": [
+    3842547,
+    8639687
+  ],
+  "events": [
+    {
+      "id": "e1",
+      "type": "motor_on",
+      "t_us": 3842547,
+      "source": "user",
+      "confidence": 1.0
+    },
+    {
+      "id": "e2",
+      "type": "contact",
+      "t_us": 4843403,
+      "source": "user",
+      "confidence": 1.0,
+      "hole": 1
+    },
+    {
+      "id": "e3",
+      "type": "breakthrough",
+      "t_us": 6232919,
+      "source": "user",
+      "confidence": 1.0,
+      "hole": 1
+    },
+    {
+      "id": "e4",
+      "type": "motor_off",
+      "t_us": 7142079,
+      "source": "user",
+      "confidence": 1.0
+    }
+  ],
+  "spans": [],
+  "holes": [
+    {
+      "hole": 1,
+      "through": true,
+      "material": null,
+      "outcome_tags": [
+        "clean"
+      ],
+      "off_angle_deg": 0.52,
+      "off_angle_source": "computed"
+    }
+  ]
+}

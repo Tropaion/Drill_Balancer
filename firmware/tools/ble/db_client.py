@@ -2,7 +2,9 @@
 """DrillBalancer BLE test client.
 
 Talks to the firmware's GATT protocol (components/ble/include/ble_protocol.h
-and components/ota/include/ota_proto.h). Run `db_client.py --help`.
+and components/ota/include/ota_proto.h), and pulls the recorder's stream
+(components/recorder/include/rec_stream.h) into a .dbrec file. Run
+`db_client.py --help`.
 
 Importable: the packet encoders / decoders below have no bleak dependency, and
 `python3 db_client.py --dry-run` checks them against the C struct layouts
@@ -17,9 +19,11 @@ import hashlib
 import json
 import os
 import re
+import secrets
 import struct
 import sys
 import time
+import zlib
 from dataclasses import dataclass
 from typing import Optional
 
@@ -147,6 +151,134 @@ REC_FLAGS = {
     "imu_lost": 1 << 3,
     "battery_low": 1 << 4,
 }
+
+# ---- recorder stream (rec_stream.h) ------------------------------------------
+
+REC_STREAM_PORT = 47100
+REC_STREAM_VERSION = 1
+REC_HELLO_TOKEN_LEN = 16
+REC_HELLO_LEN = 18
+REC_HDR_FMT = "<BBHI"          # rec_hdr_t: type, ver, len, seq
+REC_HDR_LEN = 8
+REC_CRC_LEN = 4
+REC_MAX_PAYLOAD = 4096
+REC_TYPES = {0x01: "SESSION", 0x02: "IMU", 0x03: "AUDIO", 0x04: "EVENT", 0x05: "STATS",
+             0x06: "LEVEL", 0x0F: "END"}    # REC_T_*
+REC_T_SESSION = 0x01
+REC_T_END = 0x0F
+REC_END_FMT = "<QB7I"          # rec_end_t: host_us, reason, records, dropped_records, dropped_bytes,
+REC_END_SIZE = 37              # imu_frames, imu_lost, audio_frames, audio_overflows
+
+def encode_hello(token: bytes) -> bytes:
+    """The stream client's first message: the session token, then the version."""
+    if len(token) != REC_HELLO_TOKEN_LEN:
+        raise ValueError(f"the token is {REC_HELLO_TOKEN_LEN} bytes")
+    return bytes(token) + struct.pack("<H", REC_STREAM_VERSION)
+
+
+class RecScanner:
+    """Finds the records in a stream as it arrives: header, payload, CRC-32
+    (zlib), resynchronising byte by byte after a bad CRC or an implausible
+    header. Counts what a pull reports; decoding the payloads is
+    tools/dataset's dbdata.dbrec."""
+
+    def __init__(self):
+        self._buf = bytearray()
+        self.bytes = 0
+        self.records = 0
+        self.by_type = {}
+        self.skipped = 0
+        self.missing = 0          # seq jumps within a take (records the device dropped)
+        self.takes = 0
+        self.ends = []            # (reason name, rec_end_t fields) per END
+        self._seq = None
+
+    def feed(self, data: bytes) -> list:
+        """Whole records found so far: (type, ver, seq, payload)."""
+        self.bytes += len(data)
+        b = self._buf
+        b += data
+        out = []
+        o = 0
+        while len(b) - o >= REC_HDR_LEN:
+            t, ver, ln, seq = struct.unpack_from(REC_HDR_FMT, b, o)
+            if ver == 0 or ln > REC_MAX_PAYLOAD:
+                o += 1
+                self.skipped += 1
+                continue
+            end = o + REC_HDR_LEN + ln
+            if len(b) < end + REC_CRC_LEN:
+                break
+            if zlib.crc32(b[o:end]) != struct.unpack_from("<I", b, end)[0]:
+                o += 1
+                self.skipped += 1
+                continue
+            out.append((t, ver, seq, bytes(b[o + REC_HDR_LEN:end])))
+            o = end + REC_CRC_LEN
+        del b[:o]
+        for t, _, seq, payload in out:
+            self.records += 1
+            name = REC_TYPES.get(t, f"0x{t:02x}")
+            self.by_type[name] = self.by_type.get(name, 0) + 1
+            if t == REC_T_SESSION:
+                self.takes += 1
+            elif self._seq is not None and seq > self._seq + 1:
+                self.missing += seq - self._seq - 1
+            self._seq = seq
+            if t == REC_T_END and len(payload) >= REC_END_SIZE:
+                f = struct.unpack_from(REC_END_FMT, payload)
+                self.ends.append((_name(REC_REASONS, f[1]), f))
+        return out
+
+    def summary(self) -> str:
+        types = ", ".join(f"{n} {k}" for k, n in sorted(self.by_type.items()))
+        ends = ", ".join(r for r, _ in self.ends) or "none"
+        return (f"{self.bytes} bytes, {self.records} records ({types}), {self.takes} take(s), "
+                f"END {ends}, {self.missing} records missing, {self.skipped} bytes skipped")
+
+
+async def rec_pull_stream(host: str, port: int, token: bytes, out, *, takes: int = 1,
+                          stop: Optional[asyncio.Event] = None, connect_timeout: float = 5.0,
+                          on_ready=None, progress=None) -> RecScanner:
+    """Connects to the stream, sends HELLO and writes everything to the
+    binary file out until `takes` END records arrived (0: until stop is set
+    or the device closes the connection). on_ready() runs once the
+    connection is up (e.g. to send TAKE_START); progress(scanner) after each
+    chunk."""
+    reader, writer = await asyncio.wait_for(asyncio.open_connection(host, port), connect_timeout)
+    scan = RecScanner()
+    stopper = asyncio.ensure_future(stop.wait()) if stop is not None else None
+    try:
+        writer.write(encode_hello(token))
+        await writer.drain()
+        if on_ready is not None:
+            await on_ready()
+        while True:
+            read = asyncio.ensure_future(reader.read(65536))
+            waits = {read} if stopper is None else {read, stopper}
+            done, _ = await asyncio.wait(waits, return_when=asyncio.FIRST_COMPLETED)
+            if read not in done:
+                read.cancel()
+                break
+            data = read.result()
+            if not data:
+                break                       # the device closed the stream
+            out.write(data)
+            scan.feed(data)
+            if progress is not None:
+                progress(scan)
+            if takes and len(scan.ends) >= takes:
+                break
+    finally:
+        if stopper is not None:
+            stopper.cancel()
+        writer.close()
+        try:
+            await writer.wait_closed()
+        except (ConnectionError, OSError):
+            pass
+    return scan
+
 
 # ---- OTA protocol (ota_proto.h) ---------------------------------------------
 
@@ -311,6 +443,30 @@ def encode_rec(op: str, *, profile: int = 1, mic_mask: int = 3, gain_db: int = 6
             raise ValueError(f"mark text: at most {REC_MARK_TEXT_MAX} bytes, printable")
         return b + struct.pack("<H", code & 0xFFFF) + t
     return b
+
+
+def decode_rec(data: bytes) -> tuple:
+    """A rec_ctrl write as encode_rec takes it: (op, its keyword arguments).
+    ValueError for one ble_codec_parse_rec refuses by op or length (the
+    argument checks are the device's)."""
+    ops = {v: k for k, v in REC_OPS.items()}
+    op = ops.get(data[0]) if data else None
+    if op is None:
+        raise ValueError(f"not a recorder op: {bytes(data[:1]).hex() or 'empty'}")
+    if op == "take-start":
+        if len(data) != REC_TAKE_START_LEN:
+            raise ValueError(f"take-start is {REC_TAKE_START_LEN} bytes, not {len(data)}")
+        profile, mic_mask, gain_db, max_s, take_id = struct.unpack_from("<BBBHI", data, 1)
+        return op, {"profile": profile, "mic_mask": mic_mask, "gain_db": gain_db, "max_s": max_s,
+                    "take_id": take_id}
+    if op == "mark":
+        if not 3 <= len(data) <= 3 + REC_MARK_TEXT_MAX:
+            raise ValueError(f"mark is 3 to {3 + REC_MARK_TEXT_MAX} bytes, not {len(data)}")
+        return op, {"code": struct.unpack_from("<H", data, 1)[0],
+                    "text": bytes(data[3:]).decode("utf-8", "replace")}
+    if len(data) != 1:
+        raise ValueError(f"{op} is 1 byte, not {len(data)}")
+    return op, {}
 
 
 @dataclass
@@ -627,6 +783,36 @@ def self_check(verbose: bool = True) -> bool:
     else:
         print("skip ble_protocol.h drift check (not run from the repo)")
 
+    rec_h = _header_path("recorder", "include", "rec_stream.h")
+    check(REC_END_SIZE == struct.calcsize(REC_END_FMT), "END payload format is 37 bytes")
+    check(encode_hello(bytes(range(16))) == bytes(range(16)) + b"\x01\x00", "HELLO is token + u16 1")
+    # A 32-byte SESSION: its header read one byte early has a length above
+    # REC_MAX_PAYLOAD, so the scanner skips the junk instead of waiting for it.
+    sc = RecScanner()
+    end = struct.pack(REC_END_FMT, 1, 1, 3, 0, 0, 0, 0, 0, 0)
+    recs = [struct.pack(REC_HDR_FMT, t, 1, len(pl), seq) + pl for t, seq, pl in
+            ((REC_T_SESSION, 0, b"s" * 32), (0x02, 1, b"imu"), (REC_T_END, 3, end))]
+    stream = b"".join(r + struct.pack("<I", zlib.crc32(r)) for r in recs)
+    got = sc.feed(b"\x07\x00" + stream[:11]) + sc.feed(stream[11:])   # junk: version 0
+    check([g[2] for g in got] == [0, 1, 3] and sc.skipped == 2 and sc.missing == 1 and
+          sc.ends[0][0] == "user", "stream scanner: framing, resync, seq gap, END reason")
+    if os.path.exists(rec_h):
+        d = _header_defines(rec_h)
+        for cname, v in (("REC_STREAM_PORT", REC_STREAM_PORT), ("REC_STREAM_VERSION", REC_STREAM_VERSION),
+                         ("REC_HELLO_TOKEN_LEN", REC_HELLO_TOKEN_LEN), ("REC_HELLO_LEN", REC_HELLO_LEN),
+                         ("REC_HDR_LEN", REC_HDR_LEN), ("REC_CRC_LEN", REC_CRC_LEN),
+                         ("REC_MAX_PAYLOAD", REC_MAX_PAYLOAD)):
+            check(d.get(cname) == v, f"{cname} = {v} matches rec_stream.h")
+        for t, name in REC_TYPES.items():
+            check(d.get("REC_T_" + name) == t, f"REC_T_{name} = 0x{t:02x}")
+        for i, name in enumerate(REC_REASONS):
+            check(d.get("REC_REASON_" + name.upper()) == i, f"REC_REASON_{name.upper()} = {i}")
+        with open(rec_h, encoding="utf-8") as f:
+            text = f.read()
+        check("} rec_end_t;                  // 37 bytes" in text, "header says END = 37 bytes")
+    else:
+        print("skip rec_stream.h drift check (not run from the repo)")
+
     ota_h = _header_path("ota", "include", "ota_proto.h")
     if os.path.exists(ota_h):
         d = _header_defines(ota_h)
@@ -907,6 +1093,170 @@ async def cmd_ota(args):
             sys.exit(1)
 
 
+# ---- recorder ------------------------------------------------------------------------
+
+async def _rec_write(client, payload: bytes, what: str):
+    try:
+        await client.write_gatt_char(CHR_REC_CTRL, payload, response=True)
+    except BleakError as e:
+        sys.exit(f"rec {what} failed: " + describe_ble_error(e))
+
+
+async def _rec_state(client) -> RecState:
+    return decode_rec_state(bytes(await client.read_gatt_char(CHR_REC_STATE)))
+
+
+async def _rec_wait(client, states, timeout: float) -> RecState:
+    """Polls rec_state until it is in one of states (names)."""
+    deadline = time.monotonic() + timeout
+    while True:
+        r = await _rec_state(client)
+        if r.state_name in states:
+            return r
+        if time.monotonic() > deadline:
+            sys.exit(f"recorder still {r.state_name} (last end: {r.reason_name}) after {timeout:g} s")
+        await asyncio.sleep(0.2)
+
+
+def _take_start_args(args) -> bytes:
+    prof = args.profile.upper()
+    if prof not in REC_PROFILES:
+        sys.exit(f"profile: one of {', '.join(REC_PROFILES)}")
+    take_id = args.take_id if args.take_id is not None else secrets.randbits(32)
+    try:
+        return encode_rec("take-start", profile=REC_PROFILES.index(prof), mic_mask=args.mics,
+                          gain_db=args.gain, max_s=args.max_s, take_id=take_id)
+    except ValueError as e:
+        sys.exit(str(e))
+
+
+async def cmd_rec(args):
+    if args.host is not None:
+        if args.op != "pull":
+            sys.exit("--host: only for pull (the other ops go over BLE)")
+        await _rec_pull_direct(args)
+        return
+    target = await find_device(args)
+    async with BleakClient(target, timeout=args.timeout) as client:
+        op = args.op
+        if op == "state":
+            print(format_rec_state(await _rec_state(client)))
+            if args.watch:
+                def on_state(_, data: bytearray):
+                    try:
+                        print(format_rec_state(decode_rec_state(bytes(data))))
+                    except ValueError as e:
+                        print(f"bad rec_state packet: {e}")
+                await client.start_notify(CHR_REC_STATE, on_state)
+                while True:
+                    await asyncio.sleep(3600)
+            return
+        if op == "open":
+            await _rec_write(client, encode_rec("open"), op)
+            print(format_rec_state(await _rec_wait(client, ("wait_client", "ready"), 15)))
+        elif op == "close":
+            await _rec_write(client, encode_rec("close"), op)
+            print("close: ok")
+        elif op == "start":
+            await _rec_write(client, _take_start_args(args), op)
+            print(format_rec_state(await _rec_state(client)))
+        elif op == "stop":
+            await _rec_write(client, encode_rec("stop"), op)
+            print("stop: ok")
+        elif op == "mark":
+            try:
+                payload = encode_rec("mark", code=args.code, text=args.text or "")
+            except ValueError as e:
+                sys.exit(str(e))
+            await _rec_write(client, payload, op)
+            print("mark: ok")
+        elif op == "pull":
+            await _rec_pull(client, args)
+
+
+async def _rec_pull(client, args):
+    r = await _rec_state(client)
+    if r.state_name == "idle":
+        await _rec_write(client, encode_rec("open"), "open")
+    r = await _rec_wait(client, ("wait_client",), 15)
+    if "no_ap" not in r.flag_names:
+        print(f"join the Wi-Fi network {r.ssid!r} (passphrase {r.password!r}), then press Enter",
+              file=sys.stderr)
+        await asyncio.get_running_loop().run_in_executor(None, sys.stdin.readline)
+    stop = asyncio.Event()
+
+    async def on_ready():
+        await _rec_wait(client, ("ready",), 10)
+        if args.start:
+            await _rec_write(client, _take_start_args(args), "start")
+            print("take started", file=sys.stderr)
+        if args.duration:
+            async def stop_later():
+                await asyncio.sleep(args.duration)
+                await _rec_write(client, encode_rec("stop"), "stop")
+            asyncio.ensure_future(stop_later())
+
+    async def guard(pull):
+        try:
+            return await asyncio.shield(pull)
+        except (KeyboardInterrupt, asyncio.CancelledError):
+            # Stop the take and give its END five seconds (the app does the same).
+            if client.is_connected:
+                await _rec_write(client, encode_rec("stop"), "stop")
+            return await _finish_pull(pull, stop, REC_STOP_GRACE_S)
+
+    await _pull_to_file(r.ip, r.port, r.token, args, guard, stop=stop, on_ready=on_ready)
+    if args.close:
+        await _rec_write(client, encode_rec("close"), "close")
+
+
+REC_STOP_GRACE_S = 5.0
+
+
+async def _finish_pull(pull: asyncio.Future, stop: asyncio.Event, grace: float) -> RecScanner:
+    """After Ctrl-C: the pull gets `grace` seconds for the take's END, then
+    stop ends it. The shield keeps wait_for's timeout from cancelling the pull
+    itself, whose scanner (what arrived so far) is still wanted."""
+    try:
+        return await asyncio.wait_for(asyncio.shield(pull), grace)
+    except asyncio.TimeoutError:
+        stop.set()
+        return await pull
+
+
+async def _pull_to_file(host: str, port: int, token: bytes, args, guard=None, **kw) -> None:
+    """rec_pull_stream into args.out (default rec_<time>.dbrec), with the progress line
+    and the summary. guard(pull) awaits the pull's task (the BLE pull's Ctrl-C)."""
+    out_path = args.out or time.strftime("rec_%Y%m%dT%H%M%S.dbrec")
+    print(f"stream {host}:{port} -> {out_path}", file=sys.stderr)
+    with open(out_path, "wb") as f:
+        pull = asyncio.ensure_future(rec_pull_stream(host, port, token, f, takes=args.takes,
+                                                     progress=_rec_progress, **kw))
+        scan = await (guard(pull) if guard is not None else pull)
+    print(file=sys.stderr)
+    print(f"{out_path}: {scan.summary()}")
+
+
+def _rec_progress(scan: RecScanner):
+    print(f"\r{scan.bytes / 1e6:7.2f} MB, {scan.records} records, "
+          f"{scan.missing} missing", end="", file=sys.stderr)
+
+
+async def _rec_pull_direct(args):
+    """pull from an endpoint given on the command line (the simulator's
+    session, opened from its panel): no Bluetooth, so no --start, --duration
+    or --close; Ctrl-C ends the pull."""
+    if args.start or args.duration or args.close:
+        sys.exit("--start, --duration and --close need the BLE link (leave out --host)")
+    try:
+        token = bytes.fromhex(args.token or "")
+    except ValueError:
+        token = b""
+    if len(token) != REC_HELLO_TOKEN_LEN:
+        sys.exit(f"--token: the session token from rec_state, {2 * REC_HELLO_TOKEN_LEN} hex digits")
+    await _pull_to_file(args.host, args.port, token, args)
+
+
 # ---- CLI ---------------------------------------------------------------------------
 
 def build_parser() -> argparse.ArgumentParser:
@@ -932,6 +1282,25 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--yes", action="store_true", help="confirm factory-reset")
     s = sub.add_parser("ota", help="firmware update over BLE")
     s.add_argument("file", help="app image, e.g. build/drillbalancer.bin")
+    s = sub.add_parser("rec", help="training-data recorder: open|close|start|stop|mark|state|pull")
+    s.add_argument("op", choices=["open", "close", "start", "stop", "mark", "state", "pull"])
+    s.add_argument("text", nargs="?", help="mark: the text (<= 40 bytes)")
+    s.add_argument("--code", type=int, default=0, help="mark: u16 code")
+    s.add_argument("--profile", default="RAW448", help="start: " + "|".join(REC_PROFILES))
+    s.add_argument("--mics", type=int, default=3, help="start: microphone mask (0 = no audio)")
+    s.add_argument("--gain", type=int, default=6, help="start: ES7210 gain, dB")
+    s.add_argument("--max-s", type=int, default=0, help="start: take limit, s (0 = 300)")
+    s.add_argument("--take-id", type=int, default=None, help="start: take id (default random)")
+    s.add_argument("--watch", action="store_true", help="state: follow the notifications")
+    s.add_argument("-o", "--out", help="pull: .dbrec file (default rec_<time>.dbrec)")
+    s.add_argument("--start", action="store_true", help="pull: start a take once connected")
+    s.add_argument("--duration", type=float, help="pull: stop the take after this many seconds")
+    s.add_argument("--takes", type=int, default=1, help="pull: ENDs to wait for (0 = until Ctrl-C)")
+    s.add_argument("--close", action="store_true", help="pull: close the session afterwards")
+    s.add_argument("--host", help="pull without BLE from this stream address (with --token; "
+                                  "the simulator's session, opened from its panel)")
+    s.add_argument("--port", type=int, default=REC_STREAM_PORT, help="pull --host: stream port")
+    s.add_argument("--token", help="pull --host: the session token, hex")
     return p
 
 
@@ -943,6 +1312,7 @@ COMMANDS = {
     "set-config": cmd_set_config,
     "cmd": cmd_cmd,
     "ota": cmd_ota,
+    "rec": cmd_rec,
 }
 
 

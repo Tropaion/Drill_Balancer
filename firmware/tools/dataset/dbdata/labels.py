@@ -53,6 +53,12 @@ class GrammarIssue:
     message: str
 
 
+def touched_by_person(item: dict) -> bool:
+    """A label (event or span) a person made or changed: autodetect --write does not
+    replace it, and review.status auto_only with one is a warning."""
+    return item.get("source") == "user" or bool(item.get("edited")) or bool(item.get("confirmed"))
+
+
 def grammar_events(events_doc: dict, taxonomy: Taxonomy | None = None) -> list[dict]:
     """The grammar's point events, stable-sorted by t_us (kickback and unknown types left out)."""
     tax = taxonomy or load_taxonomy()

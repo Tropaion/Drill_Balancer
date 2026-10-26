@@ -1,0 +1,166 @@
+{
+  "schema": "drillbalancer.meta/1",
+  "taxonomy_version": 1,
+  "recording_id": "20261026T144501Z_synt_0901",
+  "session_id": "20261026T1428_synt",
+  "start_utc": "2026-10-26T14:45:01Z",
+  "device_t0_us": 3242672,
+  "duration_s": 6.325,
+  "device": {
+    "board": "waveshare-esp32-s3-touch-amoled-1.75",
+    "fw_version": "0.1.0",
+    "fw_git": "6afcec4-dirty",
+    "board_id": "ead705e2"
+  },
+  "app": {
+    "version": "1.0.0",
+    "tool": "dbdata.synth"
+  },
+  "imu": {
+    "chip": "QMI8658",
+    "profile": "RAW448_16G",
+    "odr_nominal_hz": 448.4,
+    "odr_measured_hz": 448.401,
+    "accel_range_g": 16,
+    "gyro_range_dps": 512,
+    "accel_lsb_per_g": 2048,
+    "gyro_lsb_per_dps": 64,
+    "accel_lpf": "off",
+    "gyro_lpf": "off",
+    "frame": "board: X right, Y up the screen, Z out of the screen; bit along -Z",
+    "axis_map": "x=+cx,y=+cy,z=+cz",
+    "accel_cal": {
+      "valid": false,
+      "bias_g": [
+        0,
+        0,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ]
+    },
+    "mount": {
+      "valid": false,
+      "drill_axis": [
+        0,
+        0,
+        -1
+      ]
+    },
+    "gyro_bias_rad_s": [
+      2.08396104426356e-05,
+      -3.680377631098963e-05,
+      -9.45549618336372e-05
+    ],
+    "registers": {
+      "ctrl2": 52,
+      "ctrl3": 84,
+      "ctrl5": 0
+    }
+  },
+  "take": {
+    "take_id": 1,
+    "end_reason": "user",
+    "stats": {
+      "ring_high_water_pct": 0.24,
+      "dropped_records": 0,
+      "dropped_bytes": 0,
+      "audio_overflows": 0,
+      "battery_pct_start": 80,
+      "battery_pct_end": 80
+    }
+  },
+  "audio": {
+    "codec": "flac",
+    "file": "audio.flac",
+    "rate_nominal_hz": 16000,
+    "rate_measured_hz": 16000.0,
+    "bits": 16,
+    "channels": [
+      "mic1"
+    ],
+    "adc": "ES7210",
+    "gain_db": 6,
+    "muted_spans_us": [],
+    "clipped_frac": 0.0,
+    "block_frames": 256
+  },
+  "sync": {
+    "method": "esp_timer@dma_block",
+    "fit": "t_us = a + b*frame",
+    "a_us": 3242687.5,
+    "b_us_per_frame": 62.5,
+    "residual_rms_us": 0.0
+  },
+  "gaps": {
+    "imu_filled_samples": 340,
+    "imu_missing_samples": 0,
+    "transport_gaps": [],
+    "audio_missing_frames": 0,
+    "audio_gap_frames": []
+  },
+  "level": {
+    "mode": "wall",
+    "target_deg": 45.0,
+    "tol_deg": 0.5,
+    "near_deg": 2.0
+  },
+  "session": {
+    "material": "masonry/concrete",
+    "layers": [],
+    "mode": "hammer",
+    "bit": {
+      "type": "masonry_sds",
+      "diameter_mm": 8.0
+    },
+    "drill": {
+      "model": "dbsim",
+      "gear": 2,
+      "speed_setting": null
+    },
+    "outcome_tags": [],
+    "notes": "synthetic: fx_hammer_retract"
+  },
+  "derived": {
+    "orientation": "wall",
+    "off_angle_deg": 3.19,
+    "tags": [
+      "off_angle"
+    ]
+  },
+  "review": {
+    "status": "reviewed",
+    "detector": "truth",
+    "revision": 1,
+    "edited_events": 0,
+    "reviewer": null
+  },
+  "quality": {
+    "flags": []
+  },
+  "files": {
+    "audio.flac": {
+      "sha256": "9a17ae99df0859d38c77f07455a4b9849ffa2a91e405427d7941a43cc1ed5662",
+      "bytes": 134789
+    },
+    "audio_sync.csv": {
+      "sha256": "ea0b899f396abf85dc270aeca32f8151b7b260a96b76daae4b27d2adb9d2ad87",
+      "bytes": 5516
+    },
+    "device_events.csv": {
+      "sha256": "c05abdd6b96b67bd8d776eabce5b0f98935ecc8a456556238bab672f21bd3244",
+      "bytes": 59
+    },
+    "imu.csv.gz": {
+      "sha256": "27765d8ba0a5f4e780da3da4af0441e4f9cede5fe3d98665a6146d9da508139a",
+      "bytes": 46003
+    },
+    "level.csv.gz": {
+      "sha256": "8dce8cdbcc500f13f70142592731044b59a5455f49c1d6fa895d1ab6bcf78ae7",
+      "bytes": 853
+    }
+  }
+}

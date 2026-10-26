@@ -281,7 +281,25 @@ def _check_meta_events(meta: dict, events: dict, folder: Path, tax: Taxonomy, re
         rep.add("E_AUDIO_META", "audio files listed but meta.audio is null")
 
     _check_events(events, tax, rep)
+    _check_review(meta, events, rep)
     return True
+
+
+def _check_review(meta: dict, events: dict, rep: Report) -> None:
+    """review.status auto_only means the labels are the detector's as it wrote them
+    (dbdata.autodetect --write, the app before its review); events.detector names it."""
+    rv, det = meta["review"], events.get("detector")
+    items = events["events"] + events["spans"]
+    if rv["status"] == "auto_only":
+        touched = [x["id"] for x in items if labels.touched_by_person(x)]
+        if touched:
+            rep.add("W_REVIEW_STATUS", f"review.status is auto_only but {len(touched)} label(s) were made or "
+                                       f"changed by a person (first {touched[0]})")
+        if items and det is None:
+            rep.add("W_DETECTOR", "auto_only labels without events.detector")
+    if det is not None and rv["detector"] != det["version"]:
+        rep.add("W_DETECTOR", f"meta.review.detector {rv['detector']!r} != events.detector.version "
+                              f"{det['version']!r}")
 
 
 def _check_events(events: dict, tax: Taxonomy, rep: Report) -> None:

@@ -1,0 +1,146 @@
+{
+  "schema": "dbauto.params/1",
+  "version": "1.1.0",
+  "note": "Parameters of the auto-detector (dbdata/autodetect.py, the app's recorder/label). Changing a value changes params_sha256 in every events.json written afterwards; bump version with any change of the algorithm.",
+  "frame_ms": 10,
+  "features": {
+    "hp_hz": 20.0,
+    "thrust_band_hz": [2.0, 20.0],
+    "wobble_band_hz": [1.0, 8.0],
+    "wobble_window_ms": 500,
+    "fft_window": 512,
+    "fft_size": 2048,
+    "f0_range_hz": [50.0, 1500.0],
+    "hps_harmonics": 4,
+    "prominence_bins": 16,
+    "voiced_min": 1.2,
+    "smooth_z_frames": 5,
+    "cut_band_hz": [1000.0, 6000.0],
+    "speech_band_hz": [300.0, 3400.0],
+    "flux_band_hz": [300.0, 8000.0],
+    "hammer_window_ms": 200,
+    "hammer_rate_hz": [30.0, 80.0],
+    "eps_g2": 1e-10,
+    "eps_fs2": 1e-12,
+    "smooth_e_frames": 3
+  },
+  "noise": {
+    "block_ms": 500,
+    "floor_pct": 10.0,
+    "spread_min_db": 0.5
+  },
+  "motor": {
+    "on_z": 6.0,
+    "on_ms": 50,
+    "off_z": 3.0,
+    "off_ms": 150,
+    "back_z": 3.0,
+    "off_f0_drop": 0.025,
+    "off_hold_ms": 100,
+    "off_search_ms": 1500,
+    "off_drop_db": 2.0,
+    "off_level_db": 10.0,
+    "conf_scale_z": 3.0,
+    "off_f0_ms": 300,
+    "conf_ms": 300
+  },
+  "spinup": {
+    "min_ms": 50,
+    "max_ms": 1500,
+    "stable_ms": 100,
+    "stable_f0": 0.03,
+    "stable_db": 1.5,
+    "ref_ms": 300,
+    "voiced_frac": 0.8,
+    "fallback_ms": 300
+  },
+  "contact": {
+    "f0_drop": 0.05,
+    "cut_db": 4.0,
+    "imu_db": 3.0,
+    "thrust_g": 0.05,
+    "hammer": 0.5,
+    "weights": {
+      "f0": 0.35,
+      "cut": 0.35,
+      "imu": 0.1,
+      "thrust": 0.1,
+      "hammer": 0.3
+    },
+    "ratio_max": 2.0,
+    "score": 1.0,
+    "hold_ms": 200,
+    "smooth_frames": 5,
+    "back_frac": 0.3,
+    "conf_scale": 0.25
+  },
+  "load_end": {
+    "level_ms": 300,
+    "level_gap_ms": 100,
+    "min_sag": 0.02,
+    "min_cut_db": 2.0,
+    "recover": 0.6,
+    "hold_ms": 50,
+    "start": 0.2,
+    "window_ms": [60, 60],
+    "imp_g": 0.6,
+    "flux_ratio": 1.8,
+    "gyro_dps": 30.0,
+    "imp_onset_frac": 0.5,
+    "audio_onset_ratio": 4.0,
+    "audio_base_ms": 30,
+    "audio_imu_agree_ms": 20,
+    "conf_scale": 0.5,
+    "audio_search_ms": [20, 30]
+  },
+  "restart": {
+    "spinup_ms": 300,
+    "check_ms": 200,
+    "score": 1.0
+  },
+  "stuck": {
+    "f0_drop": 0.5,
+    "imu_db": 2.25,
+    "smooth_frames": 9,
+    "hold_ms": 100,
+    "back_drop": 0.05,
+    "back_db": 1.5,
+    "conf_scale": 0.3
+  },
+  "kickback": {
+    "rate_dps": 150.0,
+    "roll_deg": 20.0,
+    "roll_ms": 200,
+    "back_dps": 30.0,
+    "refractory_ms": 1000,
+    "hole_after_ms": 250,
+    "conf_scale": 0.3
+  },
+  "wobble": {
+    "rms_dps": 6.0,
+    "min_ms": 500,
+    "confidence_max": 0.5,
+    "conf_scale": 0.3
+  },
+  "wander": {
+    "deg": 2.0,
+    "after_contact_ms": 1500,
+    "confidence_max": 0.5,
+    "conf_scale": 0.3
+  },
+  "speech": {
+    "window_ms": 1000,
+    "hop_ms": 500,
+    "mod_hz": [3.0, 6.0],
+    "mod_frac": 0.4,
+    "z": 3.0,
+    "confidence_max": 0.5,
+    "conf_scale": 0.3,
+    "motor_pad_ms": 500
+  },
+  "confidence": {
+    "disagree": 0.7,
+    "restart_retract": 0.3,
+    "open_motor_on": 0.1
+  }
+}

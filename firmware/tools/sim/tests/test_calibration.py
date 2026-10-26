@@ -84,6 +84,7 @@ class CalibrationTest(DeviceTest):
             self.assertLess(self.elevation_error(elev, roll), 0.15, f"elevation {elev} roll {roll}")
         # Stored: a new boot uses both calibrations.
         self.dev = self.new_device(physics=p)
+        self.settle_imu()
         self.assertEqual(self.config()["cal"], {"mount": True, "accel": True})
         self.assertLess(self.elevation_error(10.0, 30.0), 0.15)
 

@@ -14,6 +14,7 @@ import shutil
 import subprocess
 import tempfile
 import unittest
+from pathlib import Path
 
 from simtest import FIRMWARE_IMAGE, C, dc
 
@@ -41,19 +42,44 @@ def bluez_ecode(name: str, msg: str, perm_err: int) -> int:
             "org.bluez.Error.NotPermitted": perm_err}.get(name, 0x0E)
 
 
-# BlueZ parse_chrc_flags: flag -> (property bits, write needs authentication)
-BLUEZ_FLAGS = {"read": (0x02, False), "write-without-response": (0x04, False),
-               "write": (0x08, False), "notify": (0x10, False), "indicate": (0x20, False),
-               "encrypt-authenticated-write": (0x08, True)}
+# BlueZ parse_chrc_flags: flag -> (property bits, write needs authentication,
+# read needs authentication)
+BLUEZ_FLAGS = {"read": (0x02, False, False), "write-without-response": (0x04, False, False),
+               "write": (0x08, False, False), "notify": (0x10, False, False),
+               "indicate": (0x20, False, False),
+               "encrypt-authenticated-write": (0x08, True, False),
+               "encrypt-authenticated-read": (0x02, False, True)}
 NIMBLE_FLAGS = {"BLE_GATT_CHR_F_READ": 0x02, "BLE_GATT_CHR_F_WRITE_NO_RSP": 0x04,
                 "BLE_GATT_CHR_F_WRITE": 0x08, "BLE_GATT_CHR_F_NOTIFY": 0x10,
                 "BLE_GATT_CHR_F_INDICATE": 0x20}
+# ble_protocol.h's table: "read, notify" etc.
+PLAN_PROPS = {"read": 0x02, "write w/o resp.": 0x04, "write": 0x08, "notify": 0x10,
+              "indicate": 0x20}
+
+
+def planned_rec_service(header: str, ids: dict):
+    """The recorder service as ble_protocol.h plans it (its service table
+    comment and security paragraph), in firmware_gatt_table()'s form."""
+    assert "both recorder characteristics require an encrypted, authenticated link" in \
+        " ".join(line.lstrip("/ ") for line in header.splitlines()), "security paragraph changed"
+    m = re.search(r"//   Recorder\s+DB_UUID\((0x[0-9A-Fa-f]+)\).*?\n((?://     .*\n)+)", header)
+    chars = []
+    for name, cid, props in re.findall(r"//     (\w+)\s+DB_UUID\((0x[0-9A-Fa-f]+)\)\s+(.+?)\s{2,}",
+                                       m[2]):
+        bits = sum(PLAN_PROPS[p.strip()] for p in props.split(","))
+        assert ids[f"DB_CHR_{name.upper()}"] == int(cid, 16), name
+        chars.append((B.db_uuid(int(cid, 16)), bits, bool(bits & 0x08), bool(bits & 0x02)))
+    assert ids["DB_SVC_REC"] == int(m[1], 16)
+    return (B.db_uuid(int(m[1], 16)), chars)
 
 
 def firmware_gatt_table():
-    """[(service UUID, [(char UUID, properties, secure write)])] from ble_service.c."""
+    """[(service UUID, [(char UUID, properties, secure write, secure read)])] from
+    ble_service.c. Until ble_service.c registers the recorder service
+    (milestone 4) its entry comes from the plan in ble_protocol.h."""
     src = (C.COMPONENTS_DIR / "ble/src/ble_service.c").read_text()
-    ids = dc._header_defines(dc._header_path("ble", "include", "ble_protocol.h"))
+    header_path = dc._header_path("ble", "include", "ble_protocol.h")
+    ids = dc._header_defines(header_path)
 
     def uuid(expr):
         m = re.search(r"BLE_UUID16_DECLARE\((0x[0-9A-Fa-f]+)\)", expr)
@@ -71,8 +97,11 @@ def firmware_gatt_table():
         for cuuid, flags in re.findall(r"\{\.uuid = ([^,]+),.*?\.flags = ([^,}]+)", svc, re.S):
             names = [f.strip() for f in flags.split("|")]
             props = sum(NIMBLE_FLAGS.get(f, 0) for f in names)
-            chars.append((uuid(cuuid), props, "SEC_WRITE" in names))
+            chars.append((uuid(cuuid), props, "SEC_WRITE" in names,
+                          "SEC_READ" in names or "BLE_GATT_CHR_F_READ_AUTHEN" in names))
         out.append((suuid, chars))
+    if B.db_uuid(ids["DB_SVC_REC"]) not in (sv for sv, _ in out):
+        out.append(planned_rec_service(Path(header_path).read_text(), ids))
     return out
 
 
@@ -84,16 +113,18 @@ class TableTest(unittest.TestCase):
             for name, cuuid, flags in chars:
                 props = 0
                 secure = name in B.PROTECTED
+                secure_read = name in B.PROTECTED_READ
                 for f in flags:
-                    bits, auth = BLUEZ_FLAGS[f]
+                    bits, auth, read_auth = BLUEZ_FLAGS[f]
                     props |= bits
                     secure |= auth
-                rows.append((cuuid, props, secure))
+                    secure_read |= read_auth
+                rows.append((cuuid, props, secure, secure_read))
             ours.append((suuid, rows))
         self.assertEqual(ours, firmware_gatt_table())
 
     def test_error_codes_reach_the_phone_unchanged(self):
-        for code in [0x07, 0x0D, 0x0E] + list(range(0x80, 0x88)):
+        for code in [0x07, 0x0D, 0x0E] + list(range(0x80, 0x8B)):
             e = B.att_error(code)
             self.assertEqual(bluez_ecode(e.type, e.text, 0x03), code, hex(code))
 
@@ -208,6 +239,24 @@ class BleTest(unittest.IsolatedAsyncioTestCase):
         self.write("command", b"\x01")                 # BlueZ checked the link
         self.assertTrue(self.dev.link_trusted)
         self.assertEqual(self.dev.snapshot()["link"]["trusted"], True)
+
+    async def test_recorder_characteristics(self):
+        self.connect()
+        state = self.p.chars["rec_state"]
+        self.p.gatt_subscribe(state, True)
+        self.dev.advance(200)
+        self.assertNotIn("rec_state", [n for n, _ in self.sent], "not on an untrusted link")
+        # BlueZ passes a rec_state read only on an authenticated link: it proves one.
+        rs = dc.decode_rec_state(self.read("rec_state"))
+        self.assertTrue(self.dev.link_trusted)
+        self.assertEqual(rs.state_name, "idle")
+        self.write("rec_ctrl", dc.encode_rec("open"))
+        self.dev.advance(200)
+        notes = [dc.decode_rec_state(v) for n, v in self.sent if n == "rec_state"]
+        self.assertEqual(notes[-1].state_name, "wait_client")
+        self.assertIn("no_ap", notes[-1].flag_names)
+        self.assertEqual(self.att(self.write, "rec_ctrl", dc.encode_rec("take-start")), 0x88)
+        self.assertEqual(self.att(self.write, "rec_ctrl", b"\x09"), 0x84)
 
     async def test_access_from_another_connection_is_refused(self):
         # BlueZ also serves connections the device does not hold (one the PC
@@ -467,8 +516,9 @@ class WireTest(unittest.IsolatedAsyncioTestCase):
                  for o in objects.values() if "org.bluez.GattCharacteristic1" in o}
         services = [o["org.bluez.GattService1"]["UUID"].value
                     for o in objects.values() if "org.bluez.GattService1" in o]
-        self.assertEqual(len(services), 4)
-        self.assertEqual(len(chars), 10)
+        self.assertEqual(len(services), 5)
+        self.assertEqual(len(chars), 12)
+        self.assertEqual(chars[B.db_uuid(0x0202)], ["encrypt-authenticated-read", "notify"])
         self.assertEqual(chars[B.db_uuid(0x0102)], ["write-without-response"])
         self.assertNotIn(B.AGENT_PATH, objects)
 

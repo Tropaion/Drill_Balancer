@@ -6,19 +6,24 @@ like the real board. Use it to test the app before (or without) the hardware.
 - **Firmware logic:** the device runs the firmware's own hardware-independent
   C code, compiled for the host into `core/build/libdbsim.so`: level math,
   fusion, both calibrations, settings/JSON, the OTA protocol, the BLE codec,
-  the power state machine, the UI logic, the IMU frame decoding (so samples
-  are quantised and clipped like the QMI8658's) and the AXP2101 register
-  decoding. `core/sim_core.c` stands in for
-  the ESP glue (`control.c`, `sensor_task.c`, `ble_service.c`,
-  `ota_update.c`, `power.c`), with the same constants.
+  the power state machine, the UI logic, the IMU frame decoding and FIFO gap
+  handling, the recorder (`rec_fsm`, `rec_ring`, `rec_stream`, `rec_ts`) and
+  the AXP2101 register decoding. `core/sim_core.c` stands in for the ESP glue
+  (`control.c`, `sensor_task.c`, the FIFO read of `imu.c`, `ble_service.c`,
+  `ota_update.c`, `power.c`, and the recorder's `recorder.c`, `rec_wifi.c`,
+  `rec_audio.c`), with the same constants. `core/sim_audio.c` makes the
+  microphones' sound.
 - **Python layer** (`dbsim/`):
-  - `physics.py`: a virtual drill with its IMU, at 448 Hz.
+  - `physics.py`: a virtual drill with its IMU, and `DrillScenario`, a
+    scripted drilling session with its ground truth.
   - `device.py`: the device clock and its tasks.
   - `ble.py`: the BLE peripheral on BlueZ (D-Bus). It provides the
     firmware's GATT table, the advertisement and a DisplayOnly pairing agent.
+  - `recorder.py`: the training-data stream server (TCP on the LAN).
   - `web/`: the control panel.
-- **Persistent state:** settings, calibration, the OTA-installed version and
-  the sim's bond records are kept in `state/`.
+- **Persistent state:** settings, calibration, the OTA-installed version,
+  the sim's bond records and the recorder's ground truth
+  (`rec_truth_<take>.json`) are kept in `state/`.
 
 ## Setup
 
@@ -66,6 +71,10 @@ BlueZ.
 | `--state-dir` | `tools/sim/state` | settings, calibration, OTA image, bond records |
 | `--no-web` / `--no-ble` | | leave out the panel / Bluetooth |
 | `--host`, `--web-port` | `127.0.0.1`, `8765` | panel address. The panel has no login: keep it on localhost. |
+| `--rec-host`, `--rec-port` | the PC's LAN address, `47100` | the recorder's stream server (see [Recorder](#recorder)) |
+| `--rec-ap`, `--rec-ap-ifname` | off | serve the stream on a Wi-Fi hotspot instead (NetworkManager) |
+| `--rec-ring-kib` | `512` | the recorder's stream ring (the board has 4096) |
+| `--no-rec` | | no stream server |
 | `-q` | | print only passkeys, warnings and errors |
 
 The terminal prints:
@@ -104,7 +113,11 @@ Mouse or touch input on the copy follows the firmware's rules:
 
 As on the device:
 - a press that wakes a dimmed screen does nothing else;
-- the passkey and OTA overlays swallow touches.
+- the passkey and OTA overlays swallow touches;
+- during a take the REC pill takes touches only while it reads
+  "REC mm:ss" (held 2 s it stops the take, and that press opens no
+  settings); as "REC ready" it is a label and a tap goes to what lies
+  under it. The press rules are in `dbsim/web/touch.js`.
 
 Settings screen: the list scrolls (drag or mouse wheel). Its action buttons
 work: *Calibrate mount*, *Calibrate sensor*, *Clear zero*, *Factory reset*
@@ -136,6 +149,15 @@ the app.
   - PWR key: short press = sleep, hold = off. The firmware ignores the key
     for 2 s after a boot;
   - *motion nudge*: wakes the device from deep sleep.
+- **Recorder:** the session and take state, the stream (address, client,
+  kB/s), the ring and its drops, the IMU and audio counters, the running
+  scenario and the take's ground truth. Controls: the session as the app
+  would drive it over BLE (open, start a take with a profile and the mics,
+  stop, mark, close; for runs without Bluetooth, the endpoint and token
+  are shown), start a drilling scenario (drill or hammer, holes,
+  breakthrough / retract / mixed, stuck, kickback, seed), stall the stream
+  for N seconds, drop the client, and the microphones' sensitivity. See
+  [Recorder](#recorder).
 - **Faults:**
   - IMU lost;
   - BUSY on the next N commands;
@@ -167,7 +189,21 @@ curl -s -XPOST localhost:8765/api/cmd -d '{"cmd":"pose","elevation":12.5}'
 curl -s -XPOST localhost:8765/api/cmd -d '{"cmd":"busy","n":2}'
 # as if changed on the device's own settings screen (e.g. to provoke a 0x82 in the app)
 curl -s -XPOST localhost:8765/api/cmd -d '{"cmd":"settings","set":{"tol":3,"near":3}}'
+# a drilling scenario, and the ground truth of the running (or last) take
+curl -s -XPOST localhost:8765/api/cmd -d '{"cmd":"scenario","mode":"hammer","holes":2,"seed":7}'
+curl -s localhost:8765/api/rec/truth
 ```
+
+The recorder commands: `rec` (`op` open|close|take_start|stop|mark; for
+take_start `profile` LEVEL|RAW448|RAW448_16G|RAW897, `mic_mask`, `gain_db`,
+`max_s`, `take_id`; for mark `code`, `text`), the app's rec_ctrl writes,
+checked by the device as a BLE write is (the session's endpoint and token
+are in `GET /api/state` under `snap.recorder.session`); `scenario` (`mode`
+drill|hammer, `holes` 1..20, `outcome` breakthrough|retract|mixed, `stuck`,
+`stuck_exit` restart|pull, `kickback`, `seed`, `free_hz`, `sag`, `spinup_s`,
+`free_s`, `drill_s`, `gap_s`, `lead_s`, `level`; or `"stop": true`),
+`rec_stall` (`s` 0.1..60), `rec_client_drop` and `mic_gain` (`db` -40..40,
+optional `mic` 1|2).
 
 ## Using it with the app
 
@@ -199,6 +235,112 @@ curl -s -XPOST localhost:8765/api/cmd -d '{"cmd":"settings","set":{"tol":3,"near
   it. To start clean on both sides:
   - on the PC, run `bluetoothctl remove <phone address>`;
   - on the phone, forget the device.
+
+## Recorder
+
+The training-data recorder runs as on the board: the app writes `rec_ctrl`
+(OPEN, TAKE_START, STOP, MARK, CLOSE), reads and subscribes `rec_state`,
+connects to the stream and saves the records (format:
+`components/recorder/include/rec_stream.h`).
+
+**LAN mode (the default).** The board opens a Wi-Fi soft-AP; the simulator
+serves the stream from the PC instead, on its LAN address and port 47100.
+The address is found by asking the kernel which source address it would
+use towards the network, which sends nothing and changes no setting.
+`rec_state` then carries the flag `NO_AP`, an empty SSID and passphrase,
+that address and port, and the session token: the app connects over the
+network the phone is on, with no join dialog. The client sends HELLO (the
+16-byte token, then u16 version 1) within 5 s, or the connection is closed;
+one client at a time. A firewall on the PC must let the phone reach that TCP
+port; `--rec-host 127.0.0.1` keeps the stream on the PC (scripts, tests).
+The address must be IPv4 (`rec_state` carries 4 bytes): a name is served
+on its IPv4 address. A server that cannot start (an IPv6 address, the port
+in use) is a warning: the simulator runs on, and every OPEN fails with
+`ap_fail` (the panel says why). The device's timeouts (the HELLO's 5 s, a
+send blocked 10 s, a stall, STOP_AP's 200 ms) run on the device's clock:
+real time in `python -m dbsim`, faster in tests (`DbSimDevice.run(speed)`).
+
+**Hotspot mode (`--rec-ap`).** For the app's soft-AP join without the board:
+at OPEN the sim runs `nmcli device wifi hotspot` with the session's
+credentials (SSID `DB-<mac4>-<rand4>`, a 20-character passphrase, channel 6)
+and serves the stream on the hotspot's address; CLOSE takes the hotspot
+down. This changes the PC's Wi-Fi: the interface leaves its network for the
+session.
+
+**Scenarios and ground truth.** A drilling scenario (panel, or
+`DbSimDevice.start_scenario()`) drives the IMU and the microphones from one
+motor state: off, spin-up, free run (233 Hz by default), cutting (the motor
+sags 10-30 %, more broadband, the axial push), breakthrough (the speed jumps
+back, a 1.5-2 g lunge along the bit and a wobble of the bit that swings
+back within about 0.1 s) or retract (a slow recovery, no
+impulse), spin-down and off, per hole. The hammer mode adds 5-10 g blows at
+about 45 Hz while cutting, each followed by the housing's slower swing
+back, so that they average out (a held drill does not drift; they clip a
+±4 g take, RAW448_16G keeps them);
+*stuck* stalls the first hole (the motor stops in the hole, restarts and
+pulls out; with `stuck_exit` `pull` the bit is pulled out with the motor
+off and the motor then runs free), *kickback* twists the drill about the
+bit where it catches.
+Seeded: the same arguments give the same session. Its ground truth uses
+the dataset contract's names (events `motor_on`, `contact`, `breakthrough`,
+`retract`, `motor_off`, `kickback`, the span `stuck`, holes) plus the
+scenario's states, in device time (esp_timer µs, like the stream). A
+scenario stopped early (Stop, or another one started) ends there in the
+truth too: nothing after the stop, a `motor_off` at it when the motor was
+running (in the hole if the bit was in one), and `stopped_us` on that
+scenario. It is
+written to `state/rec_truth_<take>.json` when a take ends and served at
+`GET /api/rec/truth` while it runs; it never goes into the stream.
+
+**What the stream carries**, as the firmware design has it:
+- IMU records from the active profile's raw FIFO frames, one per timestamp
+  run. The simulated QMI8658 loses the samples that arrive while a FIFO
+  read is in progress (about 12 % at 448 Hz, 20 % at 897 Hz) and its
+  TIMESTAMP counts them, so the driver's real gap code runs: the level
+  pipeline gets the interpolated floats, the recorder the runs. A profile
+  switch or an IMU re-init resets the chip (180 ms without samples,
+  TIMESTAMP from 0, `REC_IMU_EPOCH`), and EVENT PROFILE comes before the
+  first IMU record of the profile.
+- AUDIO: 16 kHz stereo blocks of 256 frames. The sound is the motor's
+  harmonics, the cutting noise and the impact bursts of the scenario; MIC2
+  hears it 3 frames later and 1.5 dB quieter. The take's `gain_db` is the
+  ES7210's gain.
+- LEVEL at 10 Hz, STATS at 1 Hz, and the EVENTs: TOUCH (a touch on the
+  panel's screen during a take, which the UI otherwise ignores), MARK,
+  BLE_LOST/BACK, IMU_LOST/BACK, VIB_START/STOP, PROFILE.
+- END with the reason: STOP or CLOSE, `max_s`, the 120 s BLE grace, the
+  battery below 8 %, the IMU lost for 5 s, sleep / power-off / reboot. A
+  lost client gets no END; the session waits for it again.
+
+The ring is 512 KiB (`--rec-ring-kib`), so a stall fills it within seconds:
+*stall the stream* stops sending, and a stall of 10 s or more (device
+time) loses the client 10 s into it, as a blocked send does on the board. Records that do not fit are
+dropped and counted, and their seq numbers stay used. A client that stops
+reading backs the stream up the same way, once its own receive buffer and
+23 KB on the PC side (the board's TCP send buffer) are full: with the
+app's 256 KB receive buffer that is about 3.5 s of stream, so it is lost
+about 14 s after it stopped reading, on the board as here.
+
+**Pulling a take on the PC:** `tools/ble/db_client.py rec pull --start
+--duration 20 -o take.dbrec` (over BLE to the sim). Without Bluetooth
+(`--no-ble`), the panel plays the app's part:
+
+```sh
+./run.sh --no-ble --rec-host 127.0.0.1
+curl -s -XPOST localhost:8765/api/cmd -d '{"cmd":"rec","op":"open"}'
+curl -s localhost:8765/api/state | jq .snap.recorder.session    # ip, port, token
+../ble/db_client.py rec pull --host 127.0.0.1 --port 47100 --token TOKEN -o take.dbrec &
+curl -s -XPOST localhost:8765/api/cmd -d '{"cmd":"rec","op":"take_start","profile":"RAW448","max_s":20}'
+```
+
+The pull ends with the take's END. Then
+`tools/dataset`'s `python -m dbdata.dbrec export take.dbrec ROOT
+--recording-id ID --session-id SID` writes a dataset recording.
+`tools/dataset`'s `dbdata.synth` does the same in process (no BLE, no
+network): it plays scenarios on a `DbSimDevice`, exports each take and
+writes its ground truth as the labels, for the auto-detector's tests and
+golden fixtures (`DrillPhysics.audio_ambient` and the sensor noise set how
+loud the room is).
 
 ## Differences from the real board
 
@@ -232,6 +374,9 @@ curl -s -XPOST localhost:8765/api/cmd -d '{"cmd":"settings","set":{"tol":3,"near
     response, the reverse of the board. Android scans actively and gets
     both.
   - A disconnect made by the device arrives at the phone as 0x13.
+- **Recorder:** no Wi-Fi soft-AP (see [Recorder](#recorder)); the stream
+  ring is smaller than the board's 4 MB; the sensor clock and the host
+  clock run at exactly the nominal rates.
 - **Not simulated:**
   - the post-OTA self-test and rollback;
   - the fuel gauge (the battery is what the panel says);
@@ -252,8 +397,15 @@ curl -s -XPOST localhost:8765/api/cmd -d '{"cmd":"settings","set":{"tol":3,"near
 .venv/bin/python -m unittest discover -s tests
 ```
 
-The tests run without Bluetooth: the core and physics, every characteristic
-and command, calibration, power, OTA, the BLE layer (with BlueZ calls
-recorded, plus one private D-Bus daemon) and the web panel. The packets are
-decoded with `tools/ble/db_client.py`, which was written against the C
-structs independently of the simulator.
+The tests run without Bluetooth and change no network setting: the core and
+physics, every characteristic and command, calibration, power, OTA, the BLE
+layer (with BlueZ calls recorded, plus one private D-Bus daemon), the web
+panel, and the recorder (`test_recorder.py`: stream continuity and counted
+drops, the FIFO losses, IMU and audio rates, every END reason, `rec_state`
+in LAN mode, the stream server and `db_client`'s pull over loopback TCP).
+The packets are decoded with `tools/ble/db_client.py`, which was written
+against the C structs independently of the simulator. One recorder test
+exports a take with `tools/dataset`'s venv (`dbdata.dbrec` and
+`dbdata.validate`, through `tests/dataset_probe.py`) and checks that the
+breakthrough shows in the IMU and in the audio within 5 ms of the ground
+truth; it is skipped without `tools/dataset/.venv`.

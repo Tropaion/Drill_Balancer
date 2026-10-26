@@ -1,10 +1,12 @@
 """Web control panel of the simulator (aiohttp): one static page, a websocket
 that pushes the device state at the UI's tick rate, and JSON commands.
 
-  GET  /            the panel (index.html, app.js, style.css; no build step)
+  GET  /            the panel (index.html, app.js, touch.js, style.css; no build step)
   GET  /ws          websocket: {"type": "state", ...} every UI_TICK_MS; the page
                     may also send commands on it (touch gestures, to keep order)
   GET  /api/state   the same state once (scripts, tests)
+  GET  /api/rec/truth  the ground truth of the running or last take (404 before one)
+                    (the session's stream endpoint and token: snap.recorder.session)
   POST /api/cmd     {"cmd": name, ...} -> {"ok": true, "msg"} or 400 {"error"}
 
 Every command is validated here; see COMMANDS for the names and arguments.
@@ -14,15 +16,19 @@ from __future__ import annotations
 
 import asyncio
 import collections
+import inspect
 import ipaddress
 import json
 import math
+import secrets
 import time
 from pathlib import Path
 
 from aiohttp import WSMsgType, web
 
-from ..physics import ACCEL_NOISE_G, FACES, GYRO_NOISE_RAD_S, LiftMotion, RollMotion
+from ..physics import (ACCEL_NOISE_G, FACES, GYRO_NOISE_RAD_S, SCENARIO_MODES, SCENARIO_OUTCOMES,
+                       SCENARIO_STUCK_EXITS, DrillScenario, LiftMotion, RollMotion)
+from ..wire import dc
 from .screen import DeviceScreen
 
 STATIC_DIR = Path(__file__).resolve().parent
@@ -38,11 +44,17 @@ OTA_OPS = {0x01: "START", 0x02: "FINISH", 0x03: "ABORT"}
 ATT_NAMES = {0x05: "insufficient authentication", 0x07: "invalid offset",
              0x0D: "invalid length", 0x0E: "unlikely error", 0x80: "JSON_PARSE",
              0x81: "JSON_TYPE", 0x82: "JSON_RANGE", 0x83: "STORE", 0x84: "UNKNOWN_CMD",
-             0x85: "BAD_ARG", 0x86: "BUSY", 0x87: "UNAVAILABLE"}
+             0x85: "BAD_ARG", 0x86: "BUSY", 0x87: "UNAVAILABLE", 0x88: "REC_STATE",
+             0x89: "REC_RADIO", 0x8A: "REC_BATTERY"}
 MODES = ("wall", "floor", "angle")
 PRESETS = {"wall": 0.0, "floor": -90.0, "ceiling": 90.0, "deg45": 45.0}   # elevation
 BUTTONS = ("cal_left", "cal_right", "set_mount", "set_sensor", "set_clear_zero", "set_reset",
-           "set_back", "confirm_cancel", "confirm_reset")
+           "set_back", "confirm_cancel", "confirm_reset", "rec_pill")
+# DrillScenario arguments: (low, high, default) for numbers.
+SCENARIO_NUMS = {"free_hz": (60, 500), "sag": (0.05, 0.4), "spinup_s": (0.3, 0.8), "free_s": (0.2, 10),
+                 "drill_s": (0.3, 30), "gap_s": (0.2, 30), "lead_s": (0, 10), "level": (0, 4)}
+# what the panel leaves out is DrillScenario's own default
+SCENARIO_DEFAULTS = {k: p.default for k, p in inspect.signature(DrillScenario).parameters.items()}
 
 
 class BadRequest(Exception):
@@ -117,6 +129,19 @@ def describe_write(char: str, value: bytes) -> str:
         return f"ota_ctrl {op}"
     if char == "config":
         return "config " + value.decode(errors="replace")
+    if char == "rec_ctrl":
+        try:
+            op, a = dc.decode_rec(value)
+        except ValueError:          # not a write the firmware parses: the bytes
+            return f"{char} {value.hex()}"
+        name = op.upper().replace("-", "_")
+        if op == "take-start":
+            prof = dc._name(dc.REC_PROFILES, a["profile"])
+            return (f"rec_ctrl {name} {prof} mics 0x{a['mic_mask']:x} {a['gain_db']} dB max "
+                    f"{a['max_s']} s take {a['take_id']}")
+        if op == "mark":
+            return f"rec_ctrl {name} {a['code']} {a['text']!r}"
+        return f"rec_ctrl {name}"
     return f"{char} {value.hex()}"
 
 
@@ -167,6 +192,24 @@ class WebPanel:
                 self.add_log("dev", f"OTA ended (state {data['state']})")
         elif name == "settings":
             self.add_log("dev", f"settings stored: {data['json']}", kind="settings")
+        elif name == "rec":
+            self._rec_event(data)
+
+    def _rec_event(self, d: dict):
+        ev = d.get("event")
+        if ev == "take_start":
+            self.add_log("dev", f"recorder: take {d['take_id']} started", kind="rec")
+        elif ev == "take_end":
+            self.add_log("dev", f"recorder: take {d['take_id']} ended ({d['reason']}), "
+                                f"{d['events']} truth events in {d['truth']}", kind="rec")
+        elif ev == "endpoint":
+            if d["up"]:
+                self.add_log("dev", f"recorder: stream endpoint {d['ip']}:{d['port']}"
+                                    f"{' (LAN, no AP)' if d['no_ap'] else ''}", kind="rec")
+            else:
+                self.add_log("dev", "recorder: stream endpoint down", kind="rec")
+        elif ev == "client_lost":
+            self.add_log("dev", "recorder: stream client lost", "W", kind="rec")
 
     def _ble_event(self, d: dict):
         # Connects, pairing and advertising are already in the BLE log lines.
@@ -400,9 +443,89 @@ class WebPanel:
         self.dev.flash_fail = _bool(d, "on")
         return f"OTA flash writes {'fail' if self.dev.flash_fail else 'work'}"
 
+    # ---- recorder -----------------------------------------------------------------------
+    def c_scenario(self, d):
+        # {"cmd": "scenario", "mode": "hammer", "holes": 2, ...} or {"cmd": "scenario", "stop": true}
+        if d.get("stop") is not None:
+            if not _bool(d, "stop"):
+                raise BadRequest("'stop' must be true")
+            self.dev.stop_scenario()
+            return "drilling scenario stopped"
+        dflt = SCENARIO_DEFAULTS
+        kw = {"mode": _choice(d, "mode", SCENARIO_MODES, dflt["mode"]),
+              "outcome": _choice(d, "outcome", SCENARIO_OUTCOMES, dflt["outcome"]),
+              "holes": _int(d, "holes", 1, 20, dflt["holes"]),
+              "seed": _int(d, "seed", 0, 2 ** 31 - 1, secrets.randbelow(2 ** 31)),
+              "stuck": _bool(d, "stuck", dflt["stuck"]), "kickback": _bool(d, "kickback", dflt["kickback"]),
+              "stuck_exit": _choice(d, "stuck_exit", SCENARIO_STUCK_EXITS, dflt["stuck_exit"])}
+        for key, (lo, hi) in SCENARIO_NUMS.items():
+            kw[key] = _num(d, key, lo, hi, dflt[key])
+        scn = self.dev.start_scenario(**kw)
+        return (f"drilling scenario: {kw['mode']}, {kw['holes']} hole(s), {kw['outcome']}"
+                f"{', stuck' if kw['stuck'] else ''}{', kickback' if kw['kickback'] else ''}, "
+                f"seed {kw['seed']}, {scn.duration:.1f} s")
+
+    def c_rec(self, d):
+        # The app's rec_ctrl writes, for a run without Bluetooth (--no-ble):
+        # {"cmd": "rec", "op": "open" | "close" | "take_start" | "stop" | "mark", ...}.
+        # db_client.encode_rec checks the arguments as the app does, then the
+        # device as it does a BLE write.
+        op = _choice(d, "op", ("open", "close", "take_start", "stop", "mark"))
+        try:
+            if op == "take_start":
+                value = dc.encode_rec(
+                    "take-start", profile=dc.REC_PROFILES.index(_choice(d, "profile", dc.REC_PROFILES, "RAW448")),
+                    mic_mask=_int(d, "mic_mask", 0, 255, 3), gain_db=_int(d, "gain_db", 0, 255, 6),
+                    max_s=_int(d, "max_s", 0, 0xFFFF, 0),
+                    take_id=_int(d, "take_id", 0, 0xFFFFFFFF, secrets.randbits(32)))
+            elif op == "mark":
+                text = d.get("text", "")
+                if not isinstance(text, str):
+                    raise BadRequest("'text' must be a string")
+                value = dc.encode_rec("mark", code=_int(d, "code", 0, 0xFFFF, 0), text=text)
+            else:
+                value = dc.encode_rec(op)
+        except ValueError as e:
+            raise BadRequest(str(e)) from None
+        att = self.dev.write_char("rec_ctrl", value)
+        msg = describe_write("rec_ctrl", value)
+        if att:
+            raise BadRequest(f"{msg} -> {_att(att)}")
+        return msg
+
+    def _endpoint(self):
+        ep = self.dev.rec_endpoint
+        if ep is None:
+            raise BadRequest(f"recorder unavailable: {self.dev.rec_unavailable}" if self.dev.rec_unavailable
+                             else "no recorder stream server (--no-rec)")
+        return ep
+
+    def c_rec_client_drop(self, d):
+        if not self._endpoint().drop_client():
+            raise BadRequest("no stream client connected")
+        return "recorder: stream client dropped"
+
+    def c_rec_stall(self, d):
+        s = _num(d, "s", 0.1, 60)
+        self._endpoint().stall(s)
+        return f"recorder: the stream stalls for {s:g} s" + (" (client lost after 10 s)" if s >= 10 else "")
+
+    def c_mic_gain(self, d):
+        db = _num(d, "db", -40, 40)
+        mic = _choice(d, "mic", (1, 2, None), None)
+        for m in (mic,) if mic else (1, 2):
+            self.dev.set_mic_gain(m, db)
+        return f"microphone {mic or '1 and 2'} sensitivity {db:+g} dB"
+
     # ---- HTTP ---------------------------------------------------------------------------
     async def h_state(self, request):
         return web.json_response(self.state())
+
+    async def h_truth(self, request):
+        truth = self.dev.rec_truth()
+        if truth is None:
+            return web.json_response({"error": "no take yet"}, status=404)
+        return web.json_response(truth)
 
     async def h_cmd(self, request):
         try:
@@ -446,8 +569,9 @@ class WebPanel:
         app.router.add_get("/", _static("index.html"))
         app.router.add_get("/ws", self.h_ws)
         app.router.add_get("/api/state", self.h_state)
+        app.router.add_get("/api/rec/truth", self.h_truth)
         app.router.add_post("/api/cmd", self.h_cmd)
-        for name in ("app.js", "style.css"):
+        for name in ("app.js", "touch.js", "style.css"):
             app.router.add_get(f"/{name}", _static(name))
         return app
 

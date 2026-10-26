@@ -25,6 +25,13 @@ pip install -r requirements.txt
 ./db_client.py cmd accel-cal-start       # ... turn the device face by face ... then accel-cal-finish
 ./db_client.py cmd factory-reset --yes
 ./db_client.py ota ../../build/drillbalancer.bin
+./db_client.py rec open                  # recorder session: rec_state with the stream endpoint
+./db_client.py rec start --profile RAW448 --mics 3 --gain 6 --max-s 60
+./db_client.py rec mark --code 1 "hole 1"
+./db_client.py rec stop
+./db_client.py rec state --watch
+./db_client.py rec pull --start --duration 20 -o take.dbrec
+./db_client.py rec close
 ```
 
 Without `-a/--address` the client scans and takes the first
@@ -70,10 +77,30 @@ The device refuses OTA (FLASH_ERROR on START) until the running image has been
 confirmed after an update, and an image built for a different project fails
 the descriptor check.
 
+## Recorder
+
+`rec pull` opens a session if none is open, waits for `rec_state`
+WAIT_CLIENT, connects to the stream address it gives and sends HELLO (the
+session token and the stream version). On the board's soft-AP it first asks
+you to join the Wi-Fi network shown; the simulator's LAN mode (`NO_AP`)
+needs nothing. With `--start` it starts a take once the connection is up,
+`--duration` stops it after that many seconds. It saves everything to the
+`.dbrec` file until `--takes` END records arrived (1 by default; 0: until
+Ctrl-C or the device closes the stream) and prints what came: records by
+type, takes, END reasons, records the device dropped. Ctrl-C sends STOP and
+waits 5 s for the END. `tools/dataset`'s `python -m dbdata.dbrec` decodes
+the file and exports a take as a dataset recording.
+
+`rec pull --host IP [--port P] --token HEX` pulls without Bluetooth from an
+endpoint known otherwise: the simulator run with `--no-ble`, whose panel
+opens the session, shows its endpoint and token and starts the takes (see
+the simulator's README). `--start`, `--duration` and `--close` need the
+BLE link and are refused there.
+
 ## Errors
 
 Writes fail with standard ATT errors (0x05/0x0F: pair first, 0x0D: wrong
-length) or the application errors 0x80..0x87 listed in `ble_protocol.h`; the
+length) or the application errors 0x80..0x8A listed in `ble_protocol.h`; the
 client prints what they mean.
 
 ## Tests
@@ -81,3 +108,6 @@ client prints what they mean.
 ```sh
 python3 -m unittest test_db_client      # OTA sender against a simulated device, no bleak needed
 ```
+
+The recorder pull (`rec_pull_stream`) is tested against the simulator's
+stream server in `tools/sim/tests/test_recorder.py`.

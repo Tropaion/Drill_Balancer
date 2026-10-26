@@ -3,6 +3,8 @@ BLE events in the event log, and the HTTP / websocket surface."""
 
 import asyncio
 import json
+import shutil
+import subprocess
 import tempfile
 import unittest
 
@@ -15,6 +17,7 @@ from dbsim import web
 from dbsim.web.server import BadRequest, WebPanel
 
 PHONE = "/org/bluez/hci0/dev_AA_BB_CC_DD_EE_FF"
+WEB_DIR = web.server.STATIC_DIR
 
 
 class PanelTest(DeviceTest):
@@ -237,7 +240,7 @@ class HttpTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_page_state_stream_and_commands(self):
         async with aiohttp.ClientSession() as s:
-            for path in ("/", "/app.js", "/style.css"):
+            for path in ("/", "/app.js", "/touch.js", "/style.css"):
                 async with s.get(self.url + path) as r:
                     self.assertEqual(r.status, 200, path)
             async with s.get(self.url + "/server.py") as r:
@@ -287,6 +290,45 @@ class HttpTest(unittest.IsolatedAsyncioTestCase):
                     self.assertEqual(json.loads((await ws.receive()).data)["type"], "hello")
             async with s.post(self.url + "/api/cmd", data=cmd) as r:
                 self.assertEqual(r.status, 200)
+
+
+@unittest.skipUnless(shutil.which("node"), "no node")
+class TouchRulesTest(unittest.TestCase):
+    """touch.js, the mirror's press rules that app.js follows, run under node."""
+
+    def rules(self) -> dict:
+        script = """
+const T = require(process.argv[1]);
+const out = {holdPill: T.holdFor({id: "rec_pill"}), holdBack: T.holdFor({id: "set_back"}),
+             holdNone: T.holdFor(null)};
+for (const st of [0, 2, 3, 4, 5]) out["pill" + st] = T.recPillRegion({state: st}, 1, 2, 3, 4);
+out.pillNone = T.recPillRegion(null, 1, 2, 3, 4);
+console.log(JSON.stringify(out));
+"""
+        r = subprocess.run(["node", "-e", script, str(WEB_DIR / "touch.js")], capture_output=True,
+                           text=True, timeout=30)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        return json.loads(r.stdout)
+
+    def test_the_rec_pill(self):
+        out = self.rules()
+        # it takes touches only while RECORDING: READY / DRAINING leave a tap to what is under it
+        self.assertEqual(out["pill4"], {"id": "rec_pill", "x": 1, "y": 2, "w": 3, "h": 4, "enabled": True})
+        for k in ("pill0", "pill2", "pill3", "pill5", "pillNone"):
+            self.assertIsNone(out[k], k)
+        # a press on it arms only its 2 s stop, not the level screen's 1 s settings hold
+        self.assertEqual(out["holdPill"], {"ms": 2000, "levelOnly": False,
+                                           "msg": {"cmd": "touch", "action": "button", "button": "rec_pill"}})
+        for k in ("holdBack", "holdNone"):
+            self.assertEqual(out[k], {"ms": 1000, "levelOnly": True, "msg": {"cmd": "touch", "action": "hold"}})
+
+    def test_the_page_uses_them(self):
+        app = (WEB_DIR / "app.js").read_text()
+        self.assertIn("Touch.holdFor(press.region)", app)
+        self.assertIn("Touch.recPillRegion(rec,", app)
+        self.assertNotIn('id: "rec_pill"', app, "the pill's region comes from touch.js")
+        page = (WEB_DIR / "index.html").read_text()
+        self.assertLess(page.index('src="touch.js"'), page.index('src="app.js"'))
 
 
 if __name__ == "__main__":

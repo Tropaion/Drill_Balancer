@@ -55,6 +55,25 @@ def duplicates(ids) -> list[str]:
     return sorted(k for k, n in Counter(ids).items() if n > 1)
 
 
+def events_document(recording_id: str, coverage_us, *, revision: int, events=(), spans=(), holes=(),
+                    detector: dict | None = None) -> dict:
+    """An events.json (events.v1.schema.json) around these labels."""
+    doc = {"schema": "drillbalancer.events/1", "taxonomy_version": 1, "recording_id": recording_id,
+           "revision": revision, "coverage_us": [int(coverage_us[0]), int(coverage_us[1])]}
+    if detector is not None:
+        doc["detector"] = detector
+    doc.update(events=list(events), spans=list(spans), holes=list(holes))
+    return doc
+
+
+def hole_entry(hole: int, through: bool | None, tags) -> dict:
+    """One events.json hole. through None: the labels end in the hole. outcome_tags: tags, or
+    clean for a hole that ended (breakthrough or retract) without a problem, none while open."""
+    return {"hole": hole, "through": through, "material": None,
+            "outcome_tags": list(tags) or (["clean"] if through is not None else []),
+            "off_angle_deg": None, "off_angle_source": "computed"}
+
+
 # Splits: crc32(session_id) % 10, so all takes of one session (one workpiece) share a split.
 SPLITS = {"train": tuple(range(8)), "val": (8,), "test": (9,)}
 

@@ -183,6 +183,61 @@
     </div>
 
     <div class="card">
+      <h2>Recorder <span class="pill" id="rec-state">idle</span></h2>
+      <dl class="kv">
+        <dt>Take</dt><dd id="rec-take">-</dd>
+        <dt>Stream</dt><dd id="rec-stream">-</dd>
+        <dt>Session</dt><dd id="rec-session">-</dd>
+        <dt>Ring</dt><dd id="rec-ring">-</dd>
+        <dt>IMU / audio</dt><dd id="rec-data">-</dd>
+        <dt>Scenario</dt><dd id="rec-scenario">-</dd>
+        <dt>Truth</dt><dd id="rec-truth">-</dd>
+      </dl>
+      <h3>Session (the app's rec_ctrl writes, for runs without Bluetooth)</h3>
+      <div class="row">
+        <button id="rec-open">Open</button>
+        <select id="rec-profile"><option>LEVEL</option><option selected>RAW448</option>
+          <option>RAW448_16G</option><option>RAW897</option></select>
+        <select id="rec-mics"><option value="3">MIC1+2</option><option value="1">MIC1</option>
+          <option value="2">MIC2</option><option value="0">no audio</option></select>
+        <button id="rec-start" class="primary">Start take</button>
+        <button id="rec-stop">Stop</button>
+        <button id="rec-mark">Mark</button>
+        <button id="rec-close">Close</button>
+      </div>
+      <h3>Drilling scenario</h3>
+      <div class="row">
+        <select id="sc-mode"><option value="drill">drill</option><option value="hammer">hammer</option></select>
+        <select id="sc-outcome"><option value="breakthrough">breakthrough</option>
+          <option value="retract">retract</option><option value="mixed">mixed</option></select>
+        <label class="c-muted"><input type="number" class="short" id="sc-holes" min="1" max="20" value="1"> holes</label>
+        <label class="c-muted"><input type="number" class="short" id="sc-drill" min="0.3" max="30" step="0.1" value="2.5"> s cutting</label>
+      </div>
+      <div class="row">
+        <label class="switch"><input type="checkbox" id="sc-stuck"> Stuck</label>
+        <label class="switch"><input type="checkbox" id="sc-kick"> Kickback</label>
+        <label class="c-muted">seed <input type="number" class="short" id="sc-seed" min="0" placeholder="random"></label>
+        <button id="sc-start" class="primary">Start</button>
+        <button id="sc-stop">Stop</button>
+      </div>
+      <h3>Stream faults and microphones</h3>
+      <div class="row">
+        <input type="number" class="short" id="rec-stall-s" min="0.1" max="60" step="0.5" value="5">
+        <span class="c-muted">s</span>
+        <button id="rec-stall">Stall the stream</button>
+        <button id="rec-drop" class="danger">Drop the client</button>
+      </div>
+      <div class="row"><label class="name">Mic gain</label>
+        <input type="number" class="short" id="mic-db" min="-40" max="40" step="1" value="0">
+        <span class="c-muted">dB, both</span>
+        <button id="mic-set">Set</button></div>
+      <p class="note">The app records takes over the stream server on this PC's LAN address
+        (rec_state flag NO_AP). A stall of 10 s or more loses the client, as on the board. The
+        ground truth of each take goes to <code>state/rec_truth_&lt;take&gt;.json</code> and
+        <code>GET /api/rec/truth</code>, never into the stream.</p>
+    </div>
+
+    <div class="card">
       <h2>Settings <span class="pill">read-only</span></h2>
       <pre class="json" id="settings">-</pre>
     </div>
@@ -205,6 +260,7 @@
   </section>
 </main>
 <div class="toast" id="toast" hidden></div>
+<script src="touch.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

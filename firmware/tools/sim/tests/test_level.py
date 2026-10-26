@@ -8,6 +8,10 @@ F = dc.ANGLE_FLAGS
 
 
 class LevelTest(DeviceTest):
+    def setUp(self):
+        super().setUp()
+        self.settle_imu()
+
     def pose(self, ms=2500, **kw):
         self.dev.physics.set_drill(**kw)
         self.settle(ms)
@@ -59,7 +63,10 @@ class LevelTest(DeviceTest):
         self.assertClose(a.yaw, 0.0, 0.05)
         for yaw in (10.0, -25.0):
             a = self.pose(elevation=8.0, yaw=yaw)
-            self.assertClose(a.yaw, yaw, 0.3, f"yaw {yaw}: {a}")
+            # Yaw is the gyro alone. The FIFO loses ~12 % of the samples and the
+            # driver interpolates them; one lost where a turn starts or stops
+            # (the model turns at full rate at once) is off by up to 0.2°.
+            self.assertClose(a.yaw, yaw, 0.5, f"yaw {yaw}: {a}")
             self.assertClose(a.elevation, 3.0, 0.1)   # relative to the zero
             self.assertTrue(a.flags & F["yaw_valid"])
         self.assertFalse(a.flags & F["yaw_stale"])

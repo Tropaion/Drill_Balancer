@@ -1,0 +1,119 @@
+{
+  "schema": "dbauto.fixture/1",
+  "detector": {
+    "version": "dbauto/1.1.0",
+    "params_sha256": "b9e9e3dcdead681c6c6d9390e363cbd35ee422ff6666e21b4903338c45cb2991"
+  },
+  "frames": 798,
+  "t0_us": 3242648,
+  "frame_us": 10000,
+  "spec": {
+    "name": "fx_gap",
+    "scenario": {
+      "seed": 206,
+      "holes": 1,
+      "sag": 0.2,
+      "free_s": 0.8,
+      "drill_s": 3.0,
+      "kickback": true
+    },
+    "profile": null,
+    "gain_db": 6,
+    "mic_mask": 1,
+    "noise": 1.0,
+    "room": 1.0,
+    "elevation_deg": 0.0,
+    "yaw_deg": 0.0,
+    "device_seed": 1,
+    "material": "wood/softwood",
+    "bit_type": "brad_point",
+    "bit_diameter_mm": 8.0,
+    "lead_s": 0.6,
+    "tail_s": 0.4,
+    "mount_offset": [
+      0.0,
+      0.0,
+      0.0
+    ],
+    "ring_kib": 32,
+    "stall": [
+      2.3,
+      1.6
+    ],
+    "inject": []
+  },
+  "events": {
+    "schema": "drillbalancer.events/1",
+    "taxonomy_version": 1,
+    "recording_id": "20261026T144506Z_synt_0906",
+    "revision": 1,
+    "coverage_us": [
+      3242648,
+      11215493
+    ],
+    "detector": {
+      "version": "dbauto/1.1.0",
+      "params_sha256": "b9e9e3dcdead681c6c6d9390e363cbd35ee422ff6666e21b4903338c45cb2991"
+    },
+    "events": [
+      {
+        "id": "e1",
+        "type": "motor_on",
+        "t_us": 4142648,
+        "source": "auto",
+        "confidence": 0.743
+      },
+      {
+        "id": "e2",
+        "type": "contact",
+        "t_us": 5552648,
+        "source": "auto",
+        "confidence": 0.918,
+        "hole": 1
+      },
+      {
+        "id": "e3",
+        "type": "breakthrough",
+        "t_us": 8912250,
+        "source": "auto",
+        "confidence": 0.976,
+        "hole": 1
+      },
+      {
+        "id": "e4",
+        "type": "kickback",
+        "t_us": 8922881,
+        "source": "auto",
+        "confidence": 0.976,
+        "hole": 1
+      },
+      {
+        "id": "e5",
+        "type": "motor_off",
+        "t_us": 9722648,
+        "source": "auto",
+        "confidence": 0.978
+      }
+    ],
+    "spans": [],
+    "holes": [
+      {
+        "hole": 1,
+        "through": true,
+        "material": null,
+        "outcome_tags": [
+          "kickback"
+        ],
+        "off_angle_deg": 0.73,
+        "off_angle_source": "computed"
+      }
+    ]
+  },
+  "derived": {
+    "orientation": "wall",
+    "off_angle_deg": 0.73,
+    "tags": [
+      "off_angle"
+    ]
+  }
+}

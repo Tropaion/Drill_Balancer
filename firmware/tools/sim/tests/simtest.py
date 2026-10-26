@@ -18,11 +18,10 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 SIM_DIR = HERE.parent
 sys.path.insert(0, str(SIM_DIR))
-sys.path.insert(0, str(SIM_DIR.parent / "ble"))
 
-import db_client as dc  # noqa: E402
 from dbsim import DbSimDevice, DrillPhysics  # noqa: E402
 from dbsim import core as C  # noqa: E402
+from dbsim.wire import dc  # noqa: E402
 
 FIRMWARE_IMAGE = SIM_DIR.parent.parent / "build" / "drillbalancer.bin"
 
@@ -51,6 +50,9 @@ class DeviceTest(unittest.TestCase):
     # ---- helpers ----
     def settle(self, ms=2500):
         self.dev.advance(ms)
+
+    def settle_imu(self):
+        self.dev.settle_imu()           # DbSimDevice.IMU_TRUSTED_MS
 
     def snap(self):
         return self.dev.snapshot()

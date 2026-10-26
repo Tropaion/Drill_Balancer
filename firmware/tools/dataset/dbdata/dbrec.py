@@ -797,9 +797,11 @@ def _cal(tail: dict | None):
 
 def build_meta(take: Take, imu: ImuTrack, audio: AudioTrack | None, *, recording_id: str,
                session_id: str, start_utc: str | None = None, app: dict | None = None,
-               session_labels: dict | None = None, adc_delay_us: float | None = None) -> dict:
+               session_labels: dict | None = None, adc_delay_us: float | None = None,
+               review: dict | None = None) -> dict:
     """meta.json for a take, from its SESSION / STATS / END records (derived,
-    files: filled in by io.write_recording)."""
+    files: filled in by io.write_recording). review defaults to auto_only without
+    a detector (a take has no labels yet)."""
     from . import __version__
     from .io import FLAG_FILLED, LEVEL_MODES, parse_recording_id
 
@@ -898,16 +900,15 @@ def build_meta(take: Take, imu: ImuTrack, audio: AudioTrack | None, *, recording
         "level": level_meta,
         "session": json.loads(json.dumps(session_labels or DEFAULT_SESSION_LABELS)),
         "derived": {"orientation": "unknown", "off_angle_deg": None, "tags": []},
-        "review": {"status": "auto_only", "detector": "none", "revision": 0, "edited_events": 0, "reviewer": None},
+        "review": json.loads(json.dumps(review)) if review else
+        {"status": "auto_only", "detector": "none", "revision": 0, "edited_events": 0, "reviewer": None},
         "quality": {"flags": quality},
         "files": {},
     }
 
 
 def empty_events(recording_id: str, t_us) -> dict:
-    return {"schema": "drillbalancer.events/1", "taxonomy_version": 1, "recording_id": recording_id,
-            "revision": 0, "coverage_us": [int(t_us[0]), int(t_us[-1]) + 1],
-            "events": [], "spans": [], "holes": []}
+    return contract.events_document(recording_id, [t_us[0], int(t_us[-1]) + 1], revision=0)
 
 
 def export_take(take: Take, dest: str | Path, *, recording_id: str, session_id: str,

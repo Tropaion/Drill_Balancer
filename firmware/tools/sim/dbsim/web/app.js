@@ -581,6 +581,19 @@ function drawOverlays(s, view) {
     batteryIcon(CX - (tw + 48) / 2, 67, 0, COL.white);
     text(str, CX + 24, 67, 24, COL.white);
   }
+  const rec = s.rec;
+  if (rec && rec.state >= Touch.REC_READY && rec.state <= Touch.REC_DRAINING && !s.ota_active &&
+      !s.passkey_pending) {
+    // The REC pill (milestone 4's ui.c overlay): not modal, held 2 s it stops the take.
+    const live = rec.state === Touch.REC_RECORDING;
+    const el = rec.elapsed_s;
+    const str = live ? `REC ${String(Math.floor(el / 60)).padStart(2, "0")}:${String(el % 60).padStart(2, "0")}`
+      : "REC ready";
+    pill(CX - 80, W - 92, 160, 40, live ? COL.red : COL.redBg);
+    text(str, CX, W - 72, 22, COL.white);
+    const hitRegion = Touch.recPillRegion(rec, CX - 80, W - 92, 160, 40);
+    if (hitRegion) regions.push(hitRegion);
+  }
   if (view.toast) {
     const t = view.toast;
     const w = Math.max(340, textWidth(t.text, 48) + 60), h = 116;
@@ -633,8 +646,7 @@ function deviceStateText(s) {
 const TAP_MAX_MOVE = 24;        // ui_level.c TAP_MAX_MOVE_PX
 const GESTURE_LIMIT = 50;       // LVGL gesture_limit
 const LONG_PRESS_MS = 400;      // LVGL long_press_time: a tap is shorter
-const HOLD_MS = 1000;           // ui_level.c HOLD_FOR_SETTINGS_MS
-let press = null;
+let press = null;               // the long-presses: touch.js
 
 function devPoint(e) {
   const r = canvas.getBoundingClientRect();
@@ -661,12 +673,13 @@ canvas.addEventListener("pointerdown", (e) => {
   press = {x0: p.x, y0: p.y, x: p.x, y: p.y, t0: performance.now(), used: false,
     scroll0: settingsScroll, region: hit(p)};
   wsSend({cmd: "touch", action: "press"});
+  const hold = Touch.holdFor(press.region);
   press.timer = setTimeout(() => {
-    if (press && !press.used && state.screen.screen === "level" && !movedFar(press)) {
+    if (press && !press.used && (!hold.levelOnly || state.screen.screen === "level") && !movedFar(press)) {
       press.used = true;
-      wsSend({cmd: "touch", action: "hold"});
+      wsSend(hold.msg);
     }
-  }, HOLD_MS);
+  }, hold.ms);
 });
 
 function movedFar(pr) {
@@ -705,6 +718,8 @@ function endPress(e, cancelled) {
   if (g && pr.region && g.id === pr.region.id) {
     if (g.id === "stepper") {
       showError("The settings steppers are not simulated: change settings from the app.");
+    } else if (g.id === "rec_pill") {
+      // only the 2 s hold does something
     } else if (g.enabled) {
       wsSend({cmd: "touch", action: "button", button: g.id});
     }
@@ -822,6 +837,26 @@ $("f-store").addEventListener("change", () => post({cmd: "store_fail", on: $("f-
 $("f-flash").addEventListener("change", () => post({cmd: "flash_fail", on: $("f-flash").checked}));
 $("f-disc").addEventListener("click", () => post({cmd: "disconnect"}));
 
+// recorder
+["sc-holes", "sc-drill", "sc-seed", "rec-stall-s", "mic-db"].forEach((id) => guard($(id)));
+$("sc-start").addEventListener("click", () => {
+  const cmd = {cmd: "scenario", mode: $("sc-mode").value, outcome: $("sc-outcome").value,
+    holes: Number($("sc-holes").value), drill_s: Number($("sc-drill").value),
+    stuck: $("sc-stuck").checked, kickback: $("sc-kick").checked};
+  if ($("sc-seed").value !== "") cmd.seed = Number($("sc-seed").value);
+  post(cmd);
+});
+$("sc-stop").addEventListener("click", () => post({cmd: "scenario", stop: true}));
+$("rec-stall").addEventListener("click", () => post({cmd: "rec_stall", s: Number($("rec-stall-s").value)}));
+$("rec-drop").addEventListener("click", () => post({cmd: "rec_client_drop"}));
+$("mic-set").addEventListener("click", () => post({cmd: "mic_gain", db: Number($("mic-db").value)}));
+$("rec-open").addEventListener("click", () => post({cmd: "rec", op: "open"}));
+$("rec-start").addEventListener("click", () => post({cmd: "rec", op: "take_start",
+  profile: $("rec-profile").value, mic_mask: Number($("rec-mics").value)}));
+$("rec-stop").addEventListener("click", () => post({cmd: "rec", op: "stop"}));
+$("rec-mark").addEventListener("click", () => post({cmd: "rec", op: "mark", text: "panel"}));
+$("rec-close").addEventListener("click", () => post({cmd: "rec", op: "close"}));
+
 // ---- panel update ---------------------------------------------------------------------
 
 const POWER = ["active", "dim", "sleep", "off"];
@@ -829,6 +864,11 @@ const MODES = ["wall", "floor", "angle"];
 const STATUS = ["on target", "near", "off"];
 const CAL_KINDS = ["idle", "mount", "accel"];
 const OTA_STATES = ["idle", "receiving", "done"];   // ota_state_t
+const REC_STATES = ["idle", "AP starting", "waiting for client", "ready", "recording", "draining",
+  "closing"];                                       // rec_state_t
+const REC_REASONS = ["none", "user", "max_s", "client lost", "BLE lost", "battery", "IMU",
+  "shutdown", "AP failed", "no client", "idle"];    // REC_REASON_*
+const REC_PROFILES = ["LEVEL", "RAW448", "RAW448_16G", "RAW897"];
 
 const f3 = (v) => v.map((x) => x.toFixed(3)).join("  ");
 
@@ -966,9 +1006,50 @@ function updatePanel() {
   $("ota-last").textContent = last.bytes ? `${(last.bytes / 1024).toFixed(0)} KB in ${last.seconds.toFixed(1)} s` +
     ` (${(last.bytes / 1024 / Math.max(0.1, last.seconds)).toFixed(1)} KB/s)` : "-";
 
+  // recorder
+  updateRecorder(s, running);
+
   // settings
   const json = running ? JSON.stringify(s.settings, null, 2) : "(device not running)";
   if ($("settings").textContent !== json) $("settings").textContent = json;
+}
+
+function updateRecorder(s, running) {
+  const r = s.rec, dev = s.recorder;
+  if (!running || !r) {
+    setPill($("rec-state"), "-", "");
+    return;
+  }
+  setPill($("rec-state"), REC_STATES[r.state] || `state ${r.state}`,
+    r.state === Touch.REC_RECORDING ? "bad" : r.state === 0 ? "" : r.state === Touch.REC_READY ? "ok" : "warn");
+  $("rec-take").textContent = r.take_valid ? `${r.take_id} · ${r.elapsed_s}/${r.max_s} s · ` +
+    `${REC_PROFILES[r.profile] || r.profile} · mics 0x${r.mic_mask.toString(16)} ${r.gain_db} dB` +
+    (r.state === Touch.REC_RECORDING ? "" : ` · ended: ${REC_REASONS[r.reason] || r.reason}`) :
+    (r.reason ? `last session ended: ${REC_REASONS[r.reason] || r.reason}` : "-");
+  const ep = dev.endpoint;
+  $("rec-stream").textContent = ep ? `${ep.mode.toUpperCase()} ${ep.ip}:${ep.port} · ` +
+    `${ep.client ? "client " + ep.peer : "no client"} · ${ep.kbps.toFixed(1)} kB/s · ` +
+    `${(r.sent_bytes / 1048576).toFixed(2)} MB${ep.stalled ? " · STALLED" : ""}` :
+    dev.unavailable ? `unavailable: ${dev.unavailable}` : "no stream server (--no-rec)";
+  const ss = dev.session;
+  $("rec-session").textContent = ss ? `${ss.ip}:${ss.port}${ss.no_ap ? " (LAN)" : ` SSID ${ss.ssid}`}` +
+    ` · token ${ss.token}` : "none (Open starts one)";
+  $("rec-ring").textContent = `${r.ring_pct} % of ${(r.ring_size / 1024).toFixed(0)} KiB, high ` +
+    `${(r.high_water / 1024).toFixed(0)} KiB · dropped ${r.dropped} records (${r.dropped_bytes} B)`;
+  const lostPct = r.imu_frames ? (100 * r.imu_lost / (r.imu_frames + r.imu_lost)).toFixed(1) : "0";
+  $("rec-data").textContent = `IMU ${r.imu_frames} (${lostPct} % lost` +
+    `${r.imu_period_ns ? `, ${(1e9 / r.imu_period_ns).toFixed(1)} Hz` : ""}) · audio ${r.audio_frames}` +
+    `${r.audio_rate_mhz ? ` (${(r.audio_rate_mhz / 1000).toFixed(0)} Hz)` : ""}` +
+    `${r.audio_clipped ? `, ${r.audio_clipped} clipped` : ""}`;
+  const sc = dev.scenario;
+  $("rec-scenario").textContent = sc ? `${sc.params.mode}, ${sc.params.holes} hole(s), ` +
+    `${sc.params.outcome}${sc.params.stuck ? ", stuck" : ""}${sc.params.kickback ? ", kickback" : ""} · ` +
+    `${sc.elapsed_s.toFixed(1)}/${sc.duration_s.toFixed(1)} s · seed ${sc.params.seed}` : "none running";
+  const tr = dev.truth;
+  $("rec-truth").textContent = tr ? `take ${tr.take_id}${tr.running ? " (running)" : ""}: ` +
+    (Object.entries(tr.events).map(([k, n]) => `${n} ${k}`).join(", ") || "no events") +
+    (tr.spans ? `, ${tr.spans} span(s)` : "") : "-";
+  $("rec-drop").disabled = !(ep && ep.client);
 }
 
 function popcount(v) { let n = 0; for (; v; v &= v - 1) n++; return n; }

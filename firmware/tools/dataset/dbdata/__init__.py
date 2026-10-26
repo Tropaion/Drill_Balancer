@@ -3,8 +3,10 @@
 The contract (taxonomy, JSON Schemas) is in dbdata/contract/. Modules:
 io (read/write a recording), labels (phases from events), windows (aligned
 IMU + audio windows), dataset (index.csv-based loader), validate, index,
-stats, dbrec (the device stream: decoder and export). The names below are imported lazily, so `python -m dbdata.<module>`
-runs each module only once.
+stats, dbrec (the device stream: decoder and export), autodetect (the
+auto-labeller), synth (synthetic recordings from the simulator). The names
+below are imported lazily, so `python -m dbdata.<module>` runs each module
+only once.
 """
 
 import importlib
@@ -12,6 +14,7 @@ import importlib
 __version__ = "1.0.0"
 
 _EXPORTS = {
+    "detect": "autodetect",
     "Taxonomy": "contract", "load_taxonomy": "contract",
     "Dataset": "dataset",
     "split_of": "index",
