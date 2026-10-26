@@ -67,6 +67,18 @@ bool ui_low_battery(const app_battery_t *b);
 
 #define UI_LOW_BATTERY_PCT 10
 
+// The REC pill over every screen (ui.c): "REC mm:ss" (the take's elapsed
+// time) while RECORDING, "REC ready" between takes and while a stopped
+// take drains. False, and an empty text, when it is hidden (no session, or
+// the session is not ready yet or closing).
+bool ui_rec_pill_text(const app_rec_status_t *r, char *buf, size_t len);
+
+// Only a recording pill takes touches (its 2 s hold stops the take); as
+// "REC ready" it is a label and a tap goes to the screen beneath it.
+bool ui_rec_pill_live(const app_rec_status_t *r);
+
+#define UI_REC_HOLD_MS 2000
+
 // --- settings steppers ---
 
 typedef enum {
@@ -109,6 +121,11 @@ const char *ui_accel_result_text(int result);
 // OK_MOUNT_DROPPED, not NONE), and whether it is a success (green).
 bool ui_cal_result_known(int result);
 bool ui_cal_result_ok(int result);
+// A calibration start while app_snapshot_t.excl (app_excl_t) says OTA or a
+// recording session has the device: the guide shows the refusal text (for
+// that owner) instead of waiting for a calibration that never starts.
+bool ui_cal_start_refused(uint8_t excl);
+const char *ui_cal_refused_text(uint8_t excl);
 
 // The six sensor calibration poses in display order.
 typedef struct {

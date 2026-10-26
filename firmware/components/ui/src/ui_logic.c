@@ -192,6 +192,29 @@ bool ui_low_battery(const app_battery_t *b)
     return b->valid && b->percent < UI_LOW_BATTERY_PCT && !b->charging && !b->vbus_present;
 }
 
+bool ui_rec_pill_live(const app_rec_status_t *r)
+{
+    return r->state == APP_REC_STATE_RECORDING;
+}
+
+bool ui_rec_pill_text(const app_rec_status_t *r, char *buf, size_t len)
+{
+    if (len == 0) {
+        return false;
+    }
+    buf[0] = '\0';
+    if (ui_rec_pill_live(r)) {
+        unsigned s = r->elapsed_s;
+        snprintf(buf, len, "REC %02u:%02u", s / 60u, s % 60u);
+        return true;
+    }
+    if (r->state == APP_REC_STATE_READY || r->state == APP_REC_STATE_DRAINING) {
+        snprintf(buf, len, "REC ready");
+        return true;
+    }
+    return false;
+}
+
 // --- settings steppers ---
 
 static int32_t floor_div(int32_t a, int32_t b)
@@ -446,6 +469,23 @@ bool ui_cal_result_known(int result)
 {
     return result >= 0 || result == APP_CAL_RESULT_NOT_STORED ||
            result == APP_CAL_RESULT_OK_MOUNT_DROPPED;
+}
+
+bool ui_cal_start_refused(uint8_t excl)
+{
+    return app_excl_blocks_cal(excl);
+}
+
+const char *ui_cal_refused_text(uint8_t excl)
+{
+    switch (excl) {
+    case APP_EXCL_REC:
+        return "Not now: a recording\nsession is open.";
+    case APP_EXCL_OTA:
+        return "Not now: an update\nis running.";
+    default:
+        return "Not started:\nthe device is busy.\nPlease try again.";
+    }
 }
 
 bool ui_cal_result_ok(int result)

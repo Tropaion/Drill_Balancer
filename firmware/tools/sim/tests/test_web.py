@@ -139,6 +139,34 @@ class PanelTest(DeviceTest):
         g = self.panel.state()["screen"]["cal"]
         self.assertEqual(g["phase"], "result")
 
+    def test_guide_refuses_while_a_session_has_the_device(self):
+        # ui_cal.c: no collecting forever for a start that cannot run (app_excl_t).
+        self.connect()
+        self.assertEqual(self.dev.write_char("rec_ctrl", bytes([0x01])), 0)   # OPEN
+        self.dev.advance(50)
+        self.touch("hold")
+        self.touch("button", button="set_sensor")
+        g = self.panel.state()["screen"]["cal"]
+        self.assertEqual((g["phase"], g["result_ok"], g["right"]), ("result", False, "Done"))
+        self.assertIn("recording", g["result"])
+        self.assertEqual(self.snap()["cal"]["kind"], 0)
+        self.assertEqual(self.snap()["cal"]["refused"], 0, "refused by the guide, never posted")
+        self.touch("button", button="cal_right")
+        self.assertEqual(self.panel.screen.screen, "level")
+        # One the control task refused (the session took the device after the screen
+        # looked): the guide ends the same way.
+        self.dev.write_char("rec_ctrl", bytes([0x02]))                       # CLOSE
+        self.dev.advance(1000)
+        self.touch("hold")
+        self.touch("button", button="set_mount")
+        self.cmd(cmd="touch", action="press")
+        self.cmd(cmd="touch", action="button", button="cal_right")          # Start: posted
+        self.assertEqual(self.dev.write_char("rec_ctrl", bytes([0x01])), 0)  # before it runs
+        self.dev.advance(50)
+        g = self.panel.state()["screen"]["cal"]
+        self.assertEqual((g["phase"], g["result_ok"]), ("result", False))
+        self.assertIn("recording", g["result"])
+
     def cmd_ble(self, op):
         att = self.dev.write_char("command", bytes([op]))
         self.dev.advance(50)

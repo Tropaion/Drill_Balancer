@@ -341,19 +341,25 @@ static void test_take_defaults_and_no_audio(void)
 
 static void test_take_start_battery(void)
 {
+    // rec_state's BATTERY_LOW flag (rec_fsm_battery_blocks_take()) says
+    // what the next TAKE_START gets.
     go(REC_STATE_READY);
     env.battery_pct = REC_BATT_START_PCT - 1;
+    TEST_ASSERT_TRUE(rec_fsm_battery_blocks_take(&env));
     TEST_ASSERT_EQUAL(REC_ERR_BATTERY, op_at(REC_CMD_TAKE_START, T0).err);
     // On USB the cell is not drained.
     env.vbus = true;
+    TEST_ASSERT_FALSE(rec_fsm_battery_blocks_take(&env));
     TEST_ASSERT_EQUAL(REC_OK, op_at(REC_CMD_TAKE_START, T0).err);
     go(REC_STATE_READY);
     env.vbus = false;
     env.battery_valid = false;          // no reading: no reason to refuse
+    TEST_ASSERT_FALSE(rec_fsm_battery_blocks_take(&env));
     TEST_ASSERT_EQUAL(REC_OK, op_at(REC_CMD_TAKE_START, T0).err);
     go(REC_STATE_READY);
     env.battery_valid = true;
     env.battery_pct = REC_BATT_START_PCT;
+    TEST_ASSERT_FALSE(rec_fsm_battery_blocks_take(&env));
     TEST_ASSERT_EQUAL(REC_OK, op_at(REC_CMD_TAKE_START, T0).err);
 }
 
@@ -484,7 +490,12 @@ static void test_stop_racing_the_take_end(void)
     ev_at(REC_IN_TICK, T0 + 1 + REC_BLE_GRACE_MS);
     ev_at(REC_IN_TICK, T0 + 2 + REC_BLE_GRACE_MS + REC_DRAIN_MS);
     TEST_ASSERT_EQUAL(REC_STATE_CLOSING, f.state);
-    TEST_ASSERT_EQUAL(REC_OK, op_at(REC_CMD_STOP, T0 + 3 + REC_BLE_GRACE_MS + REC_DRAIN_MS).err);
+    uint32_t t = T0 + 3 + REC_BLE_GRACE_MS + REC_DRAIN_MS;
+    TEST_ASSERT_EQUAL(REC_OK, op_at(REC_CMD_STOP, t).err);
+    // A new session has had no take yet.
+    ev_at(REC_IN_AP_DOWN, t + 1);
+    TEST_ASSERT_EQUAL(REC_OK, op_at(REC_CMD_OPEN, t + 2).err);
+    TEST_ASSERT_EQUAL(REC_ERR_STATE, op_at(REC_CMD_STOP, t + 3).err);
 
     go(REC_STATE_RECORDING);
     ev_at(REC_IN_SHUTDOWN, T0 + 10);
@@ -492,10 +503,6 @@ static void test_stop_racing_the_take_end(void)
     ev_at(REC_IN_AP_DOWN, T0 + 12);
     TEST_ASSERT_EQUAL(REC_OK, op_at(REC_CMD_STOP, T0 + 13).err);
     TEST_ASSERT_EQUAL_UINT8(REC_REASON_SHUTDOWN, f.reason);
-
-    // A new session has had no take yet.
-    TEST_ASSERT_EQUAL(REC_OK, op_at(REC_CMD_OPEN, T0 + 20).err);
-    TEST_ASSERT_EQUAL(REC_ERR_STATE, op_at(REC_CMD_STOP, T0 + 21).err);
 }
 
 // What the glue does with the actions: carry them out in bit order while
@@ -797,6 +804,25 @@ static void test_shutdown(void)
     TEST_ASSERT_EQUAL_UINT8(REC_REASON_SHUTDOWN, f.reason);
 }
 
+// The device is going down (the reboot delay, prepare_shutdown() before
+// BLE stops): no new session, from any state, until the next boot.
+static void test_no_open_after_shutdown(void)
+{
+    static const rec_state_t from[] = {REC_STATE_IDLE, REC_STATE_READY, REC_STATE_RECORDING};
+    for (size_t i = 0; i < sizeof(from) / sizeof(from[0]); i++) {
+        go(from[i]);
+        ev_at(REC_IN_SHUTDOWN, T0 + 10);
+        ev_at(REC_IN_AP_DOWN, T0 + 20);
+        TEST_ASSERT_EQUAL(REC_STATE_IDLE, f.state);
+        rec_out_t o = op_at(REC_CMD_OPEN, T0 + 30);
+        TEST_ASSERT_EQUAL(REC_ERR_STATE, o.err);
+        TEST_ASSERT_EQUAL_HEX32(0, o.actions);
+        TEST_ASSERT_EQUAL(REC_STATE_IDLE, f.state);
+    }
+    rec_fsm_init(&f, T0);
+    TEST_ASSERT_EQUAL(REC_OK, op_at(REC_CMD_OPEN, T0).err);
+}
+
 static void test_ap_fail_reason(void)
 {
     go(REC_STATE_AP_STARTING);
@@ -845,6 +871,7 @@ int main(void)
     RUN_TEST(test_client_lost_during_take);
     RUN_TEST(test_client_lost_while_draining_to_close);
     RUN_TEST(test_shutdown);
+    RUN_TEST(test_no_open_after_shutdown);
     RUN_TEST(test_ap_fail_reason);
     RUN_TEST(test_timers_survive_the_ms_wrap);
     return UNITY_END();

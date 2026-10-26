@@ -257,8 +257,21 @@ The address must be IPv4 (`rec_state` carries 4 bytes): a name is served
 on its IPv4 address. A server that cannot start (an IPv6 address, the port
 in use) is a warning: the simulator runs on, and every OPEN fails with
 `ap_fail` (the panel says why). The device's timeouts (the HELLO's 5 s, a
-send blocked 10 s, a stall, STOP_AP's 200 ms) run on the device's clock:
-real time in `python -m dbsim`, faster in tests (`DbSimDevice.run(speed)`).
+send blocked 10 s, a stall, STOP_AP's 200 ms, the 1 s linger) run on the
+device's clock: real time in `python -m dbsim`, faster in tests
+(`DbSimDevice.run(speed)`).
+
+**How a session ends**, as on the board: CLOSE, the BLE grace, sleep,
+power-off and reboot let the sender drain the ring for 200 ms, then the
+stream ends with a FIN and the client gets 1 s to read up to it and close
+its side (on the board lwIP would lose what it still holds if Wi-Fi went
+down right after the close; a client should close on EOF, as `db_client`
+does); only then is the endpoint down. Until it is, the session keeps the
+device: an OPEN is refused (`REC_STATE`) even when `rec_state` already
+says idle. After sleep, power-off or reboot no session opens until the next
+boot. OTA, a calibration and a session exclude each other: a calibration
+start over BLE answers `BUSY` (0x86) while a session or an update has the
+device, and the panel's guides say why.
 
 **Hotspot mode (`--rec-ap`).** For the app's soft-AP join without the board:
 at OPEN the sim runs `nmcli device wifi hotspot` with the session's
@@ -300,7 +313,9 @@ written to `state/rec_truth_<take>.json` when a take ends and served at
   pipeline gets the interpolated floats, the recorder the runs. A profile
   switch or an IMU re-init resets the chip (180 ms without samples,
   TIMESTAMP from 0, `REC_IMU_EPOCH`), and EVENT PROFILE comes before the
-  first IMU record of the profile.
+  first IMU record of the profile. Fusion and the level zeros (also the
+  WALL heading) go through a profile switch; a measured sample rate stays
+  in use across it.
 - AUDIO: 16 kHz stereo blocks of 256 frames. The sound is the motor's
   harmonics, the cutting noise and the impact bursts of the scenario; MIC2
   hears it 3 frames later and 1.5 dB quieter. The take's `gain_db` is the
@@ -381,9 +396,15 @@ loud the room is).
   - the post-OTA self-test and rollback;
   - the fuel gauge (the battery is what the panel says);
   - lever-arm acceleration;
-  - the accelerometer's low-pass filter. The vibration detector therefore
-    sees the motor tones (147 and 233 Hz) in full, where the board's 11.9 Hz
-    filter removes most of them. The gyro vibration is white noise, 0.1 rad/s
+  - the accelerometer's low-pass filter, by default. The vibration detector
+    therefore sees the motor tones (147 and 233 Hz) in full in a LEVEL take
+    or without a session, where the board's 11.9 Hz filter removes most of
+    them. Under a RAW recording profile the firmware's software stand-in for
+    the chip's LPFs (`components/level/include/lpf.h`) filters the level
+    path, here as on the board, so there the detector does not see them
+    either. `Core.chip_lpf(True)` (`sim_chip_lpf()`) models the chip's LPFs
+    under LEVEL with the same filter, which the tests use to compare a RAW
+    take with a LEVEL one. The gyro vibration is white noise, 0.1 rad/s
     per g on each axis: 3 % of the samples pass 0.3 rad/s at 1 g and half of
     them at 2 g, which the turn detector must reject. The intensity slider
     is a stand-in for what reaches the detectors on the board, not for a

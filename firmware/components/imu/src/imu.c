@@ -233,7 +233,9 @@ static esp_err_t configure(void)
 
     s_gap = (imu_gap_t){0};
     s_restore_pending = false;
-    imu_rate_init(&s_rate, 1.0f / odr_hz());
+    // A period measured before stays (scaled to this ODR): FIFO losses are
+    // filled at once, not only after a new 2 s baseline.
+    imu_rate_restart(&s_rate, 1.0f / odr_hz());
     s_have_last = false;
     s_filled = 0;
     s_epoch++;
@@ -241,9 +243,10 @@ static esp_err_t configure(void)
     return ESP_OK;
 }
 
-esp_err_t imu_init(i2c_master_bus_handle_t bus)
+esp_err_t imu_init(i2c_master_bus_handle_t bus, imu_profile_t p)
 {
     ESP_RETURN_ON_FALSE(bus, ESP_ERR_INVALID_ARG, TAG, "no I2C bus");
+    ESP_RETURN_ON_FALSE(imu_profile_info(p), ESP_ERR_INVALID_ARG, TAG, "profile %d", (int)p);
     ESP_RETURN_ON_FALSE(imu_axis_map_valid(&IMU_AXIS_MAP), ESP_ERR_INVALID_STATE, TAG,
                         "IMU_AXIS_MAP is not a rotation");
     if (!s_lock) {
@@ -259,6 +262,7 @@ esp_err_t imu_init(i2c_master_bus_handle_t bus)
     }
 
     lock();
+    s_profile = p;
     s_running = false;
     esp_err_t err = configure();
     unlock();
@@ -290,6 +294,11 @@ esp_err_t imu_set_profile(imu_profile_t p)
         ESP_LOGI(TAG, "profile %s, %.1f Hz", profile()->name, (double)odr_hz());
     }
     return err;
+}
+
+const imu_axis_map_t *imu_axis_map(void)
+{
+    return &IMU_AXIS_MAP;
 }
 
 imu_profile_t imu_get_profile(void)

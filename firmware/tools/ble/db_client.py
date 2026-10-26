@@ -123,7 +123,7 @@ ATT_ERRORS = {
     0x83: "config: saving to flash failed",
     0x84: "command: unknown opcode",
     0x85: "command: bad argument",
-    0x86: "command: queue full, try again",
+    0x86: "command: queue full, try again (a calibration start: a recording session or OTA runs)",
     0x87: "OTA not available",
     0x88: "recorder: not in this state, or OTA / calibration running",
     0x89: "recorder: Wi-Fi or the stream buffer could not be set up",

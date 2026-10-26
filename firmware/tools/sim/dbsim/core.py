@@ -221,6 +221,7 @@ def _load():
         "sim_set_identity": (None, [u8p, ctypes.c_char_p]),
         "sim_imu_odr_hz": (ctypes.c_float, []),
         "sim_fault_profile_lag": (None, [ctypes.c_int]),
+        "sim_chip_lpf": (None, [ctypes.c_int]),
         "sim_rec_ctrl_write": (ctypes.c_int, [u8p, ctypes.c_int, ctypes.c_uint32]),
         "sim_rec_state_read": (None, [u8p]),
         "sim_rec_notify": (ctypes.c_int, [ctypes.c_uint32, u8p]),
@@ -334,6 +335,11 @@ class Core:
     def fault_profile_lag(self, passes: int) -> None:
         """The next passes read before they take a requested profile."""
         self._lib.sim_fault_profile_lag(int(passes))
+
+    def chip_lpf(self, on: bool) -> None:
+        """Models the chip's LPFs of a profile that enables them (LEVEL);
+        off by default (sim_core.h sim_chip_lpf)."""
+        self._lib.sim_chip_lpf(int(bool(on)))
 
     # ---- control task ----
     def control_step(self, now_ms: int) -> None:

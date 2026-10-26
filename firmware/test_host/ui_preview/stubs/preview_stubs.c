@@ -1,5 +1,6 @@
-// Host stand-ins for app_state, settings_store, esp_app_desc and the BSP
-// display lock, so the real UI sources run unchanged in the preview.
+// Host stand-ins for app_state, settings_store, esp_app_desc, the BSP
+// display lock and the recorder, so the real UI sources run unchanged in the
+// preview.
 
 #include <string.h>
 #include "app_state.h"
@@ -7,6 +8,7 @@
 #include "esp_app_desc.h"
 #include "esp_err.h"
 #include "preview_stubs.h"
+#include "recorder.h"
 #include "settings_store.h"
 
 app_snapshot_t g_snap;
@@ -16,6 +18,9 @@ app_cmd_t g_cmds[PREVIEW_MAX_CMDS];
 int g_cmd_count;
 uint32_t g_now_ms;
 int g_lock_depth;
+rec_cmd_t g_rec_cmds[PREVIEW_MAX_REC_CMDS];
+int g_rec_cmd_count;
+int g_rec_touches;
 
 void preview_stubs_reset(void)
 {
@@ -25,6 +30,8 @@ void preview_stubs_reset(void)
     g_settings = settings_defaults();
     g_settings_store_count = 0;
     g_cmd_count = 0;
+    g_rec_cmd_count = 0;
+    g_rec_touches = 0;
 }
 
 int preview_count_cmd(app_cmd_id_t id, int32_t arg, bool match_arg)
@@ -53,6 +60,23 @@ bool app_post_cmd(app_cmd_id_t id, int32_t arg)
 }
 
 void app_note_activity(void) {}
+
+bool recorder_send(const rec_cmd_t *cmd)
+{
+    if (g_rec_cmd_count >= PREVIEW_MAX_REC_CMDS) {
+        return false;
+    }
+    g_rec_cmds[g_rec_cmd_count++] = *cmd;
+    return true;
+}
+
+// As recorder.c: only a recording take logs it.
+bool recorder_note_touch(void)
+{
+    bool rec = g_snap.rec.state == APP_REC_STATE_RECORDING;
+    g_rec_touches += rec ? 1 : 0;
+    return rec;
+}
 
 void settings_get(settings_t *out)
 {

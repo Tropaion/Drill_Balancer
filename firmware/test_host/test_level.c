@@ -72,6 +72,20 @@ static void test_zero_makes_elevation_relative(void)
     TEST_ASSERT_FALSE(r.yaw_valid);
 }
 
+// What app_state_set_motion() publishes with the reading (LEVEL records).
+static void test_zero_of_gives_the_zero_in_effect(void)
+{
+    float z[3] = {-1.0f, -1.0f, -1.0f};
+    TEST_ASSERT_NULL(level_zero_of(&lv, z));
+    level_zero(&lv, pose_wall_aimed(7.0f, 0.0f), 0);
+    TEST_ASSERT_EQUAL_PTR(z, level_zero_of(&lv, z));
+    TEST_ASSERT_FLOAT_WITHIN(0.01f, 7.0f, z[0]);
+    TEST_ASSERT_EQUAL_FLOAT(lv.zero_bubble_x_deg, z[1]);
+    TEST_ASSERT_EQUAL_FLOAT(lv.zero_bubble_y_deg, z[2]);
+    level_clear_zero(&lv);
+    TEST_ASSERT_NULL(level_zero_of(&lv, z));
+}
+
 static void test_yaw_goes_stale(void)
 {
     level_zero(&lv, pose_wall(), 1000);
@@ -463,6 +477,7 @@ int main(void)
     RUN_TEST(test_yaw_invalid_until_zeroed);
     RUN_TEST(test_turning_left_after_zero_reads_negative_yaw);
     RUN_TEST(test_zero_makes_elevation_relative);
+    RUN_TEST(test_zero_of_gives_the_zero_in_effect);
     RUN_TEST(test_yaw_goes_stale);
     RUN_TEST(test_yaw_invalid_when_bit_vertical);
     RUN_TEST(test_floor_pose_is_on_target);

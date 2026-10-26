@@ -239,6 +239,47 @@ static void test_angle_stale_reading_drops_reading_flags(void)
 
 // ---- status packet -----------------------------------------------------------------
 
+// The recorder's LEVEL record carries the angle packet's fields and the zero
+// of the same publish (the snapshot's).
+static void test_level_record(void)
+{
+    app_snapshot_t s = snap_default();
+    s.reading.mode = LEVEL_MODE_WALL;
+    s.reading.status = LEVEL_STATUS_NEAR;
+    s.reading.elevation_deg = -1.25f;
+    s.reading.yaw_deg = 2.5f;
+    s.reading.deviation_deg = 1.25f;
+    s.zero_set = true;
+    s.zero_deg[0] = 3.21f;
+    s.zero_deg[1] = -0.5f;
+    s.zero_deg[2] = 40000.0f;
+    db_angle_packet_t a;
+    ble_codec_angle(&s, 0, 1000, &a);
+    rec_level_t l;
+    memset(&l, 0xA5, sizeof(l));
+    ble_codec_level(&s, 1000, &l);
+    TEST_ASSERT_EQUAL_UINT64(0, l.host_us);   // the recorder sets it
+    TEST_ASSERT_EQUAL_UINT8(a.mode, l.mode);
+    TEST_ASSERT_EQUAL_UINT8(a.flags, l.flags);
+    TEST_ASSERT_TRUE(l.flags & DB_ANGLE_FLAG_ZERO_SET);
+    TEST_ASSERT_EQUAL_INT16(a.elevation_cdeg, l.elevation_cdeg);
+    TEST_ASSERT_EQUAL_INT16(-125, l.elevation_cdeg);
+    TEST_ASSERT_EQUAL_INT16(a.yaw_cdeg, l.yaw_cdeg);
+    TEST_ASSERT_EQUAL_INT16(a.bubble_x_cdeg, l.bubble_x_cdeg);
+    TEST_ASSERT_EQUAL_INT16(a.bubble_y_cdeg, l.bubble_y_cdeg);
+    TEST_ASSERT_EQUAL_INT16(a.deviation_cdeg, l.deviation_cdeg);
+    TEST_ASSERT_EQUAL_INT16(321, l.zero_elevation_cdeg);
+    TEST_ASSERT_EQUAL_INT16(-50, l.zero_bubble_x_cdeg);
+    TEST_ASSERT_EQUAL_INT16(INT16_MAX, l.zero_bubble_y_cdeg);
+    // No zero: zero fields 0 and no ZERO_SET, whatever zero_deg holds.
+    s.zero_set = false;
+    ble_codec_level(&s, 1000, &l);
+    TEST_ASSERT_FALSE(l.flags & DB_ANGLE_FLAG_ZERO_SET);
+    TEST_ASSERT_EQUAL_INT16(0, l.zero_elevation_cdeg);
+    TEST_ASSERT_EQUAL_INT16(0, l.zero_bubble_x_cdeg);
+    TEST_ASSERT_EQUAL_INT16(0, l.zero_bubble_y_cdeg);
+}
+
 static void test_status_packet_fields(void)
 {
     app_snapshot_t s = snap_default();
@@ -511,6 +552,21 @@ static void test_cmd_error_leaves_outputs_alone(void)
     TEST_ASSERT_NOT_EQUAL(0, ble_codec_parse_cmd(bad, 2, &id, &arg));
     TEST_ASSERT_EQUAL(APP_CMD_REBOOT, id);
     TEST_ASSERT_EQUAL_INT32(77, arg);
+}
+
+// A calibration start is refused at the write while an OTA update or a
+// recording session has the device (app_excl_t); everything else, and a
+// start while nobody or a calibration has it, goes to the queue.
+static void test_cmd_cal_start_refused_while_the_device_is_taken(void)
+{
+    for (int id = APP_CMD_ZERO; id <= APP_CMD_FACTORY_RESET; id++) {
+        bool start = id == APP_CMD_MOUNT_CAL_START || id == APP_CMD_ACCEL_CAL_START;
+        for (uint8_t ex = APP_EXCL_NONE; ex <= APP_EXCL_REC; ex++) {
+            bool refused = start && (ex == APP_EXCL_OTA || ex == APP_EXCL_REC);
+            TEST_ASSERT_EQUAL_HEX8(refused ? DB_ATT_ERR_BUSY : 0,
+                                   ble_codec_cmd_excl_err((app_cmd_id_t)id, ex));
+        }
+    }
 }
 
 
@@ -814,6 +870,7 @@ int main(void)
     RUN_TEST(test_angle_reading_slightly_in_future_is_fresh);
     RUN_TEST(test_angle_no_imu_reading_is_not_on_target);
     RUN_TEST(test_angle_stale_reading_drops_reading_flags);
+    RUN_TEST(test_level_record);
     RUN_TEST(test_status_packet_fields);
     RUN_TEST(test_status_flags_cal_valid_and_charge_done);
     RUN_TEST(test_status_recording_flag);
@@ -829,6 +886,7 @@ int main(void)
     RUN_TEST(test_cmd_factory_reset_needs_confirmation);
     RUN_TEST(test_cmd_unknown_and_empty);
     RUN_TEST(test_cmd_error_leaves_outputs_alone);
+    RUN_TEST(test_cmd_cal_start_refused_while_the_device_is_taken);
     RUN_TEST(test_rec_simple_ops);
     RUN_TEST(test_rec_take_start);
     RUN_TEST(test_rec_mark);

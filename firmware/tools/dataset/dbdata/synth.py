@@ -141,7 +141,7 @@ def _s(name, **kw):
 # what each adds to the exported files, and the span it is labelled with.
 INJECTIONS = ("wobble", "wander", "speech")
 WOBBLE_DPS, WOBBLE_HZ = 15.0, 4.0          # a radial gyro swing (board X) while cutting
-WANDER_CDEG_PER_S = 300                    # the elevation drifts 3 deg in the first second of the hole
+WANDER_CDEG_PER_S = 300                    # the elevation (and deviation) drift 3 deg in the first second of the hole
 SPEECH_FS, SPEECH_MOD_HZ = 0.03, 4.0       # band noise, 4 Hz syllable rate, from 1 s after motor_off
 
 
@@ -380,8 +380,8 @@ def inject(folder: Path, names, events: dict, seed: int = 3) -> tuple[dict, dict
     derived labels recomputed) and their spans to events: (meta, events)."""
     import numpy as np
 
-    from .io import (DEVICE_EVENTS_FILE, IMU_FILE, LEVEL_FILE, SYNC_FILE, read_audio, read_device_events_csv,
-                     read_imu_csv, read_level_csv, read_sync_csv, write_recording)
+    from .io import (DEVICE_EVENTS_FILE, IMU_FILE, LEVEL_FILE, LEVEL_MODES, SYNC_FILE, read_audio,
+                     read_device_events_csv, read_imu_csv, read_level_csv, read_sync_csv, write_recording)
     from .io import SyncFit
     from .contract import read_json
 
@@ -432,8 +432,12 @@ def inject(folder: Path, names, events: dict, seed: int = 3) -> tuple[dict, dict
         span("wobble", a, b, hole=1)
     if "wander" in names:
         t = level["t_us"].to_numpy()
-        ramp = np.clip((t - ev["contact"]) / 1e6, 0.0, 1.0) * WANDER_CDEG_PER_S
-        level["elevation_cdeg"] = level["elevation_cdeg"].to_numpy() + np.round(ramp).astype(np.int64)
+        ramp = np.round(np.clip((t - ev["contact"]) / 1e6, 0.0, 1.0) * WANDER_CDEG_PER_S).astype(np.int64)
+        level["elevation_cdeg"] = level["elevation_cdeg"].to_numpy() + ramp
+        # WALL and ANGLE judge the elevation (deviation = elevation - target,
+        # level.c), so the device's deviation wanders with it.
+        tilt = np.isin(level["mode"].to_numpy(), [LEVEL_MODES.index("wall"), LEVEL_MODES.index("angle")])
+        level["deviation_cdeg"] = level["deviation_cdeg"].to_numpy() + np.where(tilt, ramp, 0)
         span("wander", ev["contact"], min(ev["contact"] + 1_500_000, ev["load_end"]), hole=1)
     if "speech" in names:
         fit = SyncFit.fit(sync["frame"], sync["t_us"])

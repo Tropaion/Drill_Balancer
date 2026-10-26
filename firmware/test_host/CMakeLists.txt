@@ -35,7 +35,8 @@ add_library(level STATIC
     ${COMPONENTS_DIR}/level/src/level.c
     ${COMPONENTS_DIR}/level/src/accel_cal.c
     ${COMPONENTS_DIR}/level/src/vibration.c
-    ${COMPONENTS_DIR}/level/src/turn.c)
+    ${COMPONENTS_DIR}/level/src/turn.c
+    ${COMPONENTS_DIR}/level/src/lpf.c)
 target_include_directories(level PUBLIC ${COMPONENTS_DIR}/level/include)
 target_compile_options(level PRIVATE ${STRICT_WARNINGS})
 target_link_libraries(level PUBLIC m)
@@ -43,7 +44,7 @@ target_link_libraries(level PUBLIC m)
 enable_testing()
 
 foreach(name test_level_math test_fusion test_level test_accel_cal test_vibration
-             test_turn)
+             test_turn test_lpf)
     add_executable(${name} ${name}.c test_util.c)
     target_compile_options(${name} PRIVATE -Wall -Wextra -Werror)
     target_link_libraries(${name} PRIVATE level unity)

@@ -71,9 +71,8 @@ SVC_MAIN = db_uuid(0x0001)
 
 # ble_service.c s_svcs in its order: (service UUID, ((device char name, UUID, BlueZ flags), ...)).
 # The NimBLE flags in BlueZ terms; SEC_WRITE is 'encrypt-authenticated-write', READ_ENC |
-# READ_AUTHEN 'encrypt-authenticated-read'. The recorder service is the one ble_protocol.h
-# plans; ble_service.c gets it in milestone 4 (tests/test_ble.py TableTest compares with
-# whichever is there).
+# READ_AUTHEN (SEC_READ) 'encrypt-authenticated-read'. tests/test_ble.py TableTest
+# compares it with ble_service.c's table.
 SERVICES = (
     (sig_uuid(0x180A), (
         ("manufacturer", sig_uuid(0x2A29), ("read",)),

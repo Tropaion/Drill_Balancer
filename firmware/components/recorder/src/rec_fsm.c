@@ -42,6 +42,11 @@ static bool low_battery(const rec_env_t *e, uint8_t below_pct)
     return e->battery_valid && !e->vbus && e->battery_pct < below_pct;
 }
 
+bool rec_fsm_battery_blocks_take(const rec_env_t *env)
+{
+    return low_battery(env, REC_BATT_START_PCT);
+}
+
 static bool in_session(rec_state_t s)
 {
     return s != REC_STATE_IDLE && s != REC_STATE_CLOSING;
@@ -111,7 +116,7 @@ static rec_err_t check_take(const rec_cmd_t *c, const rec_env_t *env)
         c->gain_db > REC_GAIN_MAX_DB || c->max_s > REC_TAKE_MAX_S) {
         return REC_ERR_BAD_ARG;
     }
-    if (low_battery(env, REC_BATT_START_PCT)) {
+    if (rec_fsm_battery_blocks_take(env)) {
         return REC_ERR_BATTERY;
     }
     if (env->ota_active || env->calibrating) {
@@ -153,7 +158,7 @@ static rec_out_t command(rec_fsm_t *f, const rec_cmd_t *c, const rec_env_t *env,
         if (f->state == REC_STATE_CLOSING) {
             o.err = REC_ERR_STATE;
         } else if (f->state == REC_STATE_IDLE) {
-            if (env->ota_active || env->calibrating) {
+            if (env->ota_active || env->calibrating || f->shut) {
                 o.err = REC_ERR_STATE;
                 break;
             }
@@ -272,6 +277,7 @@ static uint32_t tick(rec_fsm_t *f, const rec_env_t *env, uint32_t now)
 
 static uint32_t shutdown(rec_fsm_t *f, uint32_t now)
 {
+    f->shut = true;     // the device is going down: no new session
     switch (f->state) {
     case REC_STATE_IDLE:
     case REC_STATE_CLOSING:

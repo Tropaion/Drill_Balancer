@@ -117,6 +117,12 @@ float sim_imu_odr_hz(void);
 // The next n passes read before they take a requested profile, as a pass
 // already under way when the recorder asks for one does on the board.
 void sim_fault_profile_lag(int passes);
+// The chip's LPFs (CTRL5) in the model: off by default, so the vibration
+// detector sees the motor tones under LEVEL too (vibration.c); on, a profile
+// with its LPFs enabled (LEVEL) filters every sample with lpf.h's stand-in
+// before the 16-bit converter, as the chip does before its output. Cleared
+// by sim_init().
+void sim_chip_lpf(int on);
 
 // ---- control task ----------------------------------------------------------------
 // One pass of the control loop: queued commands, PMU poll, power policy.

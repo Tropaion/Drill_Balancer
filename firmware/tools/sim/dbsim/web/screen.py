@@ -14,6 +14,9 @@ already recognised by the browser and is handled with the firmware's rules:
 - ui_settings.c: swipe right (no confirmation shown) = back to the level.
 - During a recorder take every touch is an EVENT TOUCH in the stream and is
   otherwise ignored; a 2 s long-press on the REC pill stops the take.
+- ui_cal.c: a guide's start while OTA or a recording session has the device
+  (app_excl_t) shows why instead of collecting, also when the control task
+  refused it (app_cal_status_t.refused).
 
 The settings screen is reduced to its action buttons; its steppers are not
 mirrored (settings are edited from the app).
@@ -51,6 +54,7 @@ class CalGuide:
         else:
             self.start_cmd, self.finish_cmd = C.APP_CMD_ACCEL_CAL_START, C.APP_CMD_ACCEL_CAL_FINISH
         self.seen_active = False
+        self.refused = 0                # app_cal_status_t.refused when the start was posted
         self.finish_ms = 0
         self.count = ""
         self.tiles = 0                  # sensor: coverage shown on the tiles
@@ -84,9 +88,21 @@ class CalGuide:
             self.start()                # poses only count while still
 
     def start(self):
+        # OTA or a recording session has the device: refused at once; one
+        # the control task refuses later shows up as cal.refused (update()).
+        snap = self.s.dev.snapshot()
+        if snap["ui"]["cal_start_refused"]:
+            self.show_refused(snap)
+            return
         self.seen_active = False
+        self.refused = snap["cal"]["refused"]
         self.set_phase("collect")
         self.s.dev.ui_command(self.start_cmd, 0)
+
+    def show_refused(self, snap: dict):
+        self.result_text = snap["ui"]["cal_refused_text"]
+        self.result_ok = False
+        self.set_phase("result")
 
     def show_result(self, snap: dict):
         ui = snap["ui"]     # ui_logic.c's verdict on the last result
@@ -137,6 +153,9 @@ class CalGuide:
                 self.seen_active = True
             elif self.seen_active:
                 self.show_result(snap)  # ended elsewhere (BLE cancel, power state)
+                return
+            elif cal["refused"] != self.refused:
+                self.show_refused(snap)  # the control task refused the start
                 return
             self.right_enabled = self.seen_active and can_finish
         elif self.phase == "solving":

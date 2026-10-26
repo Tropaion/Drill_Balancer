@@ -15,8 +15,14 @@
 //   "Calibrate mount", "Calibrate sensor", clear zero, firmware version.
 // - Calibration guides: mount (bit in a hole, Start, roll the drill +-45
 //   deg, progress), sensor (six sides, coverage shown as six targets).
-// - Overlays: BLE passkey while pairing, OTA progress, low battery.
+// - Overlays: BLE passkey while pairing, OTA progress, low battery, and the
+//   REC pill of a recording session ("REC ready", "REC mm:ss"; not modal).
 // A touch that wakes a dimmed screen does nothing else, on any screen.
+// During a take a touch is logged in the recording (EVENT TOUCH) and does
+// nothing else either, unless it is on the REC pill: held 2 s, the pill
+// stops the take. The UI posts that STOP with recorder_send() and the
+// touches with recorder_note_touch(); it never calls anything else of the
+// recorder.
 
 #include "esp_err.h"
 

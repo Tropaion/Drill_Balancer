@@ -101,6 +101,15 @@ level_config_t settings_level_config(const settings_t *s);
 // without the terminator, or -1 if buf is too small.
 int settings_to_json(const settings_t *s, char *buf, size_t buf_len);
 
+// The recorder's SESSION record tail (rec_stream.h, the dataset contract):
+// {"settings": settings_to_json(), "cal": {"accel": {valid, bias_g, scale},
+// "mount": {valid, drill_axis}, "gyro_bias_rad_s": [3] or null}}, with
+// gyro_bias_rad_s NULL while the fusion has not learnt it. Writes it to out
+// without a terminator and returns its length; 0 if it does not fit in cap
+// (or no memory). recorder.c and the simulator's mirror both use it.
+int settings_session_json(const settings_t *s, const vec3_t *gyro_bias_rad_s, char *out,
+                          size_t cap);
+
 typedef enum {
     SETTINGS_JSON_OK = 0,
     SETTINGS_JSON_PARSE_ERROR,   // not a JSON object

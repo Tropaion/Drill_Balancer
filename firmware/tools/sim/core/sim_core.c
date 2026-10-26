@@ -19,6 +19,7 @@
 #include "fusion.h"
 #include "imu_frame.h"
 #include "level.h"
+#include "lpf.h"
 #include "mbedtls/sha256.h"
 #include "ota_proto.h"
 #include "pmu.h"
@@ -28,6 +29,7 @@
 #include "rec_ring.h"
 #include "rec_stream.h"
 #include "rec_ts.h"
+#include "rec_util.h"
 #include "settings.h"
 #include "sim_audio.h"
 #include "sim_core.h"
@@ -148,14 +150,18 @@ void app_state_get(app_snapshot_t *out)
     *out = s_state;
 }
 
-void app_state_set_motion(bool imu_ok, quat_t q, bool still, bool vibrating, bool zero_set,
-                          const level_reading_t *reading, uint32_t now_ms)
+void app_state_set_motion(bool imu_ok, quat_t q, bool still, bool vibrating,
+                          const float *zero_deg, const level_reading_t *reading,
+                          uint32_t now_ms)
 {
     s_state.imu_ok = imu_ok;
     s_state.q = q;
     s_state.still = still;
     s_state.vibrating = vibrating;
-    s_state.zero_set = zero_set;
+    s_state.zero_set = zero_deg != NULL;
+    for (int i = 0; i < 3; i++) {
+        s_state.zero_deg[i] = zero_deg ? zero_deg[i] : 0.0f;
+    }
     s_state.reading = *reading;
     s_state.reading_ms = now_ms;
 }
@@ -197,6 +203,9 @@ void app_state_set_power(app_power_t power)
 void app_state_set_cal(const app_cal_status_t *cal)
 {
     s_state.cal = *cal;
+    if (cal->kind == APP_CAL_IDLE && s_state.excl == APP_EXCL_CAL) {
+        s_state.excl = APP_EXCL_NONE;   // the calibration ended
+    }
     s_events |= SIM_EV_CAL;
 }
 
@@ -204,6 +213,21 @@ void app_state_set_cal_valid(bool mount_cal_valid, bool accel_cal_valid)
 {
     s_state.mount_cal_valid = mount_cal_valid;
     s_state.accel_cal_valid = accel_cal_valid;
+}
+
+app_excl_t app_excl_acquire(app_excl_t who)
+{
+    if (s_state.excl == APP_EXCL_NONE) {
+        s_state.excl = (uint8_t)who;
+    }
+    return (app_excl_t)s_state.excl;
+}
+
+void app_excl_release(app_excl_t who)
+{
+    if (s_state.excl == (uint8_t)who) {
+        s_state.excl = APP_EXCL_NONE;
+    }
 }
 
 bool app_post_cmd(app_cmd_id_t id, int32_t arg)
@@ -469,7 +493,17 @@ static struct {
     uint8_t fifo[IMU_FIFO_MAX_FRAMES][IMU_FRAME_BYTES];
     size_t head, count;
     float read_mode;            // sample periods still to come in read mode
+    bool lpf_model;             // sim_chip_lpf()
+    lpf_imu_t lpf;              // the CTRL5 LPFs of the profile, when modelled
 } s_chip;
+
+// CTRL5 aLPF_EN | gLPF_EN (imu_frame.c CTRL5_LEVEL).
+#define CHIP_CTRL5_LPF_EN 0x11u
+
+void sim_chip_lpf(int on)
+{
+    s_chip.lpf_model = on != 0;
+}
 
 // imu.c statics
 static imu_gap_t s_gap;
@@ -499,7 +533,8 @@ float sim_imu_odr_hz(void)
 }
 
 // configure(): the reset restarts TIMESTAMP (TODO(hw) in imu.h: from 0) and
-// empties the FIFO; the gap and ODR bookkeeping start over in a new epoch.
+// empties the FIFO; the gap bookkeeping starts over in a new epoch, the
+// measured ODR stays (imu_rate_restart()).
 // wait: the sensor task is blocked for CHIP_CONFIGURE_MS (not at boot, where
 // imu_init() runs before the task).
 static void configure(uint32_t now, bool wait)
@@ -509,8 +544,9 @@ static void configure(uint32_t now, bool wait)
     s_chip.ts = 0;
     s_chip.head = s_chip.count = 0;
     s_chip.read_mode = 0.0f;
+    lpf_imu_init(&s_chip.lpf, odr_hz());
     s_gap = (imu_gap_t){0};
-    imu_rate_init(&s_rate, 1.0f / odr_hz());
+    imu_rate_restart(&s_rate, 1.0f / odr_hz());   // a period measured before stays
     s_have_last = false;
     s_epoch++;
 }
@@ -535,9 +571,15 @@ static void put_lsb(uint8_t *p, float v, float lsb_per_unit)
 static void chip_feed(const float *v, int n)
 {
     const imu_profile_info_t *p = profile();
+    bool lpf = s_chip.lpf_model && (p->ctrl5 & CHIP_CTRL5_LPF_EN) == CHIP_CTRL5_LPF_EN;
     for (int i = 0; i < n; i++, v += 6) {
         if (s_chip.busy) {
             continue;           // the FIFO is reset when configure() ends
+        }
+        vec3_t a = {v[0], v[1], v[2]};
+        vec3_t g = {v[3], v[4], v[5]};
+        if (lpf) {
+            lpf_imu_step(&s_chip.lpf, &a, &g);   // every sample, also those read mode loses
         }
         s_chip.ts = (s_chip.ts + 1u) & IMU_TS_MASK;
         if (s_chip.read_mode >= 1.0f) {
@@ -549,9 +591,11 @@ static void chip_feed(const float *v, int n)
             s_chip.count--;
         }
         uint8_t *f = s_chip.fifo[(s_chip.head + s_chip.count) % IMU_FIFO_MAX_FRAMES];
+        const float av[3] = {a.x, a.y, a.z};
+        const float gv[3] = {g.x, g.y, g.z};
         for (int k = 0; k < 3; k++) {
-            put_lsb(&f[2 * k], v[k], (float)p->accel_lsb_per_g);
-            put_lsb(&f[6 + 2 * k], LEVEL_RAD2DEG(v[3 + k]), (float)p->gyro_lsb_per_dps);
+            put_lsb(&f[2 * k], av[k], (float)p->accel_lsb_per_g);
+            put_lsb(&f[6 + 2 * k], LEVEL_RAD2DEG(gv[k]), (float)p->gyro_lsb_per_dps);
         }
         s_chip.count++;
     }
@@ -631,6 +675,8 @@ static accel_cal_collector_t s_collector;
 static bool s_imu_ok;
 static uint32_t s_last_retry, s_last_pub, s_last_data;
 static imu_sample_t s_buf[FIFO_BATCH];
+static imu_sample_t s_filt[FIFO_BATCH];   // s_buf through lpf.h under a RAW profile
+static lpf_feed_t s_lpf;
 static vib_detector_t s_vib;
 static turn_detector_t s_turn;
 static imu_profile_t s_profile_req;   // sensor_request_imu_profile(), next pass
@@ -704,7 +750,7 @@ static void mount_add_locked(uint32_t now)
 }
 
 // The recorder hears the motor start and stop (VIB_START / VIB_STOP): the
-// detector's RUNNING against everything else. A reset (vib_restart(), its
+// detector's RUNNING against everything else. A reset (restart_pipeline(), its
 // state UNKNOWN) of a running detector is a stop, and the QUIET it decides
 // after a reset is none, so every VIB_START of a take has its VIB_STOP.
 static void vib_note(bool running)
@@ -715,19 +761,46 @@ static void vib_note(bool running)
     }
 }
 
-// vib_reset() where the sensor task restarts what integrates the samples
-// (a profile switch, the IMU lost).
-static void vib_restart(void)
+// restart_pipeline(): what integrates the samples starts over (the IMU lost
+// or back), the software LPF for the profile in effect.
+static void restart_pipeline(void)
 {
+    s_fusion_ready = false;
     vib_reset(&s_vib);
     vib_note(false);
+    lpf_feed_reset(&s_lpf, odr_hz());
+}
+
+// profile_switched(): fusion, the level zeros and the detectors go through
+// a profile switch; the LPF gets the new rate and goes on from the last
+// sample fusion got.
+static void profile_switched(void)
+{
+    lpf_feed_switch(&s_lpf, odr_hz());
+}
+
+// level_samples(): as read under LEVEL (the chip filters), through the LEVEL
+// LPFs otherwise; s_buf stays raw for the recorder's tap.
+static const imu_sample_t *level_samples(size_t n)
+{
+    bool filter = s_chip.profile != IMU_PROFILE_LEVEL;
+    imu_sample_t *out = filter ? s_filt : s_buf;
+    for (size_t i = 0; i < n; i++) {
+        if (filter) {
+            s_filt[i] = s_buf[i];
+        }
+        lpf_feed_step(&s_lpf, filter, &out[i].accel_g, &out[i].gyro_rad_s);
+    }
+    return out;
 }
 
 static void publish_no_imu(uint32_t now)
 {
     level_reading_t r = {.mode = s_level.mode, .status = LEVEL_STATUS_OFF,
                          .yaw_status = LEVEL_STATUS_OFF};
-    app_state_set_motion(false, quat_identity(), false, false, s_level.zero_set, &r, now);
+    float z[3];
+    app_state_set_motion(false, quat_identity(), false, false, level_zero_of(&s_level, z), &r,
+                         now);
 }
 
 static void sensor_start(const settings_t *s, bool imu_ok)
@@ -754,7 +827,9 @@ static void sensor_start(const settings_t *s, bool imu_ok)
     s_chip.profile = s_profile_req = IMU_PROFILE_LEVEL;
     s_profile_lag = 0;
     s_epoch = 0;
+    s_rate = (imu_rate_t){0};      // a boot: nothing measured yet
     configure(app_now_ms(), false);
+    lpf_feed_reset(&s_lpf, odr_hz());
     s_imu_ok = imu_ok;
     s_last_retry = app_now_ms();
     s_last_pub = 0;
@@ -783,6 +858,7 @@ void sim_sensor_pass(uint32_t now_ms, const float *samples, int n, float dt, int
                 configure(now, true);
                 LOGI("IMU running");
                 s_imu_ok = true;
+                restart_pipeline();     // the profile may be another now
                 s_last_data = now;
                 recorder_imu_state(true);
                 return;
@@ -807,13 +883,11 @@ void sim_sensor_pass(uint32_t now_ms, const float *samples, int n, float dt, int
     if (s_profile_req != s_chip.profile && s_profile_lag > 0) {
         s_profile_lag--;        // a pass that was past its check reads first
     } else if (s_profile_req != s_chip.profile) {
-        // imu_set_profile(): the new profile restarts what integrates the
-        // samples, as the lost-IMU path does.
+        // imu_set_profile(): fusion and the detectors go through it.
         s_chip.profile = s_profile_req;
         configure(now, true);
         LOGI("profile %s, %.1f Hz", profile()->name, (double)odr_hz());
-        s_fusion_ready = false;
-        vib_restart();
+        profile_switched();
         s_last_data = now;
         return;
     }
@@ -829,8 +903,7 @@ void sim_sensor_pass(uint32_t now_ms, const float *samples, int n, float dt, int
         LOGE("IMU lost: no new samples");
         s_imu_ok = false;
         s_last_retry = now;
-        s_fusion_ready = false;
-        vib_restart();
+        restart_pipeline();
         s_last_pub = now;
         publish_no_imu(now);
         recorder_imu_state(false);
@@ -841,26 +914,28 @@ void sim_sensor_pass(uint32_t now_ms, const float *samples, int n, float dt, int
         return;
     }
 
+    const imu_sample_t *smp = level_samples(got);
     float dt_s = drv_sample_period_s();
     level_reading_t reading = {0};
     quat_t q = quat_identity();
     bool still = false;
-    bool zero_set = false;
+    float z[3];
+    const float *zero = NULL;      // read with the reading
 
-    bool turning = process_batch_locked(s_buf, got, dt_s);
+    bool turning = process_batch_locked(smp, got, dt_s);
     bool ready = s_fusion_ready;
     if (ready) {
         q = s_fusion.q;
         still = fusion_is_still(&s_fusion);
         reading = level_compute(&s_level, q, now);
-        zero_set = s_level.zero_set;
+        zero = level_zero_of(&s_level, z);
         mount_add_locked(now);
     }
 
     vib_state_t was = vib_state(&s_vib);
     for (size_t i = 0; i < got; i++) {
         // The ESP_LOGD duty and turn rate line (and its s_win_max_rate) is left out.
-        vib_add_sample(&s_vib, s_buf[i].accel_g, dt_s);
+        vib_add_sample(&s_vib, smp[i].accel_g, dt_s);
     }
     vib_state_t vib = vib_state(&s_vib);
     if (vib != was) {
@@ -872,7 +947,7 @@ void sim_sensor_pass(uint32_t now_ms, const float *samples, int n, float dt, int
         app_note_activity();
     }
     if (ready) {
-        app_state_set_motion(true, q, still, vib == VIB_RUNNING, zero_set, &reading, now);
+        app_state_set_motion(true, q, still, vib == VIB_RUNNING, zero, &reading, now);
     }
 }
 
@@ -930,6 +1005,12 @@ static void sensor_cal_start(app_cal_kind_t kind)
     s_cal.samples = 0;
     s_cal.accel_coverage = 0;
     s_collecting = true;
+    publish_cal_locked();
+}
+
+static void sensor_cal_refused(void)
+{
+    s_cal.refused++;
     publish_cal_locked();
 }
 
@@ -1013,7 +1094,6 @@ static void ota_set_mtu(uint16_t mtu);
 // recorder.c (below): the link it survives, and rec_state's subscription.
 static void recorder_ble(bool up);
 static void recorder_resend(void);
-static bool recorder_session_open(void);
 
 const char *sim_dis_string(int which)
 {
@@ -1356,6 +1436,12 @@ int sim_command_write(const uint8_t *data, int len, uint32_t now_ms)
         LOGW("command 0x%02x rejected: 0x%02x", data[0], att);
         return att;
     }
+    // A calibration start while OTA or a recording session has the device.
+    att = ble_codec_cmd_excl_err(id, s_state.excl);
+    if (att != 0) {
+        LOGW("command 0x%02x refused: %s", data[0], app_excl_what(s_state.excl));
+        return att;
+    }
     if (s_busy_next > 0) {   // injected: as if the queue were full
         s_busy_next--;
         LOGW("command 0x%02x: queue full (injected)", data[0]);
@@ -1446,15 +1532,17 @@ static void sink_abort(void *ctx)
         part_path(p, sizeof(p));
         remove(p);
     }
+    app_excl_release(APP_EXCL_OTA);
 }
 
 static int sink_begin(void *ctx, uint32_t image_size)
 {
     sink_ctx_t *s = ctx;
     sink_abort(s);
-    if (recorder_session_open()) {
-        // OTA, calibration and a recording session exclude each other.
-        LOGE("esp_ota_begin: refused, a recording session is open");
+    // OTA, calibration and a recording session exclude each other.
+    app_excl_t owner = app_excl_acquire(APP_EXCL_OTA);
+    if (owner != APP_EXCL_OTA) {
+        LOGE("esp_ota_begin: refused, %s", app_excl_what(owner));
         return -1;
     }
     s->head_len = 0;
@@ -1464,6 +1552,7 @@ static int sink_begin(void *ctx, uint32_t image_size)
     s->f = fopen(p, "wb");
     if (s->f == NULL) {
         LOGE("esp_ota_begin: cannot open %s", p);
+        app_excl_release(APP_EXCL_OTA);
         return -1;
     }
     s->open = true;
@@ -1626,6 +1715,7 @@ static int sink_finish(void *ctx)
         return -1;
     }
     LOGI("update written to %s, reboot pending", s_ota_path);
+    app_excl_release(APP_EXCL_OTA);     // done: a failure above is aborted
     return 0;
 }
 
@@ -1793,15 +1883,25 @@ int sim_ota_reboot_pending(void)
 
 // ---- recorder.c, rec_wifi.c, rec_audio.c -----------------------------------------
 // The ESP glue around the pure recorder (rec_fsm, rec_ring, rec_stream,
-// rec_ts) as the firmware design has it (milestone 4): the FSM's actions run
-// in bit order, every producer pushes whole records into the ring, the
+// rec_ts, rec_util) as components/recorder/src has it: the FSM's actions
+// run in bit order, every producer pushes whole records into the ring, the
 // sender drains it. The soft-AP and its TCP server are the Python side's
-// endpoint (sim_rec_net()), the I2S capture is sim_audio_block().
+// endpoint (sim_rec_net()), the I2S capture is sim_audio_block(). The board
+// runs it in tasks (rec, rec_tx, rec_mic) with gated producers; here
+// everything is one thread.
 
 #define REC_LEVEL_MS        100u    // LEVEL records, 10 Hz
 #define REC_STATS_MS        1000u   // STATS records, 1 Hz
 #define REC_HEARTBEAT_MS    1000u   // rec_state notification during a take
-#define REC_AUDIO_BITS      16
+_Static_assert(SIM_AUDIO_RATE == REC_AUDIO_RATE_HZ && SIM_AUDIO_BLOCK == REC_AUDIO_BLOCK_FRAMES,
+               "sim_core.h audio format = rec_util.h");
+
+// What the endpoint was asked for (recorder.c wifi_req_t).
+typedef enum {
+    WIFI_OFF = 0,
+    WIFI_ON,
+    WIFI_STOPPING,
+} wifi_req_t;
 
 typedef struct {
     rec_fsm_t fsm;
@@ -1809,8 +1909,11 @@ typedef struct {
     uint8_t *buf;                   // allocated at OPEN, freed back in IDLE
     uint32_t ring_size;
     rec_ring_stats_t last;          // of the freed ring, for rec_state in IDLE
-    // rec_wifi.c: the endpoint
-    bool ap_wanted;
+    // rec_wifi.c: the endpoint, as recorder.c's s_wifi_req: ON from
+    // START_AP, STOPPING from STOP_AP until SIM_NET_DOWN (the ring stays and
+    // no OPEN is taken until it is OFF again).
+    wifi_req_t ap_req;
+    bool down_pending;              // STOP_AP without an endpoint: AP_DOWN now
     bool client;
     bool no_ap;
     uint8_t ip[4];
@@ -1821,13 +1924,7 @@ typedef struct {
     uint8_t token[REC_HELLO_TOKEN_LEN];
     // the take's sources
     bool tap;                       // IMU, LEVEL and STATS records flow
-    bool imu_started;               // EVENT PROFILE sent for imu_epoch
-    uint32_t imu_epoch;
-    bool epoch_flag;                // the next IMU record follows a chip reset
-    rec_ts_ext_t ts_ext;
-    bool have_next;
-    uint32_t next_ts;               // extended TIMESTAMP after the last run
-    uint32_t imu_frames, imu_lost;
+    rec_imu_tap_t imu;
     rec_rate_t imu_rate, audio_rate;
     bool audio_on;
     uint8_t mic_mask, gain_db;
@@ -1885,7 +1982,7 @@ void sim_rec_set_endpoint(int no_ap, const uint8_t *ip4, int port, int channel, 
 
 int sim_rec_ap_wanted(void)
 {
-    return s_rec.ap_wanted;
+    return s_rec.ap_req == WIFI_ON;
 }
 
 int sim_rec_audio_on(void)
@@ -1919,21 +2016,22 @@ static void rec_event(uint16_t code, uint16_t arg, const char *text)
     rec_push(REC_T_EVENT, REC_V_EVENT, &p, 1);
 }
 
-// app_state_set_rec() (app_state.c gains it in milestone 4).
+// publish_locked() (recorder.c): app_state_set_rec().
 static void recorder_publish(void)
 {
     const rec_fsm_t *f = &s_rec.fsm;
     const app_battery_t *b = &s_state.battery;
+    const rec_env_t env = {.battery_valid = b->valid, .battery_pct = b->percent,
+                           .vbus = b->vbus_present};
     rec_ring_stats_t st;
     ring_stats(&st);
     app_rec_status_t r = {
         .state = (uint8_t)f->state,
         .reason = f->reason,
-        .flags = (uint8_t)((s_rec.client ? DB_REC_FLAG_CLIENT : 0u) |
-                           (s_rec.audio_on ? DB_REC_FLAG_AUDIO : 0u) |
-                           (f->imu_lost ? DB_REC_FLAG_IMU_LOST : 0u) |
-                           (b->valid && !b->vbus_present && b->percent < REC_BATT_START_PCT
-                                ? DB_REC_FLAG_BATTERY_LOW : 0u)),
+        .flags = (uint8_t)((s_rec.client ? APP_REC_FLAG_CLIENT : 0u) |
+                           (s_rec.audio_on ? APP_REC_FLAG_AUDIO : 0u) |
+                           (f->imu_lost ? APP_REC_FLAG_IMU_LOST : 0u) |
+                           (rec_fsm_battery_blocks_take(&env) ? APP_REC_FLAG_BATTERY_LOW : 0u)),
         .sent_bytes = st.sent_bytes,
         .dropped = st.dropped_records,
         .ring_pct = rec_ring_pct(st.used, st.cap),
@@ -1945,7 +2043,7 @@ static void recorder_publish(void)
         r.max_s = f->max_s;
     }
     if (f->state != REC_STATE_IDLE) {
-        r.flags |= s_rec.no_ap ? DB_REC_FLAG_NO_AP : 0u;
+        r.flags |= s_rec.no_ap ? APP_REC_FLAG_NO_AP : 0u;
         r.channel = s_rec.no_ap ? 0 : s_rec.channel;
         r.port = s_rec.port;
         memcpy(r.ip, s_rec.ip, sizeof(r.ip));
@@ -1959,39 +2057,15 @@ static void recorder_publish(void)
 // The SESSION record's JSON tail: settings and calibration in effect.
 static int session_json(char *out, size_t cap)
 {
-    char sj[SETTINGS_JSON_MAX];
-    if (settings_to_json(&s_current, sj, sizeof(sj)) < 0) {
-        return 0;
-    }
-    cJSON *root = cJSON_CreateObject();
-    cJSON_AddItemToObject(root, "settings", cJSON_Parse(sj));
-    cJSON *cal = cJSON_AddObjectToObject(root, "cal");
-    cJSON *acc = cJSON_AddObjectToObject(cal, "accel");
-    cJSON_AddBoolToObject(acc, "valid", s_current.accel_cal_valid);
-    cJSON_AddItemToObject(acc, "bias_g", vec_json(s_current.accel_cal.bias));
-    cJSON_AddItemToObject(acc, "scale", vec_json(s_current.accel_cal.scale));
-    cJSON *mnt = cJSON_AddObjectToObject(cal, "mount");
-    cJSON_AddBoolToObject(mnt, "valid", s_current.mount_cal_valid);
-    cJSON_AddItemToObject(mnt, "drill_axis", vec_json(s_current.drill_axis));
     bool bias = s_fusion_ready && fusion_bias_valid(&s_fusion);
-    cJSON_AddItemToObject(cal, "gyro_bias_rad_s",
-                          bias ? vec_json(s_fusion.gyro_bias) : cJSON_CreateNull());
-    char *text = cJSON_PrintUnformatted(root);
-    cJSON_Delete(root);
-    size_t n = text ? strlen(text) : 0;
-    if (n >= cap) {
-        n = 0;
-    }
-    memcpy(out, text ? text : "", n);
-    free(text);
-    return (int)n;
+    return settings_session_json(&s_current, bias ? &s_fusion.gyro_bias : NULL, out, cap);
 }
 
 static void act_emit_session(void)
 {
     const rec_fsm_t *f = &s_rec.fsm;
     const imu_profile_info_t *p = imu_profile_info((imu_profile_t)f->profile);
-    uint8_t ch = (uint8_t)(((f->mic_mask & REC_MIC_1) ? 1u : 0u) + ((f->mic_mask & REC_MIC_2) ? 1u : 0u));
+    uint8_t ch = rec_audio_channels(f->mic_mask);
     rec_session_t s = {
         .take_id = f->take_id,
         .start_us = host_us(),
@@ -2021,9 +2095,7 @@ static void act_emit_session(void)
     rec_push(REC_T_SESSION, REC_V_SESSION, parts, 2);
 
     // The take's counters and its sources start over.
-    s_rec.imu_started = s_rec.epoch_flag = s_rec.have_next = false;
-    s_rec.ts_ext = (rec_ts_ext_t){0};
-    s_rec.imu_frames = s_rec.imu_lost = 0;
+    s_rec.imu = (rec_imu_tap_t){0};
     s_rec.audio_frames = s_rec.audio_overflows = s_rec.audio_clipped = 0;
     rec_rate_reset(&s_rec.imu_rate);
     rec_rate_reset(&s_rec.audio_rate);
@@ -2049,7 +2121,9 @@ static void act_set_profile(void)
 
 static void act_audio(bool on)
 {
-    // rec_audio.c: the I2S channel and the ES7210 only during a take.
+    // rec_audio.c: the I2S channel and the ES7210 only during a take. One
+    // thread here: no block of the previous capture can arrive late, which
+    // recorder.c drops by its capture number (audio_gen).
     s_rec.audio_on = on;
     if (on) {
         s_rec.mic_mask = s_rec.fsm.mic_mask;
@@ -2069,8 +2143,8 @@ static void act_emit_end(void)
         .records = st.next_seq + 1u,     // END gets next_seq (one producer at a time here)
         .dropped_records = st.dropped_records,
         .dropped_bytes = st.dropped_bytes,
-        .imu_frames = s_rec.imu_frames,
-        .imu_lost = s_rec.imu_lost,
+        .imu_frames = s_rec.imu.frames,
+        .imu_lost = s_rec.imu.lost,
         .audio_frames = s_rec.audio_frames,
         .audio_overflows = s_rec.audio_overflows,
     };
@@ -2091,16 +2165,23 @@ static void act_start_ap(void)
     rec_ring_init(&s_rec.ring, s_rec.buf, s_rec.ring_size, NULL, NULL, NULL);
     memset(s_rec.token, 0, sizeof(s_rec.token));
     s_rec.client = false;
-    s_rec.ap_wanted = true;
+    s_rec.ap_req = WIFI_ON;
     s_events |= SIM_EV_REC_AP;
     LOGI("recorder: session open, %lu KiB stream ring", (unsigned long)(s_rec.ring_size / 1024u));
 }
 
+// As recorder.c's act_stop_ap(): the endpoint goes down meanwhile
+// (recorder.py drains, ends the stream, closes) and SIM_NET_DOWN brings
+// AP_DOWN; without one asked for, AP_DOWN at once.
 static void act_stop_ap(void)
 {
-    s_rec.ap_wanted = false;
-    s_events |= SIM_EV_REC_AP;
     LOGI("recorder: session closing (reason %u)", (unsigned)s_rec.fsm.reason);
+    if (s_rec.ap_req == WIFI_ON) {
+        s_rec.ap_req = WIFI_STOPPING;
+        s_events |= SIM_EV_REC_AP;
+    } else if (s_rec.ap_req == WIFI_OFF) {
+        s_rec.down_pending = true;
+    }
 }
 
 static void recorder_free(void)
@@ -2111,7 +2192,7 @@ static void recorder_free(void)
         free(s_rec.buf);
         s_rec.buf = NULL;
     }
-    s_rec.ap_wanted = s_rec.client = false;
+    s_rec.client = false;
 }
 
 // The FSM's actions, in bit order (rec_fsm.h).
@@ -2152,28 +2233,42 @@ static void recorder_execute(const rec_out_t *o, const rec_cmd_t *cmd)
     if (a & REC_ACT_NOTIFY) {
         s_rec.notify = true;
     }
-    if (s_rec.fsm.state == REC_STATE_IDLE) {
+    // The session is over once the FSM is IDLE and the endpoint is down.
+    if (s_rec.fsm.state == REC_STATE_IDLE && s_rec.ap_req == WIFI_OFF) {
         recorder_free();
+        app_excl_release(APP_EXCL_REC);
     }
     recorder_publish();
 }
 
 static rec_err_t recorder_input(rec_input_kind_t kind, const rec_cmd_t *cmd)
 {
+    bool open = kind == REC_IN_CMD && cmd && cmd->op == REC_CMD_OPEN &&
+                s_rec.fsm.state == REC_STATE_IDLE;
+    if (open && s_rec.ap_req != WIFI_OFF) {
+        return REC_ERR_STATE;       // the last session's endpoint is still going down
+    }
     rec_ring_stats_t st;
     ring_stats(&st);
+    // OTA, calibration and a session exclude each other: OPEN takes the
+    // device (given back in recorder_execute()).
+    app_excl_t owner = open ? app_excl_acquire(APP_EXCL_REC) : (app_excl_t)s_state.excl;
     const app_battery_t *b = &s_state.battery;
     const rec_env_t env = {
         .battery_valid = b->valid,
         .battery_pct = b->percent,
         .vbus = b->vbus_present,
-        .ota_active = s_state.ota_active,
-        .calibrating = s_state.cal.kind != APP_CAL_IDLE,
+        .ota_active = owner == APP_EXCL_OTA,
+        .calibrating = owner == APP_EXCL_CAL,
         .ring_empty = st.used == 0,
     };
     const rec_input_t in = {.kind = kind, .cmd = cmd};
     rec_out_t o = rec_fsm_step(&s_rec.fsm, &in, &env, app_now_ms());
     recorder_execute(&o, cmd);
+    if (s_rec.down_pending) {
+        s_rec.down_pending = false;
+        recorder_input(REC_IN_AP_DOWN, NULL);
+    }
     return o.err;
 }
 
@@ -2199,14 +2294,13 @@ static void recorder_init(bool imu_ok)
     recorder_publish();
 }
 
-// recorder_shutdown(): sleep, power-off and reboot end a take with END,
-// best effort (STOP_AP gives the queue 200 ms).
+// recorder_shutdown(): sleep, power-off and reboot end a take with END
+// (STOP_AP gives the queue 200 ms, then the endpoint ends the stream), and
+// no session opens after it (the FSM latches, in every state).
 static void recorder_shutdown(void)
 {
-    if (rec_fsm_session_open(&s_rec.fsm)) {
-        LOGI("recorder: shutdown");
-        recorder_input(REC_IN_SHUTDOWN, NULL);
-    }
+    LOGI("recorder: shutdown");
+    recorder_input(REC_IN_SHUTDOWN, NULL);
 }
 
 static void recorder_ble(bool up)
@@ -2217,11 +2311,6 @@ static void recorder_ble(bool up)
 static void recorder_resend(void)
 {
     s_rec.sent_valid = false;
-}
-
-static bool recorder_session_open(void)
-{
-    return rec_fsm_session_open(&s_rec.fsm);
 }
 
 static void recorder_imu_state(bool ok)
@@ -2241,67 +2330,40 @@ static void recorder_vib(bool on)
 static void recorder_imu_block(const imu_raw_info_t *raw)
 {
     imu_profile_t want = (imu_profile_t)s_rec.fsm.profile;
-    if (!s_rec.tap || raw->n == 0 || s_chip.profile != want || s_profile_req != want) {
+    if (!s_rec.tap || raw->n == 0 || s_chip.profile != want) {
         return;     // no take, or its profile is not in effect yet
     }
-    if (!s_rec.imu_started || raw->epoch != s_rec.imu_epoch) {
+    uint32_t chip;
+    if (rec_imu_tap_read(&s_rec.imu, raw->epoch, raw->chip_ts, &chip)) {
         // A new chip clock: the take's first read, or the first after a reset.
-        s_rec.epoch_flag = s_rec.imu_started;
-        s_rec.imu_started = true;
-        s_rec.imu_epoch = raw->epoch;
-        s_rec.ts_ext = (rec_ts_ext_t){0};
-        s_rec.have_next = false;
         rec_event(REC_EV_PROFILE, want, NULL);
     }
-    uint32_t chip = rec_ts_extend(&s_rec.ts_ext, raw->chip_ts);
     for (int k = 0; k < 2; k++) {
         const imu_raw_run_t *run = &raw->run[k];
         if (run->count == 0) {
             continue;
         }
-        uint32_t first = rec_ts_near(chip, run->ts_first);
-        uint16_t flags = run->discontinuous ? REC_IMU_DISCONT : 0u;
-        if (s_rec.epoch_flag) {
-            flags |= REC_IMU_EPOCH | REC_IMU_DISCONT;
-            s_rec.epoch_flag = false;
-        }
-        if (s_rec.have_next && !(flags & REC_IMU_DISCONT)) {
-            s_rec.imu_lost += first - s_rec.next_ts;
-        }
-        s_rec.next_ts = first + run->count;
-        s_rec.have_next = true;
-        int16_t frames[IMU_FIFO_MAX_FRAMES][6];
-        for (uint16_t i = 0; i < run->count; i++) {
+        rec_imu_t h;
+        uint16_t count = rec_imu_tap_run(&s_rec.imu, chip, run->ts_first, run->count,
+                                         run->discontinuous, raw->host_us, &h);
+        int16_t frames[REC_IMU_MAX_FRAMES][6];
+        for (uint16_t i = 0; i < count; i++) {
             imu_map_frame_i16(raw->map, &raw->frames[(size_t)(run->first + i) * IMU_FRAME_BYTES],
                               frames[i]);
         }
-        const rec_imu_t h = {.ts_first = first, .chip_ts = chip, .host_us = (uint64_t)raw->host_us,
-                             .n = run->count, .flags = flags};
-        const rec_part_t p[] = {{&h, sizeof(h)}, {frames, (size_t)run->count * REC_IMU_FRAME_LEN}};
+        const rec_part_t p[] = {{&h, sizeof(h)}, {frames, (size_t)count * REC_IMU_FRAME_LEN}};
         rec_push(REC_T_IMU, REC_V_IMU, p, 2);
-        s_rec.imu_frames += run->count;
     }
     rec_rate_update(&s_rec.imu_rate, raw->epoch, chip, raw->host_us);
 }
 
+// The BLE service's ble_codec_level() (recorder_set_level_encoder()): the
+// angles and their zero from the last motion publish.
 static void emit_level(void)
 {
-    db_angle_packet_t a;
-    ble_codec_angle(&s_state, 0, app_now_ms(), &a);
-    bool z = s_level.zero_set;
-    const rec_level_t l = {
-        .host_us = host_us(),
-        .mode = a.mode,
-        .flags = a.flags,
-        .elevation_cdeg = a.elevation_cdeg,
-        .yaw_cdeg = a.yaw_cdeg,
-        .bubble_x_cdeg = a.bubble_x_cdeg,
-        .bubble_y_cdeg = a.bubble_y_cdeg,
-        .deviation_cdeg = a.deviation_cdeg,
-        .zero_elevation_cdeg = z ? ble_codec_cdeg(s_level.zero_elevation_deg) : 0,
-        .zero_bubble_x_cdeg = z ? ble_codec_cdeg(s_level.zero_bubble_x_deg) : 0,
-        .zero_bubble_y_cdeg = z ? ble_codec_cdeg(s_level.zero_bubble_y_deg) : 0,
-    };
+    rec_level_t l;
+    ble_codec_level(&s_state, app_now_ms(), &l);
+    l.host_us = host_us();
     const rec_part_t p = {&l, sizeof(l)};
     rec_push(REC_T_LEVEL, REC_V_LEVEL, &p, 1);
 }
@@ -2313,8 +2375,8 @@ static void emit_stats(void)
     const app_battery_t *b = &s_state.battery;
     const rec_stats_t s = {
         .host_us = host_us(),
-        .imu_frames = s_rec.imu_frames,
-        .imu_lost = s_rec.imu_lost,
+        .imu_frames = s_rec.imu.frames,
+        .imu_lost = s_rec.imu.lost,
         .imu_period_ns = rec_rate_period_ns(&s_rec.imu_rate),
         .audio_frames = s_rec.audio_frames,
         .audio_overflows = s_rec.audio_overflows,
@@ -2375,15 +2437,6 @@ int sim_rec_pop(uint8_t *buf, int cap)
     return (int)got;
 }
 
-static bool token_ok(const uint8_t *t)
-{
-    uint8_t d = 0;
-    for (size_t i = 0; i < REC_HELLO_TOKEN_LEN; i++) {
-        d |= (uint8_t)(t[i] ^ s_rec.token[i]);
-    }
-    return d == 0;
-}
-
 int sim_rec_net(int kind, const uint8_t *data, int len, uint32_t now_ms)
 {
     if (!running(now_ms)) {
@@ -2391,7 +2444,7 @@ int sim_rec_net(int kind, const uint8_t *data, int len, uint32_t now_ms)
     }
     switch (kind) {
     case SIM_NET_UP:
-        if (!s_rec.ap_wanted || !data || len != REC_HELLO_TOKEN_LEN) {
+        if (s_rec.ap_req != WIFI_ON || !data || len != REC_HELLO_TOKEN_LEN) {
             return 0;
         }
         memcpy(s_rec.token, data, sizeof(s_rec.token));
@@ -2404,9 +2457,10 @@ int sim_rec_net(int kind, const uint8_t *data, int len, uint32_t now_ms)
         recorder_input(REC_IN_AP_FAIL, NULL);
         return 1;
     case SIM_NET_HELLO: {
-        bool ok = s_rec.fsm.state == REC_STATE_WAIT_CLIENT && !s_rec.client && data &&
-                  len == REC_HELLO_LEN && token_ok(data) &&
-                  (data[16] | (data[17] << 8)) == REC_STREAM_VERSION;
+        // HELLO_OK reaches the FSM at once, so it is never stale here
+        // (recorder.c ignores a queued one of a client gone since).
+        bool ok = s_rec.fsm.state == REC_STATE_WAIT_CLIENT && !s_rec.client &&
+                  rec_hello_ok(data, len < 0 ? 0u : (size_t)len, s_rec.token);
         if (!ok) {
             LOGW("recorder: stream client refused");
             return 0;
@@ -2425,7 +2479,12 @@ int sim_rec_net(int kind, const uint8_t *data, int len, uint32_t now_ms)
         recorder_input(REC_IN_CLIENT_LOST, NULL);
         return 1;
     case SIM_NET_DOWN:
+        // The end of the stop STOP_AP asked for (recorder.c ap_down()).
+        if (s_rec.ap_req != WIFI_STOPPING) {
+            return 0;
+        }
         s_rec.client = false;
+        s_rec.ap_req = WIFI_OFF;
         recorder_input(REC_IN_AP_DOWN, NULL);
         return 1;
     default:
@@ -2523,21 +2582,17 @@ int sim_audio_block(uint32_t now_ms, const sim_motor_t *m)
         return 0;
     }
     float f[SIM_AUDIO_BLOCK * 2];
+    int16_t stereo[SIM_AUDIO_BLOCK * 2];
     int16_t rec[SIM_AUDIO_BLOCK * 2];
     sim_audio_synth(m, SIM_AUDIO_BLOCK, f);
-    // The ES7210 PGA, then the 16-bit converter.
+    // The ES7210 PGA, then the 16-bit converter: one stereo DMA block.
     float gain = powf(10.0f, (float)s_rec.gain_db / 20.0f) * 32767.0f;
-    bool both = (s_rec.mic_mask & REC_MIC_ALL) == REC_MIC_ALL;
-    int only = (s_rec.mic_mask & REC_MIC_1) ? 0 : 1;
-    size_t k = 0;
     for (int i = 0; i < SIM_AUDIO_BLOCK * 2; i++) {
         float v = roundf(f[i] * gain);
-        int16_t pcm = v >= 32767.0f ? 32767 : v <= -32768.0f ? -32768 : (int16_t)v;
-        if (both || i % 2 == only) {
-            rec[k++] = pcm;
-            s_rec.audio_clipped += (pcm >= 32767 || pcm <= -32767) ? 1u : 0u;
-        }
+        stereo[i] = v >= 32767.0f ? 32767 : v <= -32768.0f ? -32768 : (int16_t)v;
     }
+    // rec_glue_audio_block(): the take's channels.
+    size_t k = rec_audio_select(stereo, SIM_AUDIO_BLOCK, s_rec.mic_mask, rec, &s_rec.audio_clipped);
     const rec_audio_t h = {.sample_index = s_rec.audio_index, .host_us = host_us(),
                            .n = SIM_AUDIO_BLOCK, .flags = 0};
     const rec_part_t p[] = {{&h, sizeof(h)}, {rec, k * sizeof(int16_t)}};
@@ -2674,11 +2729,14 @@ static void change_mode(bool step, int32_t arg)
     }
 }
 
+// OTA, calibration and a recording session exclude each other
+// (app_excl_acquire()); a refused start is counted for the screen.
 static void start_cal(app_cal_kind_t kind, int32_t arg)
 {
-    if (recorder_session_open()) {
-        // OTA, calibration and a recording session exclude each other.
-        LOGW("calibration refused: a recording session is open");
+    app_excl_t owner = app_excl_acquire(APP_EXCL_CAL);
+    if (owner != APP_EXCL_CAL) {
+        LOGW("calibration refused: %s", app_excl_what(owner));
+        sensor_cal_refused();
         return;
     }
     s_cal_from_ble = arg == APP_CMD_ARG_FROM_BLE;
@@ -2960,7 +3018,7 @@ static void update_power(uint32_t now)
         .ble_connected = snap.ble_holds_awake,
         .ota_active = snap.ota_active,
         .calibrating = snap.cal.kind != APP_CAL_IDLE,
-        .recording = recorder_session_open(),
+        .recording = snap.rec.state != APP_REC_STATE_IDLE,   // a session is open
     };
     power_state_t st = power_fsm_update(&s_fsm, &in, now);
     check_abandoned_cal(&snap, now);
@@ -3031,6 +3089,7 @@ int sim_init(const char *state_path, const char *ota_image_path, const char *def
     s_now = now_ms;
     s_events = 0;
     s_busy_next = 0;
+    s_chip.lpf_model = false;   // a model knob of the last device, as the faults
     copy_str(s_state_path, sizeof(s_state_path), state_path);
     copy_str(s_ota_path, sizeof(s_ota_path), ota_image_path);
     copy_str(s_default_version, sizeof(s_default_version), default_version);
@@ -3172,9 +3231,10 @@ int sim_snapshot_json(char *buf, int cap)
         (unsigned)s->ota_percent, (int)ota_proto_state(&s_proto));
     put(&o, "\"power\":%d,\"brightness\":%d,", (int)s->power, s_brightness);
     put(&o, "\"cal\":{\"kind\":%d,\"samples\":%u,\"coverage\":%u,\"last_result\":%d,"
-            "\"last_kind\":%d},",
+            "\"last_kind\":%d,\"refused\":%u},\"excl\":%u,",
         (int)s->cal.kind, (unsigned)s->cal.samples, (unsigned)s->cal.accel_coverage,
-        (int)s->cal.last_result, (int)s->cal.last_kind);
+        (int)s->cal.last_result, (int)s->cal.last_kind, (unsigned)s->cal.refused,
+        (unsigned)s->excl);
     put(&o, "\"link\":{\"connected\":%s,\"trusted\":%s,\"pairing\":%s,\"subs\":%u},",
         B(s_connected), B(s_link_trusted), B(s_pairing), (unsigned)s_subs);
 
@@ -3187,7 +3247,7 @@ int sim_snapshot_json(char *buf, int cap)
             "\"client\":%s,\"audio_on\":%s,\"mic_mask\":%u,\"gain_db\":%u,",
         (unsigned)rc->state, (unsigned)rc->reason, (unsigned)rc->flags, (unsigned long)rc->take_id,
         (unsigned)rc->elapsed_s, (unsigned)rc->max_s, (unsigned)rc->profile,
-        B(s_rec.fsm.take_valid), B(s_rec.tap), B(s_rec.ap_wanted), B(s_rec.client),
+        B(s_rec.fsm.take_valid), B(s_rec.tap), B(s_rec.ap_req == WIFI_ON), B(s_rec.client),
         B(s_rec.audio_on), (unsigned)s_rec.fsm.mic_mask, (unsigned)s_rec.fsm.gain_db);
     put(&o, "\"sent_bytes\":%llu,\"dropped\":%lu,\"dropped_bytes\":%lu,\"ring_used\":%lu,"
             "\"ring_size\":%lu,\"ring_pct\":%u,\"high_water\":%lu,\"records\":%lu,",
@@ -3198,7 +3258,7 @@ int sim_snapshot_json(char *buf, int cap)
     put(&o, "\"imu_frames\":%lu,\"imu_lost\":%lu,\"imu_period_ns\":%lu,\"audio_frames\":%lu,"
             "\"audio_clipped\":%lu,\"audio_rate_mhz\":%lu,\"imu_profile\":%d,\"imu_epoch\":%lu,"
             "\"mic_gain_db\":[%.2f,%.2f]},",
-        (unsigned long)s_rec.imu_frames, (unsigned long)s_rec.imu_lost,
+        (unsigned long)s_rec.imu.frames, (unsigned long)s_rec.imu.lost,
         (unsigned long)rec_rate_period_ns(&s_rec.imu_rate), (unsigned long)s_rec.audio_frames,
         (unsigned long)s_rec.audio_clipped, (unsigned long)rec_rate_mhz(&s_rec.audio_rate),
         (int)s_chip.profile, (unsigned long)s_epoch, (double)sim_audio_mic_gain_db(1),
@@ -3235,8 +3295,11 @@ int sim_snapshot_json(char *buf, int cap)
     const char *text = s->cal.last_kind == APP_CAL_MOUNT ? ui_mount_result_text(res)
                        : s->cal.last_kind == APP_CAL_ACCEL ? ui_accel_result_text(res) : "";
     put_str(&o, "cal_result_text", text);
-    put(&o, "\"cal_result_known\":%s,\"cal_result_ok\":%s", B(ui_cal_result_known(res)),
+    put(&o, "\"cal_result_known\":%s,\"cal_result_ok\":%s,", B(ui_cal_result_known(res)),
         B(ui_cal_result_ok(res)));
+    // A calibration guide's start against the device's owner (ui_cal.c).
+    put(&o, "\"cal_start_refused\":%s,", B(ui_cal_start_refused(s->excl)));
+    put_str(&o, "cal_refused_text", ui_cal_refused_text(s->excl));
     close_obj(&o, '}');
     close_obj(&o, '}');
     if (o.overflow) {

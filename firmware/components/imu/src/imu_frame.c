@@ -234,6 +234,15 @@ void imu_rate_init(imu_rate_t *r, float nominal_period_s)
     *r = (imu_rate_t){.nominal_s = nominal_period_s, .period_s = nominal_period_s};
 }
 
+void imu_rate_restart(imu_rate_t *r, float nominal_period_s)
+{
+    bool measured = r->measured && r->nominal_s > 0.0f;
+    float period = measured ? r->period_s * (nominal_period_s / r->nominal_s) : nominal_period_s;
+    imu_rate_init(r, nominal_period_s);
+    r->period_s = period;
+    r->measured = measured;
+}
+
 void imu_rate_update(imu_rate_t *r, uint32_t ts, int64_t now_us)
 {
     if (!r->started) {

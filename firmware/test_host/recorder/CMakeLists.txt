@@ -1,19 +1,21 @@
 # Host tests for the recorder's pure C parts (components/recorder): stream
-# encoding, the record ring, the session/take state machine and the time
-# keeping. test_rec_golden also writes / checks vectors/golden_stream.bin,
-# which tools/dataset (dbdata.dbrec) and the app decode.
+# encoding, the record ring, the session/take state machine, the time
+# keeping and the glue helpers (rec_util). test_rec_golden also writes /
+# checks vectors/golden_stream.bin, which tools/dataset (dbdata.dbrec) and
+# the app decode.
 
 add_library(recorder_host STATIC
     ${COMPONENTS_DIR}/recorder/src/rec_stream.c
     ${COMPONENTS_DIR}/recorder/src/rec_ring.c
     ${COMPONENTS_DIR}/recorder/src/rec_fsm.c
-    ${COMPONENTS_DIR}/recorder/src/rec_ts.c)
+    ${COMPONENTS_DIR}/recorder/src/rec_ts.c
+    ${COMPONENTS_DIR}/recorder/src/rec_util.c)
 # imu/include for imu_ts.h, the 24-bit TIMESTAMP arithmetic.
 target_include_directories(recorder_host PUBLIC ${COMPONENTS_DIR}/recorder/include
                                                 ${COMPONENTS_DIR}/imu/include)
 target_compile_options(recorder_host PRIVATE ${STRICT_WARNINGS})
 
-foreach(name test_rec_stream test_rec_ring test_rec_fsm test_rec_ts test_rec_golden)
+foreach(name test_rec_stream test_rec_ring test_rec_fsm test_rec_ts test_rec_golden test_rec_util)
     add_executable(${name} ${name}.c)
     target_compile_options(${name} PRIVATE ${STRICT_WARNINGS})
     target_link_libraries(${name} PRIVATE recorder_host unity)

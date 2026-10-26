@@ -7,6 +7,8 @@
 #include "freertos/task.h"
 #include "fusion.h"
 #include "imu.h"
+#include "lpf.h"
+#include "recorder.h"
 #include "turn.h"
 #include "vibration.h"
 
@@ -61,9 +63,19 @@ static bool s_collecting;        // false between finish and done
 static level_mount_collector_t s_mount;
 static accel_cal_collector_t s_collector;
 
+// sensor_request_imu_profile(): any task writes it, the sensor task applies
+// it at its next pass (imu_profile_t, one byte).
+static volatile uint8_t s_profile_req = IMU_PROFILE_LEVEL;
+
 // --- sensor task only ---
 static imu_sample_t s_buf[FIFO_BATCH];
+// Under a RAW profile (chip LPFs off) everything but the recorder's tap
+// gets this copy of s_buf through the LEVEL profile's LPFs (lpf.h).
+static imu_sample_t s_filt[FIFO_BATCH];
+static lpf_feed_t s_lpf;
 static vib_detector_t s_vib;
+// What the recorder was told (vib_note()).
+static bool s_vib_running;
 // Turning the device (turn.h) is user activity for the power policy, a
 // running motor shaking the gyro is not, so it never re-arms the power FSM's
 // vibration hold. Restarts at rest with the fusion.
@@ -140,20 +152,80 @@ static void mount_add_locked(uint32_t now)
     }
 }
 
+// The recorder hears the motor start and stop (VIB_START / VIB_STOP): the
+// detector's RUNNING against everything else. A reset (restart_pipeline(), its
+// state UNKNOWN) of a running detector is a stop, and the QUIET it decides
+// after a reset is none, so every VIB_START of a take has its VIB_STOP.
+static void vib_note(bool running)
+{
+    if (running != s_vib_running) {
+        s_vib_running = running;
+        recorder_note_vib(running);
+    }
+}
+
+static float profile_odr_hz(void)
+{
+    return (float)imu_profile_info(imu_get_profile())->odr_mhz * 1e-3f;
+}
+
+// The filters that integrate the samples start over: the IMU lost or back
+// (seconds without samples). sensor_zero() fails until fusion has its
+// first sample again, and the WALL heading zero is gone with the yaw.
+static void restart_pipeline(void)
+{
+    lock();
+    s_fusion_ready = false;
+    unlock();
+    vib_reset(&s_vib);
+    vib_note(false);
+    s_win_max_rate = 0.0f;   // the open window is dropped with it
+    lpf_feed_reset(&s_lpf, profile_odr_hz());
+}
+
+// A profile switch (every RAW take starts and ends with one): fusion, the
+// level zeros (also the WALL heading), the detectors and the collectors go
+// through it; only the decode scale (imu.c) and, under a RAW profile, the
+// software LPF change. The ~180 ms of the chip's reset are a gap in the
+// samples they go across (a turn within it is missed, as in a lost read).
+// The LPF gets the new rate's coefficients and goes on from the last
+// sample fusion got, so a switch to RAW is no step either.
+static void profile_switched(void)
+{
+    lpf_feed_switch(&s_lpf, profile_odr_hz());
+}
+
+// The samples fusion and the detectors get: as read under LEVEL (the chip
+// filters), through the LEVEL LPFs otherwise. s_buf stays raw.
+static const imu_sample_t *level_samples(size_t n)
+{
+    bool filter = imu_get_profile() != IMU_PROFILE_LEVEL;
+    imu_sample_t *out = filter ? s_filt : s_buf;
+    for (size_t i = 0; i < n; i++) {
+        if (filter) {
+            s_filt[i] = s_buf[i];
+        }
+        lpf_feed_step(&s_lpf, filter, &out[i].accel_g, &out[i].gyro_rad_s);
+    }
+    return out;
+}
+
 static void publish_no_imu(uint32_t now)
 {
     lock();
     // Status 0 is ON_TARGET, so an all-zero reading would read as green.
     level_reading_t r = {.mode = s_level.mode, .status = LEVEL_STATUS_OFF,
                          .yaw_status = LEVEL_STATUS_OFF};
-    bool zero_set = s_level.zero_set;
+    float z[3];
+    const float *zero = level_zero_of(&s_level, z);
     unlock();
-    app_state_set_motion(false, quat_identity(), false, false, zero_set, &r, now);
+    app_state_set_motion(false, quat_identity(), false, false, zero, &r, now);
 }
 
 static bool try_imu_init(void)
 {
-    esp_err_t err = imu_init(bsp_i2c_get_handle());
+    // In the profile requested last, also while the IMU was gone.
+    esp_err_t err = imu_init(bsp_i2c_get_handle(), (imu_profile_t)s_profile_req);
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "IMU init failed: %s", esp_err_to_name(err));
         return false;
@@ -179,6 +251,8 @@ static void sensor_task(void *arg)
                 last_retry = now;
                 if (try_imu_init()) {
                     imu_ok = true;
+                    restart_pipeline();   // the profile may be another now
+                    recorder_note_imu(true);
                     last_data = app_now_ms();
                     wake = xTaskGetTickCount();   // imu_init blocked ~180 ms
                     continue;
@@ -191,8 +265,25 @@ static void sensor_task(void *arg)
             continue;
         }
 
+        // sensor_request_imu_profile(): fusion and the detectors go through
+        // a new profile (profile_switched()). The same profile again does
+        // nothing (imu_set_profile()).
+        imu_profile_t req = (imu_profile_t)s_profile_req;
+        if (req != imu_get_profile()) {
+            esp_err_t perr = imu_set_profile(req);
+            if (perr != ESP_OK) {
+                // The lost check below re-initialises it (try_imu_init()).
+                ESP_LOGE(TAG, "profile %d: %s", (int)req, esp_err_to_name(perr));
+            }
+            profile_switched();
+            last_data = app_now_ms();
+            wake = xTaskGetTickCount();   // imu_set_profile blocked ~180 ms
+            continue;
+        }
+
         size_t n = 0;
-        esp_err_t err = imu_read_fifo(s_buf, FIFO_BATCH, &n);
+        imu_raw_info_t raw;
+        esp_err_t err = imu_read_fifo_ex(s_buf, FIFO_BATCH, &n, &raw);
         if (err == ESP_OK && n > 0) {
             last_data = now;
         } else if ((uint32_t)(now - last_data) >= IMU_LOST_MS) {
@@ -200,16 +291,17 @@ static void sensor_task(void *arg)
             ESP_LOGE(TAG, "IMU lost: %s", err != ESP_OK ? esp_err_to_name(err) : "no new samples");
             imu_ok = false;
             last_retry = now;
-            lock();
-            // Restart from the accelerometer after the gap; sensor_zero()
-            // fails until then.
-            s_fusion_ready = false;
-            unlock();
-            vib_reset(&s_vib);
-            s_win_max_rate = 0.0f;   // the open window is dropped with it
+            // Restart from the accelerometer after the gap.
+            restart_pipeline();
             last_pub = now;
             publish_no_imu(now);
+            recorder_note_imu(false);
             continue;
+        }
+        // The recorder's tap, right after the read: the raw frames of a RAW
+        // profile, unfiltered (non-blocking copy into its ring).
+        if (err == ESP_OK) {
+            recorder_imu_block(&raw);
         }
         // An empty read (a catch-up pass after a late one, or the first
         // passes of a stuck IMU) has nothing new: republishing the old
@@ -219,27 +311,29 @@ static void sensor_task(void *arg)
             continue;
         }
 
+        const imu_sample_t *smp = level_samples(n);
         float dt = imu_sample_period_s();
         level_reading_t reading = {0};
         quat_t q = quat_identity();
         bool still = false;
-        bool zero_set = false;
+        float z[3];
+        const float *zero = NULL;      // read with the reading
 
         lock();
-        bool turning = process_batch_locked(s_buf, n, dt);
+        bool turning = process_batch_locked(smp, n, dt);
         bool ready = s_fusion_ready;
         if (ready) {
             q = s_fusion.q;
             still = fusion_is_still(&s_fusion);
             reading = level_compute(&s_level, q, now);
-            zero_set = s_level.zero_set;
+            zero = level_zero_of(&s_level, z);
             mount_add_locked(now);
         }
         unlock();
 
         vib_state_t was = vib_state(&s_vib);
         for (size_t i = 0; i < n; i++) {
-            if (vib_add_sample(&s_vib, s_buf[i].accel_g, dt)) {
+            if (vib_add_sample(&s_vib, smp[i].accel_g, dt)) {
                 ESP_LOGD(TAG, "vibration duty %d %%, turn rate max %.2f rad/s",
                          (int)(s_vib.last_duty * 100.0f + 0.5f), (double)s_win_max_rate);
                 s_win_max_rate = 0.0f;
@@ -249,12 +343,13 @@ static void sensor_task(void *arg)
         if (vib != was) {
             ESP_LOGI(TAG, "vibration %s, duty %d %%", vib == VIB_RUNNING ? "running" : "quiet",
                      (int)(s_vib.last_duty * 100.0f + 0.5f));
+            vib_note(vib == VIB_RUNNING);
         }
         if (turning) {
             app_note_activity();
         }
         if (ready) {
-            app_state_set_motion(true, q, still, vib == VIB_RUNNING, zero_set, &reading, now);
+            app_state_set_motion(true, q, still, vib == VIB_RUNNING, zero, &reading, now);
         }
     }
 
@@ -274,6 +369,11 @@ esp_err_t sensor_start(const settings_t *s, bool imu_ok)
     s_fusion_ready = false;
     vib_config_t vib_cfg = vib_default_config();
     vib_init(&s_vib, &vib_cfg);
+    s_vib_running = false;
+    // imu_init() before the task starts in the current profile (LEVEL at
+    // boot); a request from now on is applied by the task.
+    s_profile_req = (uint8_t)imu_get_profile();
+    lpf_feed_reset(&s_lpf, profile_odr_hz());
     turn_config_t turn_cfg = turn_default_config();
     turn_init(&s_turn, &turn_cfg);
     s_win_max_rate = 0.0f;
@@ -305,6 +405,25 @@ void sensor_stop(void)
     if (xSemaphoreTake(s_stopped, pdMS_TO_TICKS(STOP_TIMEOUT_MS)) != pdTRUE) {
         ESP_LOGE(TAG, "sensor task did not stop");
     }
+}
+
+void sensor_request_imu_profile(imu_profile_t p)
+{
+    if (imu_profile_info(p)) {
+        s_profile_req = (uint8_t)p;
+    }
+}
+
+bool sensor_gyro_bias(float out_rad_s[3])
+{
+    lock();
+    bool ok = s_fusion_ready && fusion_bias_valid(&s_fusion);
+    vec3_t b = s_fusion.gyro_bias;
+    unlock();
+    out_rad_s[0] = b.x;
+    out_rad_s[1] = b.y;
+    out_rad_s[2] = b.z;
+    return ok;
 }
 
 // An invalid correction is not applied, so its values do not matter.
@@ -366,6 +485,14 @@ void sensor_cal_start(app_cal_kind_t kind)
     s_cal.samples = 0;
     s_cal.accel_coverage = 0;
     s_collecting = true;
+    publish_cal_locked();
+    unlock();
+}
+
+void sensor_cal_refused(void)
+{
+    lock();
+    s_cal.refused++;
     publish_cal_locked();
     unlock();
 }

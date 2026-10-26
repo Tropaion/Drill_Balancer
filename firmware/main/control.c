@@ -8,6 +8,7 @@
 #include "pmu.h"
 #include "power.h"
 #include "power_fsm.h"
+#include "recorder.h"
 #include "sensor_task.h"
 #include "settings_store.h"
 #include "ui.h"
@@ -119,13 +120,15 @@ static app_power_t to_app_power(power_state_t st)
     }
 }
 
-// Sleep and power-off: publish the state, store a settings edit still inside
-// the UI's save debounce (display_off() takes the display lock for good, so
-// the UI's save timer would never run; a no-op without a UI), then stop the
-// sensor task and BLE, which would otherwise still use the IMU and the radio.
+// Sleep and power-off: end a recording with END while its producers still
+// run, publish the state, store a settings edit still inside the UI's save
+// debounce (display_off() takes the display lock for good, so the UI's save
+// timer would never run; a no-op without a UI), then stop the sensor task
+// and BLE, which would otherwise still use the IMU and the radio.
 static void prepare_shutdown(app_power_t p, const char *what)
 {
     ESP_LOGI(TAG, "%s", what);
+    recorder_shutdown();
     app_state_set_power(p);
     ui_flush_pending_settings();
     sensor_stop();
@@ -178,8 +181,20 @@ static void change_mode(bool step, int32_t arg)
     }
 }
 
+// OTA, calibration and a recording session exclude each other
+// (app_excl_acquire()). The screen and the BLE command write refuse a start
+// at once while another one has the device; one that slips past them is
+// refused here and counted (app_cal_status_t.refused), which the screen
+// shows. The device is given back when the calibration's status goes idle
+// (app_state_set_cal()), however it ends.
 static void start_cal(app_cal_kind_t kind, int32_t arg)
 {
+    app_excl_t owner = app_excl_acquire(APP_EXCL_CAL);
+    if (owner != APP_EXCL_CAL) {
+        ESP_LOGW(TAG, "calibration refused: %s", app_excl_what(owner));
+        sensor_cal_refused();
+        return;
+    }
     s_cal_from_ble = arg == APP_CMD_ARG_FROM_BLE;
     sensor_cal_start(kind);
 }
@@ -339,6 +354,7 @@ static void handle_cmd(const app_cmd_t *cmd)
         break;
     case APP_CMD_REBOOT:
         ESP_LOGI(TAG, "reboot");
+        recorder_shutdown();
         ui_flush_pending_settings();   // as in prepare_shutdown(); BLE stays up for the reply
         vTaskDelay(pdMS_TO_TICKS(REBOOT_DELAY_MS));
         esp_restart();
@@ -451,7 +467,7 @@ static void update_power(uint32_t now)
         .ble_connected = snap.ble_holds_awake,
         .ota_active = snap.ota_active,
         .calibrating = snap.cal.kind != APP_CAL_IDLE,
-        .recording = false,     // no recorder yet
+        .recording = snap.rec.state != APP_REC_STATE_IDLE,   // a session is open
     };
     power_state_t st = power_fsm_update(&s_fsm, &in, now);
     // After the update, which has taken in the latest activity. A cancel

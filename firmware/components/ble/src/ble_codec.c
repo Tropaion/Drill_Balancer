@@ -33,6 +33,10 @@ _Static_assert(DB_REC_PROFILE_LEVEL == REC_PROFILE_LEVEL &&
                DB_REC_PROFILE_RAW448_16G == REC_PROFILE_RAW448_16G &&
                DB_REC_PROFILE_RAW897 == REC_PROFILE_RAW897, "rec profiles");
 _Static_assert(DB_REC_MIC_1 == REC_MIC_1 && DB_REC_MIC_2 == REC_MIC_2, "rec microphones");
+_Static_assert(DB_REC_FLAG_NO_AP == APP_REC_FLAG_NO_AP && DB_REC_FLAG_CLIENT == APP_REC_FLAG_CLIENT &&
+               DB_REC_FLAG_AUDIO == APP_REC_FLAG_AUDIO &&
+               DB_REC_FLAG_IMU_LOST == APP_REC_FLAG_IMU_LOST &&
+               DB_REC_FLAG_BATTERY_LOW == APP_REC_FLAG_BATTERY_LOW, "rec flags");
 _Static_assert(DB_REC_MARK_TEXT_MAX == REC_MARK_TEXT_MAX, "MARK text");
 _Static_assert(DB_REC_MAX_S_DEFAULT == REC_TAKE_DEFAULT_S && DB_REC_MAX_S_LIMIT == REC_TAKE_MAX_S &&
                DB_REC_GAIN_MAX_DB == REC_GAIN_MAX_DB, "take limits");
@@ -111,6 +115,26 @@ void ble_codec_angle(const app_snapshot_t *s, uint8_t seq, uint32_t now_ms,
         .bubble_y_cdeg = ble_codec_cdeg(r->bubble_y_deg),
         .deviation_cdeg = ble_codec_cdeg(r->deviation_deg),
     };
+}
+
+void ble_codec_level(const app_snapshot_t *s, uint32_t now_ms, rec_level_t *out)
+{
+    db_angle_packet_t a;
+    ble_codec_angle(s, 0, now_ms, &a);
+    *out = (rec_level_t){
+        .mode = a.mode,
+        .flags = a.flags,
+        .elevation_cdeg = a.elevation_cdeg,
+        .yaw_cdeg = a.yaw_cdeg,
+        .bubble_x_cdeg = a.bubble_x_cdeg,
+        .bubble_y_cdeg = a.bubble_y_cdeg,
+        .deviation_cdeg = a.deviation_cdeg,
+    };
+    if (s->zero_set) {
+        out->zero_elevation_cdeg = ble_codec_cdeg(s->zero_deg[0]);
+        out->zero_bubble_x_cdeg = ble_codec_cdeg(s->zero_deg[1]);
+        out->zero_bubble_y_cdeg = ble_codec_cdeg(s->zero_deg[2]);
+    }
 }
 
 uint8_t ble_codec_battery_pct(const app_battery_t *b)
@@ -231,6 +255,12 @@ uint8_t ble_codec_parse_cmd(const uint8_t *data, size_t len, app_cmd_id_t *id, i
     *id = cmd;
     *arg = value;
     return 0;
+}
+
+uint8_t ble_codec_cmd_excl_err(app_cmd_id_t id, uint8_t excl)
+{
+    bool cal_start = id == APP_CMD_MOUNT_CAL_START || id == APP_CMD_ACCEL_CAL_START;
+    return cal_start && app_excl_blocks_cal(excl) ? DB_ATT_ERR_BUSY : 0;
 }
 
 uint8_t ble_codec_settings_att_err(settings_json_result_t r)

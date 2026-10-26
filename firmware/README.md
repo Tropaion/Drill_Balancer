@@ -31,7 +31,8 @@ Configuration:
 - `sdkconfig.defaults` holds the board-wide options (target, flash and
   partitions, PSRAM, caches, LVGL).
 - `sdkconfig.d/*.defaults` holds one fragment per feature (`ble`, `board`,
-  `main`, `ui`). They are applied in name order after `sdkconfig.defaults`.
+  `main`, `recorder`, `ui`). They are applied in name order after
+  `sdkconfig.defaults`.
 - Defaults only apply to options that are not yet in `sdkconfig`. After you
   change a defaults file, delete `sdkconfig` (and `build/`) before you build
   again.
@@ -54,8 +55,10 @@ count). Otherwise the bootloader goes back to the previous image.
 ## Host tests
 
 The hardware-independent code (level math, fusion, mount and sensor
-calibration, vibration detection, settings and JSON, the power state
-machine, OTA protocol, BLE codec, PMU and IMU decoding, UI logic) is tested
+calibration, vibration detection, the software LPF, settings and JSON, the
+power state machine, OTA protocol, BLE codec, PMU and IMU decoding, UI logic,
+and the recorder's stream format, ring, session state machine, time keeping
+and glue helpers) is tested
 on the PC with Unity (and, for the OTA hash, mbedtls) from the IDF tree.
 `test_host/stubs` stands in for the few ESP-IDF headers the driver code
 includes:
@@ -73,7 +76,8 @@ All test code builds with `-Wall -Wextra -Werror -Wdouble-promotion -Wshadow`.
 
 `test_host/ui_preview` renders every screen to a PNG with the real UI
 sources, then runs touch and flow checks: tap, swipe, long press, wake
-taps on a dimmed screen, the settings debounce, and the calibration flows.
+taps on a dimmed screen, the settings debounce, the calibration flows, and
+the REC pill (touches during a take, the 2 s hold that stops it).
 
 ```sh
 cmake --build build-test-all --target ui_preview_png   # writes test_host/ui_preview/out/*.png
@@ -112,15 +116,21 @@ Tasks:
 
 | Task | Priority / core | Job |
 |---|---|---|
-| `sensor` (main/sensor_task.c) | 10, core 1 | Every 20 ms (50 Hz): drains the IMU FIFO, applies the accel calibration, runs fusion, computes the level reading and publishes it; feeds the calibration collectors, the vibration detector and the turn detector, and notes a turn as activity. |
+| `sensor` (main/sensor_task.c) | 10, core 1 | Every 20 ms (50 Hz): drains the IMU FIFO, applies the accel calibration, runs fusion, computes the level reading and publishes it; feeds the calibration collectors, the vibration detector and the turn detector, and notes a turn as activity. Hands each read's raw frames to the recorder's tap, applies the IMU profile the recorder asks for, and under a RAW profile runs the level path on a filtered copy (`lpf.h`). |
+| `rec_mic` (components/recorder/src/rec_audio.c) | 9, core 1 | Only during a take with microphones: reads the I2S DMA blocks (16 ms each) into AUDIO records. |
 | LVGL (esp_lvgl_adapter) | 6 | The UI. Reads `app_state` snapshots about 15 times a second. |
 | `control` (main/control.c) | 5 | Executes app commands (from the UI and BLE). Polls the AXP2101 every 200 and 500 ms. Runs the power policy. |
+| `rec` (components/recorder/src/recorder.c) | 5 | The recorder's session/take state machine: rec_ctrl commands, Wi-Fi, TCP, BLE and IMU events, a 100 ms tick (timeouts, LEVEL records at 10 Hz, STATS at 1 Hz). Short steps only: a command is answered within milliseconds. |
+| `rec_tx` (components/recorder/src/rec_wifi.c) | 4, core 0 | Brings the soft-AP up and down (the slow part, asked for by `rec`). The stream server on 192.168.4.1:47100: checks HELLO, sends the ring to the one client. |
 | NimBLE host | IDF default, core 0 | GATT, pairing, OTA writes |
-| esp_timer | IDF default | BLE notifications (10 Hz), the OTA timeout, the reboot after OTA |
+| Wi-Fi, lwIP (`tcpip`), event loop | IDF default | Only while a recording session is open |
+| esp_timer | IDF default | BLE notifications (10 Hz), the OTA timeout, the reboot after OTA, the recorder tick |
 
 The UI and BLE never touch the sensor, the PMU or the hardware directly.
 They read `app_state` snapshots and post commands, which the control task
-executes. The sensor task owns the fusion filter, the level state and the
+executes. Recorder commands (BLE rec_ctrl, the REC pill's stop) go to the
+recorder's own queue (`recorder_post()`, `recorder_send()`), because a take
+id and its parameters do not fit an app command. The sensor task owns the fusion filter, the level state and the
 calibration collectors. The control task reaches them only through
 `sensor_*()` calls, which take a mutex. The sensor task holds that mutex only
 while it runs one batch of samples through the filter, never during I2C.
@@ -129,9 +139,10 @@ while it runs one batch of samples through the filter, never during I2C.
 After the deep-sleep timer fires, it only powers off. Otherwise it brings up
 app_state, then settings/NVS, then the PMU (so the charger is configured
 early), the display and brightness, the IMU, the sensor task, the UI, BLE
-(which also creates OTA), and the control task. If the image is new after an
-OTA update, it runs the OTA self-test last. `sensor_task.c` and `control.c`
-are described above.
+(which also creates OTA), and the control task. The recorder starts before
+the sensor task, which reports the IMU to it from its first pass. If the
+image is new after an OTA update, it runs the OTA self-test last.
+`sensor_task.c` and `control.c` are described above.
 
 **level**: pure C, host-tested.
 - `level_math`: vectors and quaternions.
@@ -154,6 +165,18 @@ are described above.
   policy. A 2nd-order low-pass (3 Hz) keeps rotation sustained over a tenth
   of a second or more and averages out the motor's vibration; above
   0.3 rad/s the device is turning.
+- `lpf`: the software stand-in for the QMI8658's LEVEL-profile LPFs (accel
+  11.9 Hz, gyro 24.2 Hz; a 2nd-order Butterworth per axis, primed with the
+  first sample). Under a RAW recording profile the chip's LPFs are off, so
+  the sensor task runs fusion, level, both detectors and the calibration
+  collectors on a filtered copy of every batch; the recorder gets the
+  unfiltered frames. Without it the aliased motor tones and hammer blows
+  tilt the reading by degrees (bring-up step 31 compares it with the chip).
+  Fusion, the level zeros (also the WALL heading) and the detectors go
+  through a profile switch (every RAW take starts and ends with one): only
+  the decode scale and the filter change, and the filter goes on from the
+  last sample fusion got (`lpf_imu_restart()`), so the reading does not
+  jump. Only a lost IMU restarts fusion.
 
 **app_core**: the shared snapshot. Each producer has one setter, and every
 consumer gets a consistent copy. The control task also publishes which
@@ -187,10 +210,16 @@ clamps the gauge to 0..100 % and treats a battery voltage below 2.5 V as no
 battery, so every consumer can use the published values as they are.
 
 **imu**: a register-level QMI8658 driver: ±4 g, ±512 dps at 448.4 Hz, on-chip
-LPF, FIFO in stream mode.
+LPF, FIFO in stream mode (the LEVEL profile). The recording profiles turn the
+LPFs off: RAW448 (±4 g), RAW448_16G (±16 g, for hammer drilling) and RAW897
+(896.8 Hz, experimental). `imu_set_profile()` reconfigures the chip (about
+180 ms, a new TIMESTAMP epoch); `imu_read_fifo_ex()` also returns a read's
+raw frames with their timestamp runs.
 - Samples lost while the FIFO is in read mode are found with the TIMESTAMP
   counter and filled in by interpolation. This keeps the fusion dt fixed.
-- The real sample rate is measured against esp_timer.
+- The real sample rate is measured against esp_timer. A rate measured once
+  stays in use across a profile switch or a re-init (scaled to the new ODR),
+  so FIFO losses are filled at once instead of after a new 2 s baseline.
 - If leaving FIFO read mode fails, the next read retries it first. If no new
   samples arrive for 200 ms (failed reads, a stuck FIFO, or the chip reset
   itself), the sensor task treats the IMU as lost and re-initialises it, so a
@@ -203,7 +232,8 @@ LPF, FIFO in stream mode.
   host-tested. It takes the activity timestamp and the vibration flag as
   inputs (vibration counts for at most 3 min after the last other activity),
   arms the low-battery power-off 5 s after it starts, and provides the idle
-  time the calibration timeout uses too.
+  time the calibration timeout uses too. An open recording session blocks
+  sleep like OTA and a calibration do (the screen still dims).
 - `power.c`: applies the states. Brightness goes through the BSP, under the
   display lock. Before deep sleep or power-off the touch controller gets its
   sleep command. Deep sleep is entered with IMU wake-on-motion on ext1 and an
@@ -219,14 +249,19 @@ LPF, FIFO in stream mode.
   sleep, power-off and reboot (also the reboot after an OTA update). Only
   the fields changed on the screen are written, so a BLE config write made
   meanwhile to another field is kept.
-- Overlays show the BLE passkey, OTA progress and low battery.
+- Overlays show the BLE passkey, OTA progress and low battery, and the REC
+  pill of a recording session over the mode title: "REC ready" between
+  takes, red "REC mm:ss" during one. It is not modal. During a take every
+  touch is logged in the recording (EVENT TOUCH) and does nothing else; only
+  the pill takes it, and a 2 s hold on it stops the take.
 - A touch that wakes a dimmed screen only brightens it, on every screen:
   it is dropped at the input layer before any widget sees it.
 - Pure helpers (formatting, scaling, steppers) are in `ui_logic.c` and are
   host-tested.
 
 **ble**: a NimBLE peripheral. It has DIS, battery and the DrillBalancer
-service (angle, config, command, status), plus the OTA service.
+service (angle, config, command, status), plus the OTA and recorder
+services.
 - Pairing uses LE Secure Connections with a passkey shown on screen, and
   bonds are stored in NVS. Only passkey-authenticated bonds with a 16-byte
   key are kept: a Just Works pairing is not stored, never evicts the owner's
@@ -235,8 +270,56 @@ service (angle, config, command, status), plus the OTA service.
 - A link that is neither authenticated nor subscribed to anything is dropped
   after 60 s. Only an authenticated link with a write in the last 10 minutes
   keeps the device out of deep sleep.
-- `ble_codec.c` builds and parses the packets and holds the link policy
+- rec_ctrl writes go to `recorder_post()`, which answers once the recorder
+  has taken them (milliseconds: Wi-Fi comes up and goes down in `rec_tx`).
+  BUSY means it was not carried out, not even later. rec_state is readable and notified on an authenticated
+  link only (it carries the Wi-Fi credentials and the stream token): on
+  every recorder change and once a second during a take. A disconnect is
+  BLE_LOST for the recorder (a take goes on for 120 s), an authenticated
+  link BLE_BACK.
+- `ble_codec.c` builds and parses the packets (also the recorder's LEVEL
+  records, so they match the angle notifications) and holds the link policy
   checks, and is host-tested.
+
+**recorder**: the training-data recorder. A session is one soft-AP and one
+TCP connection (one Android approval dialog); it holds many takes, each
+SESSION ... END on the stream.
+- Pure and host-tested: `rec_stream` (the record format, `rec_stream.h` is
+  the contract with the app and `tools/dataset`), `rec_ring` (the 4 MB PSRAM
+  ring of whole records), `rec_fsm` (sessions, takes, faults and the action
+  bitmask), `rec_ts` (TIMESTAMP extension, rate estimates) and `rec_util`
+  (AP credentials, HELLO, audio channels, DMA block pairing). The simulator
+  builds the same sources.
+- `recorder.c`: the `rec` task, the command queue, the gated producers (the
+  sensor tap, audio, events, LEVEL and STATS), the board id (a salted
+  SHA-256 of the eFuse MAC; the MAC never leaves the device) and the
+  firmware text with its git revision.
+- `rec_wifi.c`: the soft-AP `DB-XXXX-YYYY` (WPA2, a new 20-character
+  passphrase per session, channel 6, one station, RAM storage, torn down
+  completely at the end) and the TCP server (HELLO with the session token,
+  one client, a send blocked for 10 s or a station leaving loses it).
+- `rec_audio.c`: its own RX-only I2S channel on the BSP pins (16 kHz, 16-bit
+  stereo, MCLK 256 x fs), the ES7210 through `esp_codec_dev` with the take's
+  microphones and gain, powered only during a take; a DMA timestamp per
+  block.
+- OTA, calibration and a session exclude each other through one arbiter,
+  `app_excl_acquire()` in `app_state` (an atomic test and set): a session
+  holds the device from OPEN until it is closed and Wi-Fi is down, OTA from
+  its START until the transfer ends, a calibration until it ends. A
+  calibration start while another one has it is refused where it was asked
+  for: the BLE command write answers BUSY (0x86), the screen's guide says
+  why; one that slips past both is refused by the control task, and the
+  guide shows that too (`app_cal_status_t.refused`).
+- Sleep, power-off and reboot call `recorder_shutdown()` first: a take ends
+  with END, `rec_tx` drains the ring (200 ms), ends the stream with a FIN
+  and gives the client up to 1 s to read up to it and close (lwIP would
+  lose what it still holds if Wi-Fi went down right after the close), then
+  takes Wi-Fi down. The call returns once that is done (bounded at about
+  5 s, typically well under one), and no session opens after it until the
+  next boot. A CLOSE and the BLE grace end the stream the same way.
+- The sender leaves Nagle on and wakes once a few MSS are queued (or every
+  20 ms), so a take goes out in MSS-sized segments; END is pushed at once
+  (TCP_NODELAY up to it).
 
 **ota**:
 - `ota_proto`: the transport-independent update protocol (START, sequenced
@@ -255,8 +338,22 @@ The OTA wire format is in
 [components/ota/include/ota_proto.h](components/ota/include/ota_proto.h), and
 the reference client is [tools/ble/db_client.py](tools/ble/db_client.py).
 
-You can read the angle, status and config without pairing. Config writes,
-commands and OTA need a bonded link. A factory reset deletes all bonds, so
+| Service | Characteristic | UUID | Properties | Security |
+|---|---|---|---|---|
+| Device Information | manufacturer, model, firmware revision | `0x180A` / `0x2A29`, `0x2A24`, `0x2A26` | read | open |
+| Battery | battery level | `0x180F` / `0x2A19` | read, notify | open |
+| DrillBalancer | angle | `d71b0002-…` | notify | open |
+| | config | `d71b0003-…` | read, write | read open, write authenticated |
+| | command | `d71b0004-…` | write | authenticated |
+| | status | `d71b0005-…` | read, notify | open |
+| OTA | ota_ctrl | `d71b0101-…` | write, indicate | authenticated |
+| | ota_data | `d71b0102-…` | write without response | authenticated |
+| Recorder | rec_ctrl | `d71b0201-…` | write | authenticated |
+| | rec_state | `d71b0202-…` | read, notify | authenticated (read and notify) |
+
+Authenticated means an encrypted link paired with the passkey and a 16-byte
+key. You can read the angle, status and config without pairing. Config
+writes, commands, OTA and the recorder need a bonded link. A factory reset deletes all bonds, so
 every phone or PC has to pair again afterwards. The device advertises as
 `DrillBalancer-XXXX` (the last 4 hex digits of the BT MAC).
 
@@ -328,7 +425,7 @@ IMU re-initialisation, the yaw reads invalid until you zero again.
 |---|---|---|
 | ACTIVE | Boot, or any activity: touch, BLE write, turning the device faster than 0.3 rad/s (low-passed gyro), USB plugged in or out, PWR key; a running drill (vibration) within 3 min of the last other activity | Brightness `bright` (default 100 %) |
 | DIM | No activity for `dim_s` (default 30 s) | Brightness `dim_bright` (default 20 %); the UI keeps running |
-| SLEEP | No activity for `sleep_s` (default 120 s), and no OTA, calibration, authenticated BLE link with a write in the last 10 min, or USB power | BLE off, display at brightness 0, unused rails off, IMU wake-on-motion (150 mg), ESP32 deep sleep. Motion wakes the device (it reboots). After `off_min` (default 60 min) a timer wake powers it off. |
+| SLEEP | No activity for `sleep_s` (default 120 s), and no OTA, calibration, recording session, authenticated BLE link with a write in the last 10 min, or USB power | BLE off, display at brightness 0, unused rails off, IMU wake-on-motion (150 mg), ESP32 deep sleep. Motion wakes the device (it reboots). After `off_min` (default 60 min) a timer wake powers it off. |
 | OFF | Battery below 5 %, not charging and no USB power, even if the charger pauses (armed 5 s after start-up); a PWR key long press; or the BLE power-off command | AXP2101 power-off. The PWR key turns the device on again. |
 
 A running drill held still keeps the screen on. The sensor task's vibration
@@ -367,7 +464,7 @@ again.
 
 ## Bring-up checklist (hardware)
 
-Every `TODO(hw)` in the tree is covered below, with its file. Grep for
+Every `TODO(hw)` in the tree is covered below (36 steps), with its file. Grep for
 `TODO(hw)` to find the code. Keep a serial monitor open
 (`idf.py -p /dev/ttyACM0 monitor`) for all steps.
 
@@ -437,8 +534,9 @@ Every `TODO(hw)` in the tree is covered below, with its file. Grep for
 13. **Partial FIFO read** (`imu.c`). Check that the samples left unread stay
     queued. This only happens if the 64-sample batch is smaller than the
     FIFO content, for example after a stall.
-14. **LPF, vibration and turn detectors** (`imu.c`, gyro 24 Hz / accel
-    12 Hz; `components/level/src/vibration.c`, hp_hz 6 Hz / amp_g 0.05 g;
+14. **LPF, vibration and turn detectors** (`imu_frame.c` CTRL5_LEVEL, gyro
+    24 Hz / accel 12 Hz; `components/level/src/vibration.c`, hp_hz 6 Hz /
+    amp_g 0.05 g;
     `components/level/src/turn.c`, lp_hz 3 Hz / rate_rad_s 0.3 rad/s). Tune
     the LPF first, on a running drill: the reading should stay steady
     without lagging too much. The detectors only see what the LPFs pass, so
@@ -548,4 +646,96 @@ Every `TODO(hw)` in the tree is covered below, with its file. Grep for
     - the sensor task (4096, `main/sensor_task.c`), after a sensor
       calibration and an IMU re-init;
     - the control task (6144, `main/control.c`), after a calibration finish
-      and a factory reset.
+      and a factory reset;
+    - the recorder's tasks (`components/recorder/src/recorder.c`): `rec`
+      (4096) after a session with a take and a close, `rec_tx` (4096,
+      `rec_wifi.c`) after a long take, `rec_mic` (3072, `rec_audio.c`) after
+      a take with both microphones.
+
+**Recorder (training data)**
+
+Use `tools/ble/db_client.py rec open`, `rec start`, `rec stop`, `rec pull`
+(see [tools/ble/README.md](tools/ble/README.md)) and export a pulled
+`.dbrec` with `python -m dbdata.dbrec export` in `tools/dataset`.
+
+27. **Microphones** (`components/recorder/include/rec_stream.h` REC_MIC_*,
+    `components/recorder/src/rec_audio.c`, mic mask and gain):
+    - Tap next to each microphone in turn (`rec start --mics 3`): the tap
+      must be loudest in its own channel, MIC1 the left one (channel 0 of
+      `audio.flac`). Swap the channel order in `rec_audio.c` otherwise.
+    - Record a running drill in wood and in masonry at 0, 6, 12 and 18 dB.
+      Keep the STATS clip count at 0 with some headroom and make that the
+      app's default gain (6 dB now).
+    - The microphones are only powered during a take: no MCLK on GPIO42 and
+      no ES7210 current between takes.
+28. **Audio clock and DMA** (`rec_audio.c`). Over a 5 min take with both
+    microphones the STATS audio rate is within 0.1 % of 16 000 Hz, the DMA
+    overflow count stays 0 while the AP sends, and the AUDIO sample indices
+    have no jumps.
+29. **IMU-audio offset** (`rec_audio.c`, the block timestamp). Tap the housing
+    hard with the motor off, a few times: the impulse shows in `imu.csv.gz`
+    and `audio.flac` once both are on the device clock (the sync fit). Note
+    the fixed offset (the ES7210's filter delay) for the dataset's
+    alignment constant.
+30. **RAW profiles** (`components/imu/src/imu_frame.c` CTRL5_RAW and the
+    profile table, `components/imu/include/imu.h` epoch):
+    - With the LPFs off, look at the spectrum of a running drill for tones
+      folded down by the 448.4 Hz sampling, in RAW448.
+    - Hammer drilling in RAW448: does ±4 g clip (STATS, the samples at full
+      scale)? If not, RAW448_16G is not needed.
+    - RAW897: measure the FIFO loss (STATS imu_lost against imu_frames,
+      about 25 % expected) and decide whether the profile stays.
+    - After a profile switch TIMESTAMP must restart from 0 (the first IMU
+      record of the new epoch).
+    - The STATS imu_period_ns of a RAW897 take is half that of a RAW448
+      take within 0.1 % (`imu_frame.h` imu_rate_restart() scales a measured
+      period to the new ODR on that assumption).
+    - In WALL mode with a zero set, a RAW take must leave the yaw valid and
+      where it was (fusion goes through the switch).
+31. **LPF stand-in** (`components/level/include/lpf.h`). With the drill held
+    still, record the same pose in a LEVEL take and in a RAW448 take, motor
+    running: the LEVEL records must agree within about 0.2°, a quick 20°
+    tilt must lag alike, and the vibration detector (step 14) must decide
+    the same in both. Fit the filter to the chip otherwise.
+32. **Soft-AP and the phone** (`components/recorder/src/rec_wifi.c`). The app
+    joins `DB-XXXX-YYYY` after one approval dialog, the phone keeps its
+    mobile data, the log shows `stream client connected`; a second phone
+    cannot join; walking out of range during a take ends it (CLIENT_LOST)
+    and the session waits for the phone again; CLOSE ends with
+    `soft-AP down`. Lost without a word (AP_INACTIVE_S, KEEPALIVE_*):
+    switch the phone to flight mode in READY: `stream client lost` within
+    about 11 s, and another phone can join within 30 s; a phone left idle
+    in READY for 5 min (screen off) must stay connected.
+33. **Throughput and coexistence** (`rec_wifi.c` channel 6,
+    `sdkconfig.d/recorder.defaults`). A 5 min RAW448 take with both
+    microphones at 1, 5 and 10 m: note the kB/s, STATS ring high-water and
+    dropped records (none expected). The BLE angle notifications must stay
+    at 10 Hz meanwhile (no seq gaps). Try another channel if either is poor.
+    ESP-IDF rates a soft-AP with a connected station next to a BLE
+    connection "C1: supported but the performance is unstable"
+    (`api-guides/coexist.rst`), so a poor result here is possible. It also
+    advises the Wi-Fi task and the BT controller and host on different
+    cores; all three are on core 0 now. Repeat the take with
+    `CONFIG_ESP_WIFI_TASK_PINNED_TO_CORE_1=y` (the Wi-Fi task, prio 23,
+    then preempts the sensor task: watch the IMU loss and the angle
+    stream) and, separately, with `CONFIG_BT_CTRL_PINNED_TO_CORE_1=y` and
+    `CONFIG_BT_NIMBLE_PINNED_TO_CORE_1=y`, and keep the best.
+34. **Internal heap** (`components/recorder/src/recorder.c`, the log line
+    `AP up: internal heap ... free, largest block ...`, and `rec_audio.c`,
+    `rec_mic: internal heap ... free, largest block ...` when a take's
+    microphones come on, 8 KB of I2S DMA more). Note both. Keep at least
+    20 KB free; otherwise lower CONFIG_ESP_WIFI_STATIC_TX_BUFFER_NUM or the
+    recorder's stacks.
+35. **Current and heat while recording.** Measure on the battery side with
+    the AP up and a take running (BLE connected, both microphones), and the
+    case temperature after a 20 min take.
+36. **Session end and shutdown** (`rec_wifi.c` wifi_down(), `rec_glue.h`
+    REC_WIFI_SETUP_MS, `recorder.c` recorder_shutdown()). With
+    `rec pull` running, end a RAW448 take with both microphones by CLOSE, by
+    walking the phone's BLE out of range for 2 min (the grace) and by a
+    short PWR key press: each pull must end with END and the log must show
+    `soft-AP down in N ms` without `did not close`. Note the `soft-AP ...`
+    start and the `down` times and the `shut down in N ms` line; keep
+    REC_WIFI_SETUP_MS above the slowest start or teardown seen. A rec_ctrl
+    write must be answered within a few ms while the AP comes up or goes
+    down (db_client's timing).

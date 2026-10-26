@@ -50,6 +50,7 @@ add_library(dbsim SHARED
     ${C}/level/src/accel_cal.c
     ${C}/level/src/vibration.c
     ${C}/level/src/turn.c
+    ${C}/level/src/lpf.c
     ${C}/settings/src/settings.c
     ${C}/ota/src/ota_proto.c
     ${C}/ble/src/ble_codec.c
@@ -61,6 +62,7 @@ add_library(dbsim SHARED
     ${C}/recorder/src/rec_ring.c
     ${C}/recorder/src/rec_fsm.c
     ${C}/recorder/src/rec_ts.c
+    ${C}/recorder/src/rec_util.c
     $<TARGET_OBJECTS:dbsim_thirdparty>)
 target_include_directories(dbsim PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}

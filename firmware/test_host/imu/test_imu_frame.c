@@ -371,6 +371,36 @@ static void test_rate_rejects_implausible(void)
     TEST_ASSERT_FALSE(r.measured);
 }
 
+// imu.c configure() at every profile switch: the measured period survives
+// it (gap filling stays on), scaled to the new ODR; a new baseline starts.
+static void test_rate_survives_a_restart(void)
+{
+    const float nominal = 1.0f / 448.4f;
+    imu_rate_t r;
+    imu_rate_init(&r, nominal);
+    imu_rate_restart(&r, nominal);      // nothing measured yet: nominal
+    TEST_ASSERT_FALSE(r.measured);
+    TEST_ASSERT_EQUAL_FLOAT(nominal, r.period_s);
+    for (int i = 0; i <= 300; i++) {    // 440 Hz for 3 s
+        imu_rate_update(&r, (uint32_t)(i * 44 / 10), (int64_t)i * 10000);
+    }
+    TEST_ASSERT_TRUE(r.measured);
+    imu_rate_restart(&r, nominal);      // the same ODR
+    TEST_ASSERT_TRUE(r.measured);
+    TEST_ASSERT_FLOAT_WITHIN(1e-7f, 1.0f / 440.0f, r.period_s);
+    TEST_ASSERT_FALSE(r.started);
+    // The new chip clock from 0: the first 2 s keep the old value.
+    for (int i = 0; i <= 100; i++) {
+        imu_rate_update(&r, (uint32_t)(i * 44 / 10), 5000000 + (int64_t)i * 10000);
+    }
+    TEST_ASSERT_FLOAT_WITHIN(1e-7f, 1.0f / 440.0f, r.period_s);
+    // Twice the ODR (RAW897): half the period, still measured.
+    imu_rate_restart(&r, nominal / 2.0f);
+    TEST_ASSERT_TRUE(r.measured);
+    TEST_ASSERT_FLOAT_WITHIN(1e-7f, 0.5f / 440.0f, r.period_s);
+    TEST_ASSERT_FLOAT_WITHIN(1e-9f, nominal / 2.0f, r.nominal_s);
+}
+
 static void test_profile_table(void)
 {
     const imu_profile_info_t *l = imu_profile_info(IMU_PROFILE_LEVEL);
@@ -701,5 +731,6 @@ int main(void)
     RUN_TEST(test_fill_gap_interpolates_between_neighbours);
     RUN_TEST(test_rate_estimate);
     RUN_TEST(test_rate_rejects_implausible);
+    RUN_TEST(test_rate_survives_a_restart);
     return UNITY_END();
 }

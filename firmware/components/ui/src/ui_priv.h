@@ -27,6 +27,18 @@ extern "C" {
 #define UI_BURNIN_PERIOD_MS (3u * 60u * 1000u)
 #define UI_BURNIN_AMP_PX 4
 
+// The low-battery banner (ui.c), over the mode title.
+#define UI_LOWBAT_W 224
+#define UI_LOWBAT_H 42
+#define UI_LOWBAT_Y 46
+// The REC pill (ui.c): where the banner is, below it when both show.
+// tools/sim/dbsim/web/app.js draws both with the same numbers.
+#define UI_REC_PILL_W 160
+#define UI_REC_PILL_H 40
+#define UI_REC_PILL_GAP 6
+#define UI_REC_PILL_Y UI_LOWBAT_Y
+#define UI_REC_PILL_Y_LOWBAT (UI_LOWBAT_Y + UI_LOWBAT_H + UI_REC_PILL_GAP)
+
 #define UI_C_GREEN 0x00E676
 #define UI_C_AMBER 0xFFB300
 #define UI_C_WHITE 0xFFFFFF

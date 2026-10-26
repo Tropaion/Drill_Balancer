@@ -14,7 +14,6 @@ import shutil
 import subprocess
 import tempfile
 import unittest
-from pathlib import Path
 
 from simtest import FIRMWARE_IMAGE, C, dc
 
@@ -52,31 +51,9 @@ BLUEZ_FLAGS = {"read": (0x02, False, False), "write-without-response": (0x04, Fa
 NIMBLE_FLAGS = {"BLE_GATT_CHR_F_READ": 0x02, "BLE_GATT_CHR_F_WRITE_NO_RSP": 0x04,
                 "BLE_GATT_CHR_F_WRITE": 0x08, "BLE_GATT_CHR_F_NOTIFY": 0x10,
                 "BLE_GATT_CHR_F_INDICATE": 0x20}
-# ble_protocol.h's table: "read, notify" etc.
-PLAN_PROPS = {"read": 0x02, "write w/o resp.": 0x04, "write": 0x08, "notify": 0x10,
-              "indicate": 0x20}
-
-
-def planned_rec_service(header: str, ids: dict):
-    """The recorder service as ble_protocol.h plans it (its service table
-    comment and security paragraph), in firmware_gatt_table()'s form."""
-    assert "both recorder characteristics require an encrypted, authenticated link" in \
-        " ".join(line.lstrip("/ ") for line in header.splitlines()), "security paragraph changed"
-    m = re.search(r"//   Recorder\s+DB_UUID\((0x[0-9A-Fa-f]+)\).*?\n((?://     .*\n)+)", header)
-    chars = []
-    for name, cid, props in re.findall(r"//     (\w+)\s+DB_UUID\((0x[0-9A-Fa-f]+)\)\s+(.+?)\s{2,}",
-                                       m[2]):
-        bits = sum(PLAN_PROPS[p.strip()] for p in props.split(","))
-        assert ids[f"DB_CHR_{name.upper()}"] == int(cid, 16), name
-        chars.append((B.db_uuid(int(cid, 16)), bits, bool(bits & 0x08), bool(bits & 0x02)))
-    assert ids["DB_SVC_REC"] == int(m[1], 16)
-    return (B.db_uuid(int(m[1], 16)), chars)
-
-
 def firmware_gatt_table():
     """[(service UUID, [(char UUID, properties, secure write, secure read)])] from
-    ble_service.c. Until ble_service.c registers the recorder service
-    (milestone 4) its entry comes from the plan in ble_protocol.h."""
+    ble_service.c's s_svcs table."""
     src = (C.COMPONENTS_DIR / "ble/src/ble_service.c").read_text()
     header_path = dc._header_path("ble", "include", "ble_protocol.h")
     ids = dc._header_defines(header_path)
@@ -100,8 +77,6 @@ def firmware_gatt_table():
             chars.append((uuid(cuuid), props, "SEC_WRITE" in names,
                           "SEC_READ" in names or "BLE_GATT_CHR_F_READ_AUTHEN" in names))
         out.append((suuid, chars))
-    if B.db_uuid(ids["DB_SVC_REC"]) not in (sv for sv, _ in out):
-        out.append(planned_rec_service(Path(header_path).read_text(), ids))
     return out
 
 

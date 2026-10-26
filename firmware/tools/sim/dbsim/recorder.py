@@ -26,7 +26,7 @@ ring is dropped, only the socket's own queue still goes out before the FIN,
 as on lwIP. stall() and drop_client() inject the faults the web panel
 offers.
 
-The device's timings (HELLO_TIMEOUT_S, SEND_STALL_S, STOP_AP_S, a stall)
+The device's timings (HELLO_TIMEOUT_S, SEND_STALL_S, STOP_AP_S, LINGER_S, a stall)
 run on the device's clock, DbSimDevice.now_ms, which dev.run(speed) runs at
 speed times the wall clock: they are the board's timeouts. What only the
 PC does is on the wall clock: CLOSE_S, the socket's close, and the kB/s
@@ -54,6 +54,7 @@ HELLO_LEN = dc.REC_HELLO_LEN
 HELLO_TIMEOUT_S = 5.0
 SEND_STALL_S = 10.0          # firmware_sim.md: a send blocked > 10 s loses the client
 STOP_AP_S = 0.2              # REC_ACT_STOP_AP: what is queued goes out within 200 ms
+LINGER_S = 1.0               # REC_WIFI_LINGER_MS: then the client gets this to read to the FIN
 CHUNK = 16384                # one send()'s worth (the board peeks a TCP send buffer)
 TCP_SND_BUF = 23360          # the board's LWIP_TCP_SND_BUF_DEFAULT (sdkconfig recorder.defaults)
 SNDBUF = 32768               # the kernel's part stays small where SIOCOUTQ is missing
@@ -176,7 +177,8 @@ class RecorderServer:
         self._spawn(self._ap_start())
 
     def ap_stop(self):
-        """STOP_AP: what is queued goes out (<= 200 ms), then the endpoint is down."""
+        """STOP_AP: what is queued goes out (<= 200 ms), the stream ends (FIN) and the
+        client gets LINGER_S to read up to it and close, then the endpoint is down."""
         self._closing = True
         self._spawn(self._ap_stop())
 
@@ -206,6 +208,7 @@ class RecorderServer:
                     await self._within(w.drain(), (end - self._now_ms()) / 1000)
                 except (asyncio.TimeoutError, ConnectionError):
                     break
+        await self._finish_stream()
         await self._close_client(lost=False)
         if self.ap:
             if self._server is not None:
@@ -213,6 +216,28 @@ class RecorderServer:
                 self._server = None
             await self._hotspot_down()
         self.dev.rec_endpoint_down()
+
+    async def _finish_stream(self):
+        """rec_wifi.c finish_stream(): FIN after what is queued. The board's lwIP would
+        lose what it still holds if Wi-Fi went down right after close(), so the client
+        gets LINGER_S (device time) to read up to the FIN and close (its EOF ends
+        _serve(), which closes the connection). The PC's kernel would deliver it anyway;
+        this keeps the board's timing. A device clock that does not move (halted, or a
+        test's) is capped by CLOSE_S of wall time, as stop()."""
+        if self._client is None:
+            return
+        w = self._client[1]
+        try:
+            if not w.can_write_eof():
+                return
+            w.write_eof()
+        except (OSError, RuntimeError):
+            return
+        end = self._now_ms() + LINGER_S * 1000
+        wall_end = time.monotonic() + max(LINGER_S, CLOSE_S)
+        while (self._client is not None and self._client[1] is w and self._now_ms() < end
+               and time.monotonic() < wall_end):
+            await asyncio.sleep(POLL_S)
 
     # ---- hotspot (--rec-ap) ---------------------------------------------------------------
     async def _nmcli(self, *args) -> str:

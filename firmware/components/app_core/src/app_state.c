@@ -34,15 +34,19 @@ void app_state_get(app_snapshot_t *out)
     LOCKED(*out = s_state);
 }
 
-void app_state_set_motion(bool imu_ok, quat_t q, bool still, bool vibrating, bool zero_set,
-                          const level_reading_t *reading, uint32_t now_ms)
+void app_state_set_motion(bool imu_ok, quat_t q, bool still, bool vibrating,
+                          const float *zero_deg, const level_reading_t *reading,
+                          uint32_t now_ms)
 {
     LOCKED({
         s_state.imu_ok = imu_ok;
         s_state.q = q;
         s_state.still = still;
         s_state.vibrating = vibrating;
-        s_state.zero_set = zero_set;
+        s_state.zero_set = zero_deg != NULL;
+        for (int i = 0; i < 3; i++) {
+            s_state.zero_deg[i] = zero_deg ? zero_deg[i] : 0.0f;
+        }
         s_state.reading = *reading;
         s_state.reading_ms = now_ms;
     });
@@ -89,7 +93,12 @@ void app_state_set_power(app_power_t power)
 
 void app_state_set_cal(const app_cal_status_t *cal)
 {
-    LOCKED(s_state.cal = *cal);
+    LOCKED({
+        s_state.cal = *cal;
+        if (cal->kind == APP_CAL_IDLE && s_state.excl == APP_EXCL_CAL) {
+            s_state.excl = APP_EXCL_NONE;   // the calibration ended
+        }
+    });
 }
 
 void app_state_set_cal_valid(bool mount_cal_valid, bool accel_cal_valid)
@@ -97,6 +106,32 @@ void app_state_set_cal_valid(bool mount_cal_valid, bool accel_cal_valid)
     LOCKED({
         s_state.mount_cal_valid = mount_cal_valid;
         s_state.accel_cal_valid = accel_cal_valid;
+    });
+}
+
+void app_state_set_rec(const app_rec_status_t *rec)
+{
+    LOCKED(s_state.rec = *rec);
+}
+
+app_excl_t app_excl_acquire(app_excl_t who)
+{
+    app_excl_t owner;
+    LOCKED({
+        if (s_state.excl == APP_EXCL_NONE) {
+            s_state.excl = (uint8_t)who;
+        }
+        owner = (app_excl_t)s_state.excl;
+    });
+    return owner;
+}
+
+void app_excl_release(app_excl_t who)
+{
+    LOCKED({
+        if (s_state.excl == (uint8_t)who) {
+            s_state.excl = APP_EXCL_NONE;
+        }
     });
 }
 

@@ -5,6 +5,7 @@
 #include "ble_protocol.h"
 #include "app_state.h"
 #include "ota_update.h"
+#include "recorder.h"
 #include "settings_store.h"
 
 #include "esp_app_desc.h"
@@ -43,6 +44,7 @@ _Static_assert(BLE_CODEC_ATT_INVALID_LEN == BLE_ATT_ERR_INVALID_ATTR_VALUE_LEN,
 
 #define NOTIFY_PERIOD_US      (100u * 1000u)   // angle at 10 Hz
 #define STATUS_HEARTBEAT_MS   1000u
+#define REC_HEARTBEAT_MS      1000u            // rec_state during a take
 
 // Fast advertising right after enable / disconnect so a phone finds us
 // quickly, then slow to save power.
@@ -96,6 +98,9 @@ static const ble_uuid128_t UUID_CHR_STATUS = DB_UUID128(DB_CHR_STATUS);
 static const ble_uuid128_t UUID_SVC_OTA = DB_UUID128(DB_SVC_OTA);
 static const ble_uuid128_t UUID_CHR_OTA_CTRL = DB_UUID128(DB_CHR_OTA_CTRL);
 static const ble_uuid128_t UUID_CHR_OTA_DATA = DB_UUID128(DB_CHR_OTA_DATA);
+static const ble_uuid128_t UUID_SVC_REC = DB_UUID128(DB_SVC_REC);
+static const ble_uuid128_t UUID_CHR_REC_CTRL = DB_UUID128(DB_CHR_REC_CTRL);
+static const ble_uuid128_t UUID_CHR_REC_STATE = DB_UUID128(DB_CHR_REC_STATE);
 
 typedef enum {
     CHR_DIS_MANUFACTURER,
@@ -108,6 +113,8 @@ typedef enum {
     CHR_STATUS,
     CHR_OTA_CTRL,
     CHR_OTA_DATA,
+    CHR_REC_CTRL,
+    CHR_REC_STATE,
 } chr_id_t;
 
 // ---- state -----------------------------------------------------------------------
@@ -126,6 +133,7 @@ static uint16_t s_conn = BLE_HS_CONN_HANDLE_NONE;
 #define SUB_STATUS (1u << 1)
 #define SUB_BAT    (1u << 2)
 #define SUB_OTA    (1u << 3)
+#define SUB_REC    (1u << 4)
 static uint8_t s_subs;
 
 typedef struct {
@@ -136,7 +144,7 @@ static ind_msg_t s_ind[IND_QUEUE_LEN];
 static uint8_t s_ind_head, s_ind_count;
 static bool s_ind_busy;   // head is in flight, waiting for the confirmation
 
-static uint16_t s_h_bat, s_h_angle, s_h_status, s_h_ota_ctrl;
+static uint16_t s_h_bat, s_h_angle, s_h_status, s_h_ota_ctrl, s_h_rec_state;
 
 static bool s_inited;
 static volatile bool s_enabled;
@@ -163,9 +171,14 @@ static esp_timer_handle_t s_notify_timer;
 static esp_timer_handle_t s_reboot_timer;
 
 // Notify timer state (esp_timer task only). s_tick_reset (new connection)
-// and s_status_resend (new subscription) are set by the host task.
+// and s_status_resend / s_rec_resend (new subscription) are set by the host
+// task.
 static volatile bool s_tick_reset;
 static volatile bool s_status_resend;
+static volatile bool s_rec_resend;
+static bool s_rec_sent_valid;
+static db_rec_state_packet_t s_rec_sent;
+static uint32_t s_rec_sent_ms;
 static uint8_t s_angle_seq;
 static bool s_status_sent;
 static db_status_packet_t s_status_last;
@@ -480,6 +493,44 @@ static void link_policy(uint8_t subs, uint32_t now)
     }
 }
 
+// rec_state as it is now, for the read and the notification.
+static void rec_state_packet(db_rec_state_packet_t *p)
+{
+    recorder_refresh();
+    app_snapshot_t snap;
+    app_state_get(&snap);
+    ble_codec_rec_state(&snap.rec, p);
+}
+
+// rec_state carries the Wi-Fi credentials and the stream token: notified
+// to an authenticated link only. On every recorder change (REC_ACT_NOTIFY,
+// or a field ble_codec_rec_state_changed() looks at) and once a second
+// during a take, computed when it is sent so elapsed_s is this second's.
+static void notify_rec(uint16_t conn, uint8_t subs, uint32_t now)
+{
+    bool pending = recorder_take_notify();
+    if (s_rec_resend) {
+        s_rec_resend = false;
+        s_rec_sent_valid = false;
+    }
+    if (!s_link_trusted || !(subs & SUB_REC)) {
+        s_rec_sent_valid = false;
+        return;
+    }
+    db_rec_state_packet_t p;
+    rec_state_packet(&p);
+    bool take = p.state == DB_REC_STATE_RECORDING || p.state == DB_REC_STATE_DRAINING;
+    if (!pending && s_rec_sent_valid && !ble_codec_rec_state_changed(&s_rec_sent, &p) &&
+        !(take && now - s_rec_sent_ms >= REC_HEARTBEAT_MS)) {
+        return;
+    }
+    if (notify(conn, s_h_rec_state, &p, sizeof(p)) == 0) {
+        s_rec_sent = p;
+        s_rec_sent_valid = true;
+        s_rec_sent_ms = now;
+    }
+}
+
 static void notify_tick(void *arg)
 {
     (void)arg;
@@ -487,6 +538,7 @@ static void notify_tick(void *arg)
         s_tick_reset = false;
         s_fast_params = false;
         s_status_resend = true;
+        s_rec_resend = true;
         s_holds_awake = false;
         s_kick_posted = false;
     }
@@ -537,6 +589,8 @@ static void notify_tick(void *arg)
             s_bat_last = pct;
         }
     }
+
+    notify_rec(conn, subs, now);
 
     if (snap.ota_active != s_fast_params) {
         s_fast_params = snap.ota_active;
@@ -623,6 +677,34 @@ static int config_write(struct ble_gatt_access_ctxt *ctxt)
     return 0;
 }
 
+static int rec_ctrl_write(struct ble_gatt_access_ctxt *ctxt)
+{
+    int len = flatten_write(ctxt);
+    if (len < 0) {
+        return BLE_ATT_ERR_INVALID_ATTR_VALUE_LEN;
+    }
+    rec_cmd_t cmd;
+    uint8_t att = ble_codec_parse_rec(s_wbuf, (size_t)len, &cmd);
+    if (att != 0) {
+        ESP_LOGW(TAG, "rec_ctrl 0x%02x rejected: 0x%02x", s_wbuf[0], att);
+        return att;
+    }
+    // Answered once the recorder has taken it (OPEN: once the stream ring is
+    // there; the AP comes up afterwards, rec_state says when).
+    rec_err_t err;
+    if (!recorder_post(&cmd, &err)) {
+        ESP_LOGW(TAG, "rec_ctrl 0x%02x: recorder busy", s_wbuf[0]);
+        return DB_ATT_ERR_BUSY;
+    }
+    att = ble_codec_rec_att_err(err);
+    if (att != 0) {
+        ESP_LOGW(TAG, "rec_ctrl 0x%02x refused: 0x%02x", s_wbuf[0], att);
+    } else {
+        ESP_LOGI(TAG, "rec_ctrl 0x%02x", s_wbuf[0]);
+    }
+    return att;
+}
+
 static int command_write(struct ble_gatt_access_ctxt *ctxt)
 {
     int len = flatten_write(ctxt);
@@ -634,6 +716,15 @@ static int command_write(struct ble_gatt_access_ctxt *ctxt)
     uint8_t att = ble_codec_parse_cmd(s_wbuf, (size_t)len, &id, &arg);
     if (att != 0) {
         ESP_LOGW(TAG, "command 0x%02x rejected: 0x%02x", s_wbuf[0], att);
+        return att;
+    }
+    // A calibration start while OTA or a recording session has the device:
+    // refused here, where the client sees it.
+    app_snapshot_t snap;
+    app_state_get(&snap);
+    att = ble_codec_cmd_excl_err(id, snap.excl);
+    if (att != 0) {
+        ESP_LOGW(TAG, "command 0x%02x refused: %s", s_wbuf[0], app_excl_what(snap.excl));
         return att;
     }
     if (!app_post_cmd(id, arg)) {
@@ -671,6 +762,12 @@ static int gatt_read(chr_id_t id, struct ble_gatt_access_ctxt *ctxt)
     }
     case CHR_CONFIG:
         return config_read(ctxt);
+    case CHR_REC_STATE: {
+        // NimBLE has checked the link (SEC_READ, 16-byte key).
+        db_rec_state_packet_t p;
+        rec_state_packet(&p);
+        return append(ctxt, &p, sizeof(p));
+    }
     default:
         return BLE_ATT_ERR_UNLIKELY;
     }
@@ -683,6 +780,8 @@ static int gatt_write(chr_id_t id, struct ble_gatt_access_ctxt *ctxt)
         return config_write(ctxt);
     case CHR_COMMAND:
         return command_write(ctxt);
+    case CHR_REC_CTRL:
+        return rec_ctrl_write(ctxt);
     case CHR_OTA_CTRL:
     case CHR_OTA_DATA: {
         if (!s_ota_ok) {
@@ -732,6 +831,7 @@ static int gatt_access(uint16_t conn, uint16_t attr_handle, struct ble_gatt_acce
 
 #define CHR_ARG(id) ((void *)(uintptr_t)(id))
 #define SEC_WRITE   (BLE_GATT_CHR_F_WRITE_ENC | BLE_GATT_CHR_F_WRITE_AUTHEN)
+#define SEC_READ    (BLE_GATT_CHR_F_READ_ENC | BLE_GATT_CHR_F_READ_AUTHEN)
 // The key size check only applies to the operations that need security, so
 // the open reads stay open.
 
@@ -785,6 +885,21 @@ static const struct ble_gatt_svc_def s_svcs[] = {
              .min_key_size = SEC_KEY_SIZE},
             {.uuid = &UUID_CHR_OTA_DATA.u, .access_cb = gatt_access, .arg = CHR_ARG(CHR_OTA_DATA),
              .flags = BLE_GATT_CHR_F_WRITE_NO_RSP | SEC_WRITE, .min_key_size = SEC_KEY_SIZE},
+            {0},
+        },
+    },
+    {
+        .type = BLE_GATT_SVC_TYPE_PRIMARY,
+        .uuid = &UUID_SVC_REC.u,
+        .characteristics = (struct ble_gatt_chr_def[]){
+            {.uuid = &UUID_CHR_REC_CTRL.u, .access_cb = gatt_access, .arg = CHR_ARG(CHR_REC_CTRL),
+             .flags = BLE_GATT_CHR_F_WRITE | SEC_WRITE, .min_key_size = SEC_KEY_SIZE},
+            // The credentials: authenticated reads only, notified to such a
+            // link only (notify_rec()).
+            {.uuid = &UUID_CHR_REC_STATE.u, .access_cb = gatt_access,
+             .arg = CHR_ARG(CHR_REC_STATE), .val_handle = &s_h_rec_state,
+             .flags = BLE_GATT_CHR_F_READ | BLE_GATT_CHR_F_NOTIFY | SEC_READ,
+             .min_key_size = SEC_KEY_SIZE},
             {0},
         },
     },
@@ -880,6 +995,7 @@ static void on_disconnect(int reason)
     if (!app_post_cmd(APP_CMD_CAL_CANCEL, APP_CMD_ARG_FROM_BLE)) {
         ESP_LOGW(TAG, "command queue full, BLE calibration not cancelled");
     }
+    recorder_note_ble(false);   // a take goes on for REC_BLE_GRACE_MS
 
     if (s_reboot_armed) {
         reboot_after(REBOOT_DELAY_US);
@@ -902,6 +1018,8 @@ static void on_subscribe(const struct ble_gap_event *event)
     } else if (h == s_h_ota_ctrl) {
         bit = SUB_OTA;
         on = event->subscribe.cur_indicate;
+    } else if (h == s_h_rec_state) {
+        bit = SUB_REC;
     }
     taskENTER_CRITICAL(&s_mux);
     s_subs = on ? (uint8_t)(s_subs | bit) : (uint8_t)(s_subs & ~bit);
@@ -909,6 +1027,9 @@ static void on_subscribe(const struct ble_gap_event *event)
     if (h == s_h_status || h == s_h_bat) {
         // Send the current value at once instead of on the next change.
         s_status_resend = true;
+    }
+    if (h == s_h_rec_state) {
+        s_rec_resend = true;
     }
 }
 
@@ -931,6 +1052,7 @@ static void on_enc_change(uint16_t conn, int status)
         s_link_trusted = true;
         s_last_write_ms = app_now_ms();   // pairing counts as activity
         app_note_activity();
+        recorder_note_ble(true);   // the app (an authenticated link) is back
         return;
     }
     s_link_since_ms = app_now_ms();
@@ -1117,6 +1239,8 @@ esp_err_t ble_service_init(bool enabled)
     // Set even if init fails, so ble_service_set_enabled() with the same
     // value stays a no-op.
     s_enabled = enabled;
+    // The recorder's LEVEL records carry the angle packet's fields.
+    recorder_set_level_encoder(ble_codec_level);
     ESP_RETURN_ON_ERROR(create_timers(), TAG, "timers");
 
     uint8_t mac[6];

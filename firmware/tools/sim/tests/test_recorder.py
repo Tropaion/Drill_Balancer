@@ -220,8 +220,10 @@ class RecorderTest(DeviceTest):
         self.assertEqual(self.ctrl("open"), 0x88)
         self.assertEqual(self.cmd("cal-cancel"), 0)
         self.open_session()
-        self.assertEqual(self.cmd("mount-cal-start"), 0)
+        # Refused at the write, where the app sees it (before: queued, refused unseen).
+        self.assertEqual(self.cmd("mount-cal-start"), 0x86, att[0x86])
         self.assertEqual(self.snap()["cal"]["kind"], 0, "calibration refused during a session")
+        self.assertEqual(self.snap()["cal"]["refused"], 0, "never queued")
         self.assertEqual(self.dev.write_char("ota_ctrl", dc.encode_ota_start(4096, bytes(32))), 0)
         logs = [d["msg"] for _, d in self.names("log")]
         self.assertIn("esp_ota_begin: refused, a recording session is open", logs)
@@ -237,6 +239,80 @@ class RecorderTest(DeviceTest):
         self.assertEqual(self.ctrl("take-start", take_id=1), 0)
         self.assertEqual(self.ctrl("take-start", take_id=2), 0x88)    # already recording
         self.assertEqual(self.ctrl("mark", code=3, text="x"), 0)
+
+    def test_one_arbiter_for_calibration_ota_and_a_session(self):
+        # app_excl_acquire(): a calibration start that passed the write's check but reaches
+        # the control task after OPEN took the device is refused there and counted, so the
+        # screen that posted it can say so (before: a log line, the guide collected forever).
+        self.assertEqual(self.dev.write_char("command", dc.encode_cmd("accel-cal-start")), 0)
+        self.assertEqual(self.ctrl("open"), 0)
+        self.dev.advance(20)
+        cal = self.snap()["cal"]
+        self.assertEqual((cal["kind"], cal["refused"]), (0, 1))
+        self.assertEqual(self.snap()["excl"], 3)                       # APP_EXCL_REC
+        logs = [d["msg"] for _, d in self.names("log")]
+        self.assertIn("calibration refused: a recording session is open", logs)
+        # The session has the device until it is closed and its endpoint is down.
+        self.assertEqual(self.ctrl("close"), 0)
+        self.dev.advance(1000)
+        self.assertEqual(self.state().state_name, "idle")
+        self.assertEqual(self.snap()["excl"], 0)
+        self.assertEqual(self.cmd("accel-cal-start"), 0)
+        self.assertEqual(self.snap()["cal"]["kind"], 2)
+        # A calibration keeps an update out too, and gives the device back when it ends.
+        self.assertEqual(self.dev.write_char("ota_ctrl", dc.encode_ota_start(4096, bytes(32))), 0)
+        logs = [d["msg"] for _, d in self.names("log")]
+        self.assertIn("esp_ota_begin: refused, a calibration runs", logs)
+        self.assertEqual(self.cmd("cal-cancel"), 0)
+        self.assertEqual(self.snap()["excl"], 0)
+        self.assertEqual(self.ctrl("open"), 0)
+
+    def test_open_waits_for_the_last_endpoint_to_go_down(self):
+        # The FSM leaves CLOSING after REC_CLOSE_MS even when the endpoint is not down yet;
+        # the ring and the device stay that session's until it is (recorder.c
+        # WIFI_STOPPING), and an OPEN meanwhile is refused, not a second AP over the first.
+        self.dev.STOP_AP_MS = 8000
+        self.open_session()
+        self.assertEqual(self.ctrl("close"), 0)
+        self.dev.advance(5500)
+        self.assertEqual(self.state().state_name, "idle")
+        self.assertEqual(self.ctrl("open"), 0x88)
+        self.assertEqual(self.snap()["excl"], 3, "still the session's")
+        self.assertEqual(self.cmd("accel-cal-start"), 0x86)
+        self.dev.advance(3000)
+        self.assertEqual(self.snap()["excl"], 0)
+        self.assertEqual(self.ctrl("open"), 0)
+
+    def test_a_profile_switch_keeps_fusion_and_the_heading_zero(self):
+        # Every RAW take starts and ends with a profile switch. Fusion goes through it (only
+        # the decode scale and the software LPF change), so the WALL heading zero stays valid
+        # and the reading steady (before: fusion restarted at yaw 0, the yaw read invalid
+        # until the next zero).
+        self.open_session()
+        self.dev.advance(2000)
+        self.assertEqual(self.cmd("zero"), 0)
+        self.dev.advance(500)
+        r0 = self.snap()["reading"]
+        self.assertTrue(r0["yaw_valid"])
+        seen = []
+
+        def watch(ms):
+            for _ in range(ms // 20):
+                self.dev.advance(20)
+                s = self.snap()
+                seen.append((s["fusion"]["ready"], s["reading"]["yaw_valid"],
+                             s["reading"]["elevation"], s["reading"]["yaw"]))
+
+        self.assertEqual(self.ctrl("take-start", take_id=4, profile=RAW897, mic_mask=0), 0)
+        watch(1500)
+        self.assertEqual(self.snap()["rec"]["imu_profile"], RAW897)
+        self.assertEqual(self.ctrl("stop"), 0)
+        watch(1500)
+        self.assertEqual(self.snap()["rec"]["imu_profile"], 0)
+        self.assertTrue(all(ready and yaw for ready, yaw, _, _ in seen))
+        for _, _, el, yaw in seen:
+            self.assertAlmostEqual(el, r0["elevation"], delta=0.3)
+            self.assertAlmostEqual(yaw, r0["yaw"], delta=0.3)
 
     # ---- the stream ----
     def test_take_stream(self):
@@ -380,7 +456,11 @@ class RecorderTest(DeviceTest):
     def test_events(self):
         self.open_session()
         self.dev.physics.vibration_g = 0.4                # the drill runs
-        self.assertEqual(self.ctrl("take-start", take_id=3, mic_mask=0), 0)
+        # A LEVEL take: the simulated chip has no LPF by default, so the
+        # vibration detector sees these 147/233 Hz tones; under a RAW profile
+        # the sensor task's LEVEL-LPF copy (lpf.h) takes them out, as the
+        # chip's LPF would on the board.
+        self.assertEqual(self.ctrl("take-start", take_id=3, mic_mask=0, profile=0), 0)
         self.run_ms(500)
         self.assertTrue(self.dev.touch())
         self.assertEqual(self.ctrl("mark", code=7, text="hole 1 – oak"), 0)
@@ -478,13 +558,15 @@ class RecorderTest(DeviceTest):
         self.assertTrue(epoch[0][5] & IMU_DISCONT)
 
     def test_a_detector_reset_stops_the_motor_events(self):
-        # A reset of the vibration detector while the motor runs (the IMU lost, a profile switch)
-        # is a VIB_STOP, and the QUIET it decides after a reset is none: START and STOP alternate.
+        # A reset of the vibration detector while the motor runs (the IMU lost; a profile
+        # switch keeps the detector) is a VIB_STOP, and the QUIET it decides after a reset is
+        # none: START and STOP alternate.
         self.open_session()
         self.dev.start_scenario(seed=3, holes=1, free_s=3.0, drill_s=3.0, lead_s=0)
         self.run_ms(1500)
         self.buf = bytearray()
-        self.assertEqual(self.ctrl("take-start", take_id=10, mic_mask=0), 0)
+        # LEVEL, so the detector sees the motor (test_events).
+        self.assertEqual(self.ctrl("take-start", take_id=10, mic_mask=0, profile=0), 0)
         self.run_ms(2000)
         self.dev.imu_present = False
         self.run_ms(1500)
@@ -739,6 +821,84 @@ class PanelRecorderTest(DeviceTest):
         state = self.panel.state()
         self.assertEqual(state["snap"]["rec"]["take_id"], 1)
 
+
+
+class RawProfileLevelTest(DeviceTest):
+    """Under a RAW profile (chip LPFs off) the sensor task feeds fusion and
+    level through lpf.h's stand-in for the LEVEL profile's LPFs, while the
+    recorder's tap keeps the raw frames. A hammer scenario then reads like
+    the same scenario under LEVEL with the chip's LPFs modelled
+    (sim_chip_lpf): the drift milestone 3 saw without the filter is gone."""
+
+    ELEVATION = 30.0
+
+    def elevations(self, profile, chip_lpf=False):
+        """The device's elevation every 100 ms through a seeded hammer
+        scenario recorded in profile, the drill held still."""
+        self.dev = self.new_device()
+        self.dev.core.chip_lpf(chip_lpf)
+        self.assertTrue(self.dev.connect())
+        self.dev.encryption_changed(True, True)
+        self.dev.physics.set_drill(elevation=self.ELEVATION, yaw=0.0, roll=0.0)
+        self.settle_imu()
+        self.settle(3000)
+        ctrl = lambda op, **kw: self.dev.write_char("rec_ctrl", dc.encode_rec(op, **kw))  # noqa: E731
+        self.assertEqual(ctrl("open"), 0)
+        self.dev.advance(20)
+        token = dc.decode_rec_state(self.dev.read_char("rec_state")).token
+        self.assertTrue(self.dev.rec_hello(dc.encode_hello(token)))
+        self.dev.advance(20)
+        self.assertEqual(ctrl("take-start", profile=profile, mic_mask=0, take_id=1), 0)
+        # The profile switch (the measured ODR goes through it, imu_rate_restart()), settled.
+        self.settle(3000)
+        self.assertEqual(self.snap()["rec"]["imu_profile"], profile)
+        scn = self.dev.start_scenario(seed=5, mode="hammer", holes=2, lead_s=0)
+        out = []
+        for _ in range(int(scn.duration * 10) + 5):
+            self.dev.advance(100)
+            self.dev.rec_pop()
+            out.append(self.angle().elevation)
+        return out
+
+    def test_hammering_under_raw448_16g_reads_as_under_level(self):
+        level = self.elevations(0, chip_lpf=True)
+        raw = self.elevations(RAW448_16G)
+        unfiltered = self.elevations(0)     # LEVEL without the chip LPFs: what M3 had
+        diff = [a - b for a, b in zip(raw, level)]
+        rms = math.sqrt(sum(d * d for d in diff) / len(diff))
+        mean_err = sum(e - self.ELEVATION for e in raw) / len(raw)
+        self.assertLess(max(map(abs, diff)), 1.5, "within a small bound of LEVEL")
+        self.assertLess(rms, 0.6)
+        self.assertLess(abs(mean_err), 0.6, "no drift")
+        self.assertLess(abs(raw[-1] - self.ELEVATION), 0.3, "back on the pose after the motor stops")
+        # Without a filter the same blows tilt the reading by degrees.
+        self.assertGreater(max(abs(e - self.ELEVATION) for e in unfiltered), 3.0)
+        self.assertGreater(sum(e - self.ELEVATION for e in unfiltered) / len(unfiltered), 1.2)
+
+    def test_the_tap_keeps_the_raw_frames(self):
+        # The hammer blows reach the recording unfiltered (+-16 g), far above
+        # what the filtered level path sees.
+        self.dev.core.chip_lpf(False)
+        self.connect()
+        self.assertEqual(self.dev.write_char("rec_ctrl", dc.encode_rec("open")), 0)
+        self.dev.advance(20)
+        token = dc.decode_rec_state(self.dev.read_char("rec_state")).token
+        self.assertTrue(self.dev.rec_hello(dc.encode_hello(token)))
+        self.dev.advance(20)
+        buf = bytearray()
+        self.assertEqual(self.dev.write_char(
+            "rec_ctrl", dc.encode_rec("take-start", profile=RAW448_16G, mic_mask=0, take_id=2)), 0)
+        self.settle(3000)
+        scn = self.dev.start_scenario(seed=5, mode="hammer", holes=1, lead_s=0)
+        for _ in range(int(scn.duration * 50)):
+            self.dev.advance(20)
+            buf += self.dev.rec_pop()
+        peak = 0.0
+        for _, p in Stream(buf).of(T_IMU):
+            for i in range(IMU.unpack_from(p)[3]):
+                a = struct.unpack_from("<3h", p, IMU.size + 12 * i)
+                peak = max(peak, math.hypot(*a) / 2048)
+        self.assertGreater(peak, 4.0, "the blows, unfiltered and unclipped")
 
 
 class TruthHttpTest(unittest.IsolatedAsyncioTestCase):
@@ -1032,6 +1192,24 @@ class StreamServerTest(unittest.IsolatedAsyncioTestCase):
                                                          on_ready=on_ready, takes=0), 10)
         self.assertEqual([r for r, _ in scan.ends], ["shutdown"])
         self.assertEqual(self.dev.state, "sleep")
+
+    async def test_close_ends_the_stream_and_waits_for_the_client(self):
+        # rec_wifi.c finish_stream(): after the drain the stream ends with a FIN and the
+        # endpoint only goes down once the client has read up to it and closed (on the board,
+        # esp_wifi_stop() would drop what lwIP still holds, END among it), or after LINGER_S.
+        _, writer = await self.manual_client()
+        downs = []
+        self.dev.subscribe(lambda n, d: n == "rec" and d.get("event") == "endpoint"
+                           and not d["up"] and downs.append(self.dev.core_now))
+        t0 = self.dev.core_now
+        self.assertEqual(self.dev.write_char("rec_ctrl", dc.encode_rec("close")), 0)
+        # A client that reads to EOF but keeps its side open: LINGER_S of device time.
+        await self.tick(R.LINGER_S * 1000 - 200, step=100)
+        self.assertEqual(downs, [], "the endpoint waits for the client")
+        await self.tick(800, step=100)
+        await self.until(lambda: downs, timeout=2.0)
+        self.assertGreaterEqual(downs[0] - t0, R.LINGER_S * 1000)
+        writer.close()
 
     async def test_close_drains_and_takes_the_endpoint_down(self):
         rs = await self.open()

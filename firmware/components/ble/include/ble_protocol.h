@@ -221,7 +221,10 @@ typedef struct __attribute__((packed)) {
 #define DB_ATT_ERR_STORE        0x83   // config: saving to flash failed, nothing changed
 #define DB_ATT_ERR_UNKNOWN_CMD  0x84   // command: unknown opcode
 #define DB_ATT_ERR_BAD_ARG      0x85   // command: bad mode, or FACTORY_RESET without 0xA5
-#define DB_ATT_ERR_BUSY         0x86   // command: queue full, try again
+#define DB_ATT_ERR_BUSY         0x86   // command: queue full, try again; a calibration
+                                       // START while a recording session or an OTA
+                                       // update runs (OTA, calibration and a session
+                                       // exclude each other)
 #define DB_ATT_ERR_UNAVAILABLE  0x87   // ota_ctrl / ota_data: OTA not available
 #define DB_ATT_ERR_REC_STATE    0x88   // rec_ctrl: not in this recorder state, or an OTA
                                        // update or a calibration runs

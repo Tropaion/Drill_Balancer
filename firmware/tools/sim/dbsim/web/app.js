@@ -112,6 +112,10 @@ function roundRow(dy, h, nominal, minW, radius) {
 // ---- the round screen -----------------------------------------------------------------
 
 const W = 466, CX = 233, SAFE_R = 225;
+// ui_priv.h UI_LOWBAT_* and UI_REC_PILL_* (the pill sits at the banner's y,
+// below the banner when both show).
+const LOWBAT = {w: 224, h: 42, y: 46};
+const REC_PILL = {w: 160, h: 40, gap: 6};
 const COL = {
   green: "#00E676", amber: "#FFB300", white: "#FFFFFF", grey: "#9E9E9E", dark: "#2A2A2A",
   button: "#1C1C1C", red: "#FF5252", redBg: "#C62828", blue: "#448AFF",
@@ -574,24 +578,30 @@ function drawOverlays(s, view) {
     text(`${pct} %`, CX, CX + 4, 48, COL.white);
     text("Do not switch off", CX, CX + 56, 16, COL.amber);
   }
-  if (s.ui.low_battery && !s.ota_active && !s.passkey_pending) {
-    pill(CX - 112, 46, 224, 42, COL.redBg);
+  const lowBattery = s.ui.low_battery && !s.ota_active && !s.passkey_pending;
+  if (lowBattery) {
+    const b = LOWBAT, mid = b.y + b.h / 2;
+    pill(CX - b.w / 2, b.y, b.w, b.h, COL.redBg);
     const str = `LOW ${s.battery.percent}%`;
     const tw = textWidth(str, 24);
-    batteryIcon(CX - (tw + 48) / 2, 67, 0, COL.white);
-    text(str, CX + 24, 67, 24, COL.white);
+    batteryIcon(CX - (tw + 48) / 2, mid, 0, COL.white);
+    text(str, CX + 24, mid, 24, COL.white);
   }
   const rec = s.rec;
   if (rec && rec.state >= Touch.REC_READY && rec.state <= Touch.REC_DRAINING && !s.ota_active &&
       !s.passkey_pending) {
-    // The REC pill (milestone 4's ui.c overlay): not modal, held 2 s it stops the take.
+    // The REC pill (ui.c, ui_priv.h UI_REC_PILL_*): not modal, over the mode
+    // title, below the low-battery banner when both show; held 2 s it stops
+    // the take. Text as ui_logic.c ui_rec_pill_text().
     const live = rec.state === Touch.REC_RECORDING;
     const el = rec.elapsed_s;
     const str = live ? `REC ${String(Math.floor(el / 60)).padStart(2, "0")}:${String(el % 60).padStart(2, "0")}`
       : "REC ready";
-    pill(CX - 80, W - 92, 160, 40, live ? COL.red : COL.redBg);
-    text(str, CX, W - 72, 22, COL.white);
-    const hitRegion = Touch.recPillRegion(rec, CX - 80, W - 92, 160, 40);
+    const p = REC_PILL, px = CX - p.w / 2;
+    const py = lowBattery ? LOWBAT.y + LOWBAT.h + p.gap : LOWBAT.y;
+    pill(px, py, p.w, p.h, live ? COL.red : COL.redBg);
+    text(str, CX, py + p.h / 2, 24, COL.white);
+    const hitRegion = Touch.recPillRegion(rec, px, py, p.w, p.h);
     if (hitRegion) regions.push(hitRegion);
   }
   if (view.toast) {

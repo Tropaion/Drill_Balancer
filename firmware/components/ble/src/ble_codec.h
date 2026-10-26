@@ -43,6 +43,11 @@ int16_t ble_codec_cdeg(float deg);
 void ble_codec_angle(const app_snapshot_t *s, uint8_t seq, uint32_t now_ms,
                      db_angle_packet_t *out);
 
+// The recorder's LEVEL record but host_us (recorder.h recorder_level_fn):
+// the angle packet's mode, flags and angles at now_ms, and the zero they
+// are relative to (s->zero_deg while s->zero_set, else 0).
+void ble_codec_level(const app_snapshot_t *s, uint32_t now_ms, rec_level_t *out);
+
 void ble_codec_status(const app_snapshot_t *s, db_status_packet_t *out);
 
 // Battery Level (0x2A19) and the status packet's battery_pct: the gauge
@@ -64,6 +69,13 @@ bool ble_codec_link_idle_unauth(bool trusted, bool pairing, bool any_sub, uint32
 // Parses a command characteristic write. Returns 0 and fills *id / *arg, or
 // the ATT error to answer with (BLE_CODEC_ATT_INVALID_LEN or DB_ATT_ERR_*).
 uint8_t ble_codec_parse_cmd(const uint8_t *data, size_t len, app_cmd_id_t *id, int32_t *arg);
+
+// A parsed command against app_snapshot_t.excl (app_excl_t): a calibration
+// start while an OTA update or a recording session has the device is
+// answered DB_ATT_ERR_BUSY at once instead of being queued for a refusal
+// nobody sees (the control task's app_excl_acquire() decides one that
+// slips past). 0 otherwise.
+uint8_t ble_codec_cmd_excl_err(app_cmd_id_t id, uint8_t excl);
 
 // ATT error for a settings_apply_json() result (0 for OK).
 uint8_t ble_codec_settings_att_err(settings_json_result_t r);

@@ -493,6 +493,18 @@ static void test_sensor_cal_ok_asks_for_mount_cal(void)
     TEST_ASSERT_TRUE(ui_cal_result_ok(ACCEL_CAL_OK));
 }
 
+static void test_cal_start_refused_while_the_device_is_taken(void)
+{
+    TEST_ASSERT_FALSE(ui_cal_start_refused(APP_EXCL_NONE));
+    TEST_ASSERT_FALSE(ui_cal_start_refused(APP_EXCL_CAL));    // a restart
+    TEST_ASSERT_TRUE(ui_cal_start_refused(APP_EXCL_OTA));
+    TEST_ASSERT_TRUE(ui_cal_start_refused(APP_EXCL_REC));
+    TEST_ASSERT_NOT_NULL(strstr(ui_cal_refused_text(APP_EXCL_REC), "recording"));
+    TEST_ASSERT_NOT_NULL(strstr(ui_cal_refused_text(APP_EXCL_OTA), "update"));
+    // A start the control task refused after the owner let go again.
+    TEST_ASSERT_NOT_NULL(strstr(ui_cal_refused_text(APP_EXCL_NONE), "try again"));
+}
+
 // Corner of a row of width w and height h centred dy below the centre.
 static float corner_r(int32_t dy, int32_t h, int32_t w)
 {
@@ -559,6 +571,48 @@ static void test_round_row_fixed_width_only_fades(void)
     TEST_ASSERT_LESS_THAN_UINT8(255, opa);
 }
 
+static void test_rec_pill_text(void)
+{
+    char txt[16];
+    app_rec_status_t r = {.state = APP_REC_STATE_RECORDING, .elapsed_s = 83};
+    TEST_ASSERT_TRUE(ui_rec_pill_text(&r, txt, sizeof(txt)));
+    TEST_ASSERT_EQUAL_STRING("REC 01:23", txt);
+    TEST_ASSERT_TRUE(ui_rec_pill_live(&r));
+    r.elapsed_s = 1200;   // the 20 min cap
+    ui_rec_pill_text(&r, txt, sizeof(txt));
+    TEST_ASSERT_EQUAL_STRING("REC 20:00", txt);
+    r.elapsed_s = 0;
+    ui_rec_pill_text(&r, txt, sizeof(txt));
+    TEST_ASSERT_EQUAL_STRING("REC 00:00", txt);
+    r.elapsed_s = UINT16_MAX;   // saturated: still fits
+    TEST_ASSERT_TRUE(ui_rec_pill_text(&r, txt, sizeof(txt)));
+    TEST_ASSERT_EQUAL_STRING("REC 1092:15", txt);
+
+    // Between takes and while one drains: a label.
+    r = (app_rec_status_t){.state = APP_REC_STATE_READY, .elapsed_s = 83};
+    TEST_ASSERT_TRUE(ui_rec_pill_text(&r, txt, sizeof(txt)));
+    TEST_ASSERT_EQUAL_STRING("REC ready", txt);
+    TEST_ASSERT_FALSE(ui_rec_pill_live(&r));
+    r.state = APP_REC_STATE_DRAINING;
+    TEST_ASSERT_TRUE(ui_rec_pill_text(&r, txt, sizeof(txt)));
+    TEST_ASSERT_EQUAL_STRING("REC ready", txt);
+    TEST_ASSERT_FALSE(ui_rec_pill_live(&r));
+
+    // No session, or not ready yet (AP starting, waiting for the phone) or
+    // closing: hidden.
+    for (uint8_t st = 0; st < 7; st++) {
+        if (st == APP_REC_STATE_READY || st == APP_REC_STATE_RECORDING ||
+            st == APP_REC_STATE_DRAINING) {
+            continue;
+        }
+        r.state = st;
+        TEST_ASSERT_FALSE(ui_rec_pill_text(&r, txt, sizeof(txt)));
+        TEST_ASSERT_EQUAL_STRING("", txt);
+        TEST_ASSERT_FALSE(ui_rec_pill_live(&r));
+    }
+    TEST_ASSERT_FALSE(ui_rec_pill_text(&r, txt, 0));
+}
+
 static void test_poses_cover_all_six_directions_once(void)
 {
     uint8_t bits = 0;
@@ -599,10 +653,12 @@ int main(void)
     RUN_TEST(test_texts_cover_every_result);
     RUN_TEST(test_not_stored_result_has_its_own_text);
     RUN_TEST(test_sensor_cal_ok_asks_for_mount_cal);
+    RUN_TEST(test_cal_start_refused_while_the_device_is_taken);
     RUN_TEST(test_round_row_centre_keeps_nominal_width);
     RUN_TEST(test_round_row_neighbour_narrows_inside_circle);
     RUN_TEST(test_round_row_far_rows_fade_never_below_min);
     RUN_TEST(test_round_row_fixed_width_only_fades);
     RUN_TEST(test_poses_cover_all_six_directions_once);
+    RUN_TEST(test_rec_pill_text);
     return UNITY_END();
 }

@@ -83,6 +83,10 @@ bool level_set_config(level_t *lv, const level_config_t *cfg);
 void level_zero(level_t *lv, quat_t q, uint32_t now_ms);
 void level_clear_zero(level_t *lv);
 
+// The zero in effect as out = {elevation, bubble x, bubble y} (degrees),
+// returned; NULL without one. For app_state_set_motion().
+const float *level_zero_of(const level_t *lv, float out[3]);
+
 // The fusion restarted at yaw 0, so the zero heading belongs to the old yaw
 // frame. Elevation and bubble zeros are gravity based and stay valid; yaw
 // reads invalid until the next zero.

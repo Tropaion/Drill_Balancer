@@ -39,6 +39,9 @@ typedef struct {
     int8_t last_result;     // result of the last finish (level_cal_result_t or
                             // accel_cal_result_t, >= 0), or APP_CAL_RESULT_*
     app_cal_kind_t last_kind;
+    uint8_t refused;        // counts the starts the control task refused
+                            // (app_excl_acquire() failed), so a screen that
+                            // posted one sees whether it was its own
 } app_cal_status_t;
 
 // last_result values besides the level/accel result codes.
@@ -63,10 +66,22 @@ typedef enum {
 // is 0 (idle) and the connection fields are zero, but reason and the take's
 // fields keep the last take and why it or the session ended (rec_fsm_t keeps
 // them), so an app that reconnects after the BLE grace can show it.
+// rec_state_t values the UI and the power policy look at.
+#define APP_REC_STATE_IDLE      0
+#define APP_REC_STATE_READY     3
+#define APP_REC_STATE_RECORDING 4
+#define APP_REC_STATE_DRAINING  5
+// app_rec_status_t.flags: DB_REC_FLAG_* (ble_protocol.h, ble_codec.c checks).
+#define APP_REC_FLAG_NO_AP       (1u << 0)
+#define APP_REC_FLAG_CLIENT      (1u << 1)
+#define APP_REC_FLAG_AUDIO       (1u << 2)
+#define APP_REC_FLAG_IMU_LOST    (1u << 3)
+#define APP_REC_FLAG_BATTERY_LOW (1u << 4)
+
 typedef struct {
     uint8_t state;               // rec_state_t, 0 = idle
     uint8_t reason;              // REC_REASON_* of the last take or session end
-    uint8_t flags;               // DB_REC_FLAG_* (ble_protocol.h)
+    uint8_t flags;               // APP_REC_FLAG_*
     uint8_t profile;             // REC_PROFILE_* of the take
     uint32_t take_id;
     uint16_t elapsed_s;
@@ -93,6 +108,8 @@ typedef struct {
     uint32_t reading_ms;
     bool zero_set;               // a zero is set (also with the bit vertical,
                                  // where reading.yaw_valid stays false)
+    float zero_deg[3];           // that zero (elevation, bubble x, bubble y),
+                                 // the one reading is relative to; 0 without
 
     app_battery_t battery;
 
@@ -117,24 +134,79 @@ typedef struct {
 
     // recorder
     app_rec_status_t rec;
+
+    // app_excl_acquire(): who has the device to itself
+    uint8_t excl;                // app_excl_t
 } app_snapshot_t;
+
+// Calibration, OTA and a recorder session exclude each other: each takes
+// the device with app_excl_acquire() before it starts (an atomic test and
+// set) and gives it back with app_excl_release() once it is over. A
+// calibration is taken by the control task at its start and given back
+// when its published status goes idle (app_state_set_cal(), whichever way
+// it ended); OTA from sink_begin() (ota_update.c) until the transfer ends;
+// the recorder at OPEN until the session is closed and Wi-Fi is down
+// (recorder.c). The screens and the BLE command write look at
+// app_snapshot_t.excl to refuse a calibration start at once
+// (app_excl_blocks_cal()).
+typedef enum {
+    APP_EXCL_NONE = 0,
+    APP_EXCL_CAL,
+    APP_EXCL_OTA,
+    APP_EXCL_REC,
+} app_excl_t;
+
+// Takes the device for `who` if nobody has it (or `who` already does).
+// Returns the owner afterwards: `who` on success, else the one holding it.
+app_excl_t app_excl_acquire(app_excl_t who);
+// Gives it back if `who` has it; nothing otherwise.
+void app_excl_release(app_excl_t who);
+
+// A calibration start is refused while OTA or a recording session has the
+// device (excl: app_snapshot_t.excl).
+static inline bool app_excl_blocks_cal(uint8_t excl)
+{
+    return excl == APP_EXCL_OTA || excl == APP_EXCL_REC;
+}
+
+// Who has the device, for the log lines of a refusal.
+static inline const char *app_excl_what(uint8_t excl)
+{
+    switch (excl) {
+    case APP_EXCL_CAL:
+        return "a calibration runs";
+    case APP_EXCL_OTA:
+        return "an update runs";
+    case APP_EXCL_REC:
+        return "a recording session is open";
+    default:
+        return "nothing runs";
+    }
+}
 
 void app_state_init(void);
 void app_state_get(app_snapshot_t *out);
 
-// zero_set is published with every motion update, so a snapshot never pairs
-// it with another reading.
-void app_state_set_motion(bool imu_ok, quat_t q, bool still, bool vibrating, bool zero_set,
-                          const level_reading_t *reading, uint32_t now_ms);
+// The zero (zero_deg: elevation, bubble x, bubble y; NULL without one) is
+// published with every motion update, so a snapshot never pairs it with
+// another reading.
+void app_state_set_motion(bool imu_ok, quat_t q, bool still, bool vibrating,
+                          const float *zero_deg, const level_reading_t *reading,
+                          uint32_t now_ms);
 void app_state_set_battery(const app_battery_t *battery);
 void app_state_set_ble(bool enabled, bool connected);
 void app_state_set_ble_holds_awake(bool holds_awake);
 void app_state_set_passkey(bool pending, uint32_t passkey);
 void app_state_set_ota(bool active, uint8_t percent);
 void app_state_set_power(app_power_t power);
+// The sensor task's calibration status; kind going idle also gives the
+// device back if the calibration had it (APP_EXCL_CAL).
 void app_state_set_cal(const app_cal_status_t *cal);
 // Published by the control task whenever the settings are loaded or reloaded.
 void app_state_set_cal_valid(bool mount_cal_valid, bool accel_cal_valid);
+// Published by the recorder (recorder.c) after every FSM step and on
+// recorder_refresh().
+void app_state_set_rec(const app_rec_status_t *rec);
 
 typedef enum {
     APP_CMD_ZERO = 0,           // zero on the current orientation

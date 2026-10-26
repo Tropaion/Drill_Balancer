@@ -51,6 +51,9 @@ static uint8_t s_pub_percent;
 
 // ---- sink: esp_ota -------------------------------------------------------------
 
+// The device is the transfer's from sink_begin() until it ends (finished,
+// failed or aborted: ota_proto calls abort for every failure after a
+// successful begin).
 static void sink_abort(void *ctx)
 {
     ota_sink_ctx_t *s = ctx;
@@ -58,17 +61,25 @@ static void sink_abort(void *ctx)
         esp_ota_abort(s->handle);
         s->open = false;
     }
+    app_excl_release(APP_EXCL_OTA);
 }
 
 static int sink_begin(void *ctx, uint32_t image_size)
 {
     ota_sink_ctx_t *s = ctx;
     sink_abort(s);
+    // OTA, calibration and a recording session exclude each other.
+    app_excl_t owner = app_excl_acquire(APP_EXCL_OTA);
+    if (owner != APP_EXCL_OTA) {
+        ESP_LOGE(TAG, "esp_ota_begin: refused, %s", app_excl_what(owner));
+        return -1;
+    }
     s->head_len = 0;
     s->desc_ok = false;
     s->part = esp_ota_get_next_update_partition(NULL);
     if (s->part == NULL) {
         ESP_LOGE(TAG, "no OTA partition");
+        app_excl_release(APP_EXCL_OTA);
         return -1;
     }
     // Erase as we go: no multi-second stall before the first chunk.
@@ -77,6 +88,7 @@ static int sink_begin(void *ctx, uint32_t image_size)
         // ESP_ERR_OTA_ROLLBACK_INVALID_STATE: the running image is not
         // confirmed yet (ota_update_confirm).
         ESP_LOGE(TAG, "esp_ota_begin: %s", esp_err_to_name(err));
+        app_excl_release(APP_EXCL_OTA);
         return -1;
     }
     s->open = true;
@@ -154,6 +166,7 @@ static int sink_finish(void *ctx)
         return -1;
     }
     ESP_LOGI(TAG, "update written to %s, reboot pending", s->part->label);
+    app_excl_release(APP_EXCL_OTA);     // done: a failure above is aborted
     return 0;
 }
 

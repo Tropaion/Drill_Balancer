@@ -2,6 +2,7 @@
 #include <string.h>
 #include "esp_log.h"
 #include "bsp/esp-bsp.h"
+#include "recorder.h"
 #include "settings_store.h"
 #include "ui.h"
 #include "ui_priv.h"
@@ -18,6 +19,9 @@ static settings_t s_cfg;
 static uint32_t s_cfg_ms;
 static uint32_t s_cfg_gen;
 static app_power_t s_power;     // last snapshot's power state
+static bool s_rec_live;         // the REC pill takes touches (RECORDING)
+static uint32_t s_rec_press_ms;
+static bool s_rec_fired;        // this press has stopped the take
 
 // Overlays live on lv_layer_top() so they cover every screen.
 static struct {
@@ -31,6 +35,8 @@ static struct {
     lv_obj_t *toast;
     lv_obj_t *toast_text;
     lv_timer_t *toast_timer;
+    lv_obj_t *rec;
+    lv_obj_t *rec_text;
 } s_ov;
 
 static lv_style_t s_btn_style;
@@ -277,6 +283,26 @@ void ui_toast(const char *text, lv_color_t color, uint32_t ms)
     lv_timer_resume(s_ov.toast_timer);
 }
 
+// The REC pill held for UI_REC_HOLD_MS stops the take (as STOP over BLE).
+// A press on it is the pill's: the screen beneath never sees it, so it arms
+// no settings hold either.
+static void rec_pill_cb(lv_event_t *e)
+{
+    lv_event_code_t code = lv_event_get_code(e);
+    uint32_t now = lv_tick_get();
+    if (code == LV_EVENT_PRESSED) {
+        s_rec_press_ms = now;
+        s_rec_fired = false;
+    } else if (code == LV_EVENT_PRESSING && !s_rec_fired && s_rec_live &&
+               lv_tick_diff(now, s_rec_press_ms) >= UI_REC_HOLD_MS) {
+        s_rec_fired = true;
+        const rec_cmd_t stop = {.op = REC_CMD_STOP};
+        if (!recorder_send(&stop)) {
+            ESP_LOGW(TAG, "take stop not sent: recorder busy");
+        }
+    }
+}
+
 void ui_overlays_create(void)
 {
     // BLE passkey
@@ -307,11 +333,22 @@ void ui_overlays_create(void)
     // Low battery banner: over the title, lets touches through.
     // Wider than the longest mode title it covers; the round ends stay
     // inside the ring.
-    s_ov.lowbat = ui_pill_new(lv_layer_top(), 224, 42, UI_C_RED_BG);
-    lv_obj_align(s_ov.lowbat, LV_ALIGN_TOP_MID, 0, 46);
+    s_ov.lowbat = ui_pill_new(lv_layer_top(), UI_LOWBAT_W, UI_LOWBAT_H, UI_C_RED_BG);
+    lv_obj_align(s_ov.lowbat, LV_ALIGN_TOP_MID, 0, UI_LOWBAT_Y);
     s_ov.lowbat_text = ui_label_new(s_ov.lowbat, &lv_font_montserrat_24, UI_C_WHITE);
     lv_obj_center(s_ov.lowbat_text);
     lv_obj_add_flag(s_ov.lowbat, LV_OBJ_FLAG_HIDDEN);
+
+    // REC pill: not modal, over every screen, where the mode title is (the
+    // status row below stays visible: the battery matters during a take).
+    // Below the low-battery banner when both show. It takes touches only
+    // while recording (ui_overlays_update()).
+    s_ov.rec = ui_pill_new(lv_layer_top(), UI_REC_PILL_W, UI_REC_PILL_H, UI_C_RED);
+    lv_obj_align(s_ov.rec, LV_ALIGN_TOP_MID, 0, UI_REC_PILL_Y);
+    s_ov.rec_text = ui_label_new(s_ov.rec, &lv_font_montserrat_24, UI_C_WHITE);
+    lv_obj_center(s_ov.rec_text);
+    lv_obj_add_event_cb(s_ov.rec, rec_pill_cb, LV_EVENT_ALL, NULL);
+    lv_obj_add_flag(s_ov.rec, LV_OBJ_FLAG_HIDDEN);
 
     // Toast (e.g. "ZERO")
     s_ov.toast = ui_box_new(lv_layer_top());
@@ -352,7 +389,22 @@ void ui_overlays_update(const app_snapshot_t *snap)
         ui_set_text(s_ov.passkey_digits, buf);
     }
 
+    char rec[16];
+    bool rec_shown = ui_rec_pill_text(&snap->rec, rec, sizeof(rec)) && !snap->ota_active &&
+                     !snap->passkey_pending;
+    s_rec_live = rec_shown && ui_rec_pill_live(&snap->rec);
     bool low = ui_low_battery(&snap->battery) && !snap->ota_active && !snap->passkey_pending;
+    lv_obj_set_flag(s_ov.rec, LV_OBJ_FLAG_HIDDEN, !rec_shown);
+    lv_obj_set_flag(s_ov.rec, LV_OBJ_FLAG_CLICKABLE, s_rec_live);
+    if (rec_shown) {
+        ui_set_text(s_ov.rec_text, rec);
+        ui_set_bg_color(s_ov.rec, lv_color_hex(s_rec_live ? UI_C_RED : UI_C_RED_BG));
+        int32_t y = low ? UI_REC_PILL_Y_LOWBAT : UI_REC_PILL_Y;
+        if (lv_obj_get_y_aligned(s_ov.rec) != y) {
+            lv_obj_align(s_ov.rec, LV_ALIGN_TOP_MID, 0, y);
+        }
+    }
+
     lv_obj_set_flag(s_ov.lowbat, LV_OBJ_FLAG_HIDDEN, !low);
     if (low) {
         snprintf(buf, sizeof(buf), LV_SYMBOL_BATTERY_EMPTY "  LOW %u%%",
@@ -381,13 +433,25 @@ static void activity_cb(lv_event_t *e)
 {
     (void)e;
     app_note_activity();
+    // During a take every touch is an EVENT TOUCH in the recording (the
+    // recorder knows whether one runs), and only the REC pill acts on it:
+    // a stray touch must not zero, switch the mode or open the settings in
+    // the middle of a take.
+    bool recording = recorder_note_touch();
     // A tap that brightens a dimmed screen does nothing else, on any screen
     // (no re-zero, no stepper, no calibration button): the object never gets
     // the press, and the rest of the touch is ignored until release. The
     // control task only leaves DIM a moment after this press, so s_power
     // still says DIM here.
+    lv_indev_t *in = lv_indev_active();
     if (s_power == APP_POWER_DIM) {
-        lv_indev_t *in = lv_indev_active();
+        lv_indev_stop_processing(in);
+        lv_indev_wait_release(in);
+        return;
+    }
+    lv_point_t p;
+    lv_indev_get_point(in, &p);
+    if (recording && !(s_rec_live && lv_obj_hit_test(s_ov.rec, &p))) {
         lv_indev_stop_processing(in);
         lv_indev_wait_release(in);
     }

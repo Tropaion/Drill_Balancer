@@ -105,6 +105,15 @@ typedef struct {
 void imu_rate_init(imu_rate_t *r, float nominal_period_s);
 void imu_rate_update(imu_rate_t *r, uint32_t ts, int64_t now_us);
 
+// configure() (a profile switch, the re-init after a lost IMU): the chip
+// restarts TIMESTAMP, so the baseline starts over, but a period measured
+// before stays in use (and TIMESTAMP trusted, gap filling on) instead of
+// the nominal one for the next IMU_RATE_MIN_BASELINE_US. At another ODR it
+// is scaled by the nominal ratio: every ODR divides down the same gyro
+// clock. TODO(hw): check that on the board (bring-up step 30): the STATS
+// imu_period_ns of a RAW897 take against a RAW448 one, 1:2 within 0.1 %.
+void imu_rate_restart(imu_rate_t *r, float nominal_period_s);
+
 #ifdef __cplusplus
 }
 #endif

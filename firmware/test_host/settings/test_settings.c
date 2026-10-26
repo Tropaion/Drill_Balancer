@@ -1,5 +1,6 @@
 #include <math.h>
 #include <string.h>
+#include "cJSON.h"
 #include "unity.h"
 #include "settings.h"
 
@@ -225,6 +226,57 @@ static void test_worst_case_json_fits(void)
     TEST_ASSERT_TRUE(settings_validate(&s));
     char buf[SETTINGS_JSON_MAX];
     TEST_ASSERT_GREATER_THAN(0, settings_to_json(&s, buf, sizeof(buf)));
+}
+
+static const cJSON *vec_of(const cJSON *obj, const char *key)
+{
+    const cJSON *a = cJSON_GetObjectItemCaseSensitive(obj, key);
+    TEST_ASSERT_TRUE_MESSAGE(cJSON_IsArray(a) && cJSON_GetArraySize(a) == 3, key);
+    return a;
+}
+
+// The SESSION tail the dataset contract reads (dbdata), on the device and
+// in the simulator.
+static void test_session_json_keys(void)
+{
+    s.accel_cal_valid = true;
+    s.accel_cal.bias = (vec3_t){0.01f, -0.02f, 0.03f};
+    const vec3_t gb = {0.001f, 0.002f, -0.003f};
+    char out[600];
+    int n = settings_session_json(&s, &gb, out, sizeof(out));
+    TEST_ASSERT_GREATER_THAN(0, n);
+    cJSON *root = cJSON_ParseWithLength(out, (size_t)n);
+    TEST_ASSERT_NOT_NULL(root);
+    TEST_ASSERT_EQUAL_INT(2, cJSON_GetArraySize(root));
+    char sj[SETTINGS_JSON_MAX];
+    settings_to_json(&s, sj, sizeof(sj));
+    char *settings = cJSON_PrintUnformatted(cJSON_GetObjectItemCaseSensitive(root, "settings"));
+    TEST_ASSERT_EQUAL_STRING(sj, settings);
+    cJSON_free(settings);
+    const cJSON *cal = cJSON_GetObjectItemCaseSensitive(root, "cal");
+    TEST_ASSERT_EQUAL_INT(3, cJSON_GetArraySize(cal));
+    const cJSON *acc = cJSON_GetObjectItemCaseSensitive(cal, "accel");
+    TEST_ASSERT_TRUE(cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(acc, "valid")));
+    TEST_ASSERT_FLOAT_WITHIN(1e-6f, -0.02f,
+                             (float)cJSON_GetArrayItem(vec_of(acc, "bias_g"), 1)->valuedouble);
+    TEST_ASSERT_FLOAT_WITHIN(1e-6f, s.accel_cal.scale.z,
+                             (float)cJSON_GetArrayItem(vec_of(acc, "scale"), 2)->valuedouble);
+    const cJSON *mnt = cJSON_GetObjectItemCaseSensitive(cal, "mount");
+    TEST_ASSERT_TRUE(cJSON_IsFalse(cJSON_GetObjectItemCaseSensitive(mnt, "valid")));
+    TEST_ASSERT_FLOAT_WITHIN(1e-6f, s.drill_axis.z,
+                             (float)cJSON_GetArrayItem(vec_of(mnt, "drill_axis"), 2)->valuedouble);
+    TEST_ASSERT_FLOAT_WITHIN(1e-7f, -0.003f,
+                             (float)cJSON_GetArrayItem(vec_of(cal, "gyro_bias_rad_s"), 2)->valuedouble);
+    cJSON_Delete(root);
+
+    // No gyro bias learnt yet: null. Too small a buffer: nothing.
+    n = settings_session_json(&s, NULL, out, sizeof(out));
+    root = cJSON_ParseWithLength(out, (size_t)n);
+    cal = cJSON_GetObjectItemCaseSensitive(root, "cal");
+    TEST_ASSERT_TRUE(cJSON_IsNull(cJSON_GetObjectItemCaseSensitive(cal, "gyro_bias_rad_s")));
+    cJSON_Delete(root);
+    TEST_ASSERT_EQUAL_INT(0, settings_session_json(&s, NULL, out, (size_t)n));
+    TEST_ASSERT_EQUAL_INT(n, settings_session_json(&s, NULL, out, (size_t)n + 1));
 }
 
 static void test_round_trip(void)
@@ -479,6 +531,7 @@ int main(void)
     RUN_TEST(test_to_json_defaults);
     RUN_TEST(test_to_json_buffer_too_small);
     RUN_TEST(test_worst_case_json_fits);
+    RUN_TEST(test_session_json_keys);
     RUN_TEST(test_round_trip);
     RUN_TEST(test_mode_strings);
     RUN_TEST(test_partial_update);

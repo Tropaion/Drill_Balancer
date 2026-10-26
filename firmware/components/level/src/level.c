@@ -1,4 +1,5 @@
 #include <math.h>
+#include <stddef.h>
 #include "level.h"
 
 // Yaw (heading of the bit) is only meaningful while the bit is at least this
@@ -78,6 +79,17 @@ void level_zero(level_t *lv, quat_t q, uint32_t now_ms)
 void level_clear_zero(level_t *lv)
 {
     lv->zero_set = false;
+}
+
+const float *level_zero_of(const level_t *lv, float out[3])
+{
+    if (!lv->zero_set) {
+        return NULL;
+    }
+    out[0] = lv->zero_elevation_deg;
+    out[1] = lv->zero_bubble_x_deg;
+    out[2] = lv->zero_bubble_y_deg;
+    return out;
 }
 
 void level_reset_heading(level_t *lv)

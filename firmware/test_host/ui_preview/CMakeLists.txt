@@ -37,7 +37,8 @@ if(EXISTS ${UI_LVGL_DIR}/lvgl.h)
         ${UI_DIR}/src/ui_logic.c
         ${UI_DIR}/src/fonts/ui_font_num112.c)
     target_include_directories(ui_preview PRIVATE
-        stubs ${CMAKE_CURRENT_SOURCE_DIR}/../stubs ${UI_DIR}/include ${UI_DIR}/src ${COMPONENTS_DIR}/app_core/include)
+        stubs ${CMAKE_CURRENT_SOURCE_DIR}/../stubs ${UI_DIR}/include ${UI_DIR}/src
+        ${COMPONENTS_DIR}/app_core/include ${COMPONENTS_DIR}/recorder/include)
     target_compile_options(ui_preview PRIVATE ${STRICT_WARNINGS})
     target_link_libraries(ui_preview PRIVATE ui_lvgl_host settings_host)
 

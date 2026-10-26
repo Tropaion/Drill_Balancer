@@ -40,6 +40,7 @@ typedef struct {
 
     phase_t phase;
     bool seen_active;       // the control task has started this calibration
+    uint8_t refused;        // app_cal_status_t.refused when the start was posted
     uint32_t finish_ms;
 } cal_ui_t;
 
@@ -81,9 +82,28 @@ static void set_phase(cal_ui_t *c, phase_t phase)
     lv_obj_set_state(c->right, LV_STATE_DISABLED, phase != PHASE_RESULT && phase != PHASE_READY);
 }
 
+// OTA or a recording session has the device (app_excl_t): the result view
+// says so (Retry tries again, Done goes back).
+static void show_refused(cal_ui_t *c, uint8_t excl)
+{
+    ui_set_text(c->result, ui_cal_refused_text(excl));
+    ui_set_text_color(c->result, lv_color_hex(UI_C_AMBER));
+    set_phase(c, PHASE_RESULT);
+}
+
+// A start while another one has the device is refused here; one that slips
+// past (the owner took it in between) is refused by the control task,
+// which counts it (app_cal_status_t.refused, update()).
 static void start(cal_ui_t *c)
 {
+    app_snapshot_t snap;
+    app_state_get(&snap);
+    if (ui_cal_start_refused(snap.excl)) {
+        show_refused(c, snap.excl);
+        return;
+    }
     c->seen_active = false;
+    c->refused = snap.cal.refused;
     set_phase(c, PHASE_COLLECT);
     app_post_cmd(c->start_cmd, 0);
 }
@@ -138,6 +158,9 @@ static void update(cal_ui_t *c, const app_snapshot_t *snap, bool can_finish)
         } else if (c->seen_active) {
             // Ended elsewhere (e.g. BLE cancel or a power state change).
             show_result(c, cal);
+            return;
+        } else if (cal->refused != c->refused) {
+            show_refused(c, snap->excl);    // the control task refused the start
             return;
         }
         lv_obj_set_state(c->right, LV_STATE_DISABLED, !(c->seen_active && can_finish));

@@ -129,7 +129,7 @@ class SynthTest(F.TempDirTest):
         self.assertEqual(rep.issues, [])                                 # meta.files rewritten with them
         self.assertEqual(sorted((x["type"], x.get("hole"), x.get("reason")) for x in s.events["spans"]),
                          [("ignore", None, "speech"), ("wander", 1, None), ("wobble", 1, None)])
-        self.assertGreater(s.meta["derived"]["off_angle_deg"], 0.9)    # the 3 deg drift in the level rows
+        self.assertGreater(s.meta["derived"]["off_angle_deg"], 0.9)    # the injected 3 deg wander
         with self.assertRaises(ValueError):
             synth.inject(s.path, ("hum",), s.events)
         g = synth.synthesize(synth._s("gap", ring_kib=32, stall=(2.3, 1.6), **base), self.tmp,

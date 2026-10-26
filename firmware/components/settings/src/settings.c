@@ -179,6 +179,45 @@ int settings_to_json(const settings_t *s, char *buf, size_t buf_len)
     return n;
 }
 
+static cJSON *vec_array(vec3_t v)
+{
+    const float f[3] = {v.x, v.y, v.z};
+    return cJSON_CreateFloatArray(f, 3);
+}
+
+int settings_session_json(const settings_t *s, const vec3_t *gyro_bias_rad_s, char *out,
+                          size_t cap)
+{
+    char sj[SETTINGS_JSON_MAX];
+    if (settings_to_json(s, sj, sizeof(sj)) < 0) {
+        return 0;
+    }
+    cJSON *root = cJSON_CreateObject();
+    if (!root) {
+        return 0;
+    }
+    cJSON_AddItemToObject(root, "settings", cJSON_Parse(sj));
+    cJSON *cal = cJSON_AddObjectToObject(root, "cal");
+    cJSON *acc = cJSON_AddObjectToObject(cal, "accel");
+    cJSON_AddBoolToObject(acc, "valid", s->accel_cal_valid);
+    cJSON_AddItemToObject(acc, "bias_g", vec_array(s->accel_cal.bias));
+    cJSON_AddItemToObject(acc, "scale", vec_array(s->accel_cal.scale));
+    cJSON *mnt = cJSON_AddObjectToObject(cal, "mount");
+    cJSON_AddBoolToObject(mnt, "valid", s->mount_cal_valid);
+    cJSON_AddItemToObject(mnt, "drill_axis", vec_array(s->drill_axis));
+    cJSON_AddItemToObject(cal, "gyro_bias_rad_s",
+                          gyro_bias_rad_s ? vec_array(*gyro_bias_rad_s) : cJSON_CreateNull());
+    char *text = cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
+    size_t n = text ? strlen(text) : 0;
+    if (n >= cap) {
+        n = 0;
+    }
+    memcpy(out, text ? text : "", n);
+    cJSON_free(text);
+    return (int)n;
+}
+
 // The readers below leave *dst alone when the key is absent.
 
 static settings_json_result_t read_float(const cJSON *obj, const char *key, float *dst)

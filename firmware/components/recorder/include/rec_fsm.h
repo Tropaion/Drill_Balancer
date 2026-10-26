@@ -12,8 +12,8 @@
 //
 // Commands (an error leaves everything unchanged):
 //   OPEN        IDLE: start the AP. Refused (STATE) while OTA or a
-//               calibration runs. In a session: nothing to do (OK). CLOSING:
-//               STATE.
+//               calibration runs, and after SHUTDOWN. In a session: nothing
+//               to do (OK). CLOSING: STATE.
 //   CLOSE       ends the take (USER) and the session; OK when there is none.
 //   TAKE_START  READY only: profile < REC_PROFILE_COUNT, mic_mask within
 //               REC_MIC_ALL (0 = no audio), gain_db <= REC_GAIN_MAX_DB,
@@ -42,9 +42,12 @@
 //                     rec_env_t.ring_empty gets END at once and is done
 //                     draining (READY, or CLOSING after a CLOSE).
 //   AP_DOWN           CLOSING -> IDLE.
-//   SHUTDOWN          sleep / power-off: a running take stops (SHUTDOWN),
-//                     what was not sent yet is flushed and END queued, so it
-//                     goes out within STOP_AP's 200 ms; then the AP goes down.
+//   SHUTDOWN          sleep / power-off / reboot: a running take stops
+//                     (SHUTDOWN), what was not sent yet is flushed and END
+//                     queued, so it goes out within STOP_AP's 200 ms; then
+//                     the AP goes down. In every state: OPEN is refused from
+//                     then on (STATE) until rec_fsm_init(), the device is
+//                     going down.
 //   TICK              timeouts: AP start, waiting for a client, READY without
 //                     a take, max_s, battery below REC_BATT_STOP_PCT without
 //                     USB (BATTERY), the IMU and BLE timers, the drain limit,
@@ -193,6 +196,7 @@ typedef struct {
     uint32_t ble_lost_ms;
     bool imu_lost;
     uint32_t imu_lost_ms;
+    bool shut;                  // SHUTDOWN seen: no OPEN until rec_fsm_init()
 } rec_fsm_t;
 
 void rec_fsm_init(rec_fsm_t *f, uint32_t now_ms);
@@ -206,6 +210,10 @@ bool rec_fsm_session_open(const rec_fsm_t *f);
 uint8_t rec_fsm_profile(const rec_fsm_t *f);
 // Seconds of the current take, or of the last one after it ended.
 uint16_t rec_fsm_elapsed_s(const rec_fsm_t *f, uint32_t now_ms);
+// The battery refuses a TAKE_START (REC_ERR_BATTERY): below
+// REC_BATT_START_PCT without USB. Only env's battery fields are read
+// (rec_state's APP_REC_FLAG_BATTERY_LOW).
+bool rec_fsm_battery_blocks_take(const rec_env_t *env);
 
 #ifdef __cplusplus
 }

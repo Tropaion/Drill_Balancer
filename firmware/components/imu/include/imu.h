@@ -81,19 +81,25 @@ const imu_profile_info_t *imu_profile_info(imu_profile_t p);
 void imu_map_frame_i16(const imu_axis_map_t *map, const uint8_t frame[IMU_FRAME_BYTES],
                        int16_t out[6]);
 
-// The current profile (LEVEL after boot), FIFO enabled for accel + gyro.
-// Gyro +-512 dps in every profile.
-esp_err_t imu_init(i2c_master_bus_handle_t bus);
+// Configures the chip for profile p (LEVEL at boot; the re-init after a
+// lost IMU passes the one the sensor task wants), FIFO enabled for accel +
+// gyro. Gyro +-512 dps in every profile.
+esp_err_t imu_init(i2c_master_bus_handle_t bus, imu_profile_t p);
 
 // Reconfigures the chip for p: a reset plus the gyro start-up, about 180 ms
 // without samples. The gap and ODR bookkeeping start over (a new
 // imu_raw_info_t.epoch), so the caller resets whatever integrates the
 // samples. Nothing happens (ESP_OK) when p is in effect and the chip runs,
 // and the caller keeps them: it compares p with imu_get_profile() first.
-// imu_init() (also the re-init after a lost IMU) always reconfigures, with
-// the current profile.
+// imu_get_profile() is p from this call on, also when the chip does not
+// answer (no I2C device yet: ESP_ERR_INVALID_STATE, nothing changes).
+// imu_init() always reconfigures, in the profile it is given.
 esp_err_t imu_set_profile(imu_profile_t p);
 imu_profile_t imu_get_profile(void);
+
+// The chip-to-board axis map (IMU_AXIS_MAP in imu.c), e.g. for the
+// recorder's SESSION record.
+const imu_axis_map_t *imu_axis_map(void);
 
 // Sample period of the configured ODR (seconds), for the fusion dt.
 float imu_sample_period_s(void);
@@ -115,7 +121,7 @@ typedef struct {
     bool discontinuous;
 } imu_raw_run_t;
 
-typedef struct {
+typedef struct imu_raw_info {
     const uint8_t *frames;      // n chip frames, valid until the next read
     uint16_t n;
     imu_raw_run_t run[2];       // cover frames[0..n) in order

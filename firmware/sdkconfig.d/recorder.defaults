@@ -1,0 +1,40 @@
+# Recorder (components/recorder): Wi-Fi soft-AP and the lwIP TCP stream,
+# only while a recording session is open. Option names checked against
+# ESP-IDF 5.5.1 components/esp_psram/Kconfig.spiram.common,
+# components/esp_wifi/Kconfig, components/lwip/Kconfig and
+# components/esp_coex/Kconfig.
+
+# Wi-Fi and lwIP buffers in PSRAM where they can be (falls back to internal
+# RAM), so the AP fits next to NimBLE, LVGL and the sensor task.
+CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y
+# The AP config is new every session (rec_wifi.c, WIFI_STORAGE_RAM): nothing
+# for NVS.
+CONFIG_ESP_WIFI_NVS_ENABLED=n
+# Static RX buffers stay in internal DMA RAM (1.6 KB each, from
+# esp_wifi_init() to esp_wifi_deinit()); the stream is TX, so few are enough
+# (the default with PSRAM is 16). The AMPDU RX window keeps its PSRAM
+# default of 16, which wifi_init.c allows up to twice this.
+CONFIG_ESP_WIFI_STATIC_RX_BUFFER_NUM=8
+# With PSRAM the TX buffers are static (internal RAM, 1.6 KB each, while
+# Wi-Fi is up) and frames beyond them wait in the PSRAM TX cache: 8 carry
+# the stream with room to spare (the default is 16).
+CONFIG_ESP_WIFI_STATIC_TX_BUFFER_NUM=8
+# 23360 B per socket (16 segments of 1460; about 16 of CONFIG_LWIP_TCP_MSS
+# 1440): about 0.3 s of the ~71 KB/s stream may wait in lwIP, the sender
+# peeks at most 4 MSS of the ring at a time (rec_wifi.c TX_CHUNK).
+# Bring-up step 33 checks the throughput and how full the ring gets.
+CONFIG_LWIP_TCP_SND_BUF_DEFAULT=23360
+# Wi-Fi library code stays in flash: about 27 KB of IRAM (internal RAM
+# the heap needs with the AP up), for throughput the ~71 KB/s stream does
+# not need.
+CONFIG_ESP_WIFI_IRAM_OPT=n
+CONFIG_ESP_WIFI_RX_IRAM_OPT=n
+# Wi-Fi and BLE share the radio (already the default with both enabled).
+# ESP-IDF rates a soft-AP with a connected station next to a BLE connection
+# C1, "supported but the performance is unstable" (api-guides/coexist.rst),
+# and advises the Wi-Fi task and the BT controller + NimBLE host on
+# different cores. All three stay on core 0 (the defaults; rec_tx and the
+# BLE notification timer too): core 1 has the sensor task, which the Wi-Fi
+# task (prio 23) would preempt there. Bring-up step 33 measures this
+# placement and the two others before anything moves.
+CONFIG_ESP_COEX_SW_COEXIST_ENABLE=y

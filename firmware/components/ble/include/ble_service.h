@@ -1,10 +1,11 @@
 #pragma once
 
 // NimBLE peripheral implementing ble_protocol.h. Runs the NimBLE host task;
-// a periodic timer sends angle (10 Hz) and status notifications from
-// app_state snapshots. Commands go to app_post_cmd(), config writes to
-// settings_update(), OTA to ota_update_*. A disconnect posts
-// APP_CMD_CAL_CANCEL with APP_CMD_ARG_FROM_BLE.
+// a periodic timer sends angle (10 Hz), status and rec_state notifications
+// from app_state snapshots. Commands go to app_post_cmd(), config writes to
+// settings_update(), OTA to ota_update_*, rec_ctrl to recorder_post(). A
+// disconnect posts APP_CMD_CAL_CANCEL with APP_CMD_ARG_FROM_BLE and tells
+// the recorder (BLE_LOST); an authenticated link tells it BLE_BACK.
 
 #include <stdbool.h>
 #include "esp_err.h"

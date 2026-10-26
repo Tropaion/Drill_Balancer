@@ -239,6 +239,87 @@ static void base_state(void)
     ui_cfg_refresh();
 }
 
+// The REC pill's centre (ui_priv.h UI_REC_PILL_*).
+#define PILL_Y (UI_REC_PILL_Y + UI_REC_PILL_H / 2)
+
+// The REC pill: a label in READY, during a take the only thing a touch acts
+// on (2 s hold = STOP); every touch of a take is logged.
+static void rec_touch_checks(void)
+{
+    printf("REC pill checks\n");
+    base_state();
+    ui_show(UI_SCREEN_LEVEL);
+    g_snap.rec = (app_rec_status_t){.state = APP_REC_STATE_READY};
+    run(200);
+    int zeros = preview_count_cmd(APP_CMD_ZERO, 0, false);
+    tap(CX, PILL_Y);   // "REC ready" lets the tap through to the level screen
+    CHECK(preview_count_cmd(APP_CMD_ZERO, 0, false) == zeros + 1);
+    CHECK(g_rec_touches == 0);
+    run(1000);
+
+    g_snap.rec.state = APP_REC_STATE_RECORDING;
+    g_snap.rec.elapsed_s = 5;
+    run(200);
+    tap(CX, CY);
+    swipe(330, 240, 120, 240);
+    hold(CX, CY, 1200);
+    CHECK(preview_count_cmd(APP_CMD_ZERO, 0, false) == zeros + 1);
+    CHECK(preview_count_cmd(APP_CMD_NEXT_MODE, 0, false) == 0);
+    CHECK(ui_current() == UI_SCREEN_LEVEL);
+    CHECK(g_rec_touches == 3);
+    // A press on the pill is the pill's: no settings after 1.2 s, no stop
+    // yet; held 2 s it stops the take once.
+    hold(CX, PILL_Y, 1200);
+    CHECK(ui_current() == UI_SCREEN_LEVEL);
+    CHECK(g_rec_cmd_count == 0);
+    hold(CX, PILL_Y, 2600);
+    CHECK(g_rec_cmd_count == 1 && g_rec_cmds[0].op == REC_CMD_STOP);
+    CHECK(g_rec_touches == 5);
+    CHECK(preview_count_cmd(APP_CMD_ZERO, 0, false) == zeros + 1);
+
+    // Draining and READY again: a label, the hold beneath it is the level
+    // screen's (settings), nothing is stopped.
+    g_snap.rec.state = APP_REC_STATE_DRAINING;
+    run(200);
+    hold(CX, PILL_Y, 2600);
+    CHECK(g_rec_cmd_count == 1);
+    CHECK(ui_current() == UI_SCREEN_SETTINGS);
+    ui_show(UI_SCREEN_LEVEL);
+    CHECK(g_lock_depth == 0);
+}
+
+// OTA or a recording session has the device (app_excl_t): a guide says so
+// at once and posts nothing; a start the control task refused (the session
+// took the device in between, app_cal_status_t.refused) ends the same way
+// instead of collecting forever.
+static void cal_refusal_checks(void)
+{
+    printf("calibration refusal checks\n");
+    base_state();
+    g_snap.excl = APP_EXCL_REC;
+    ui_show(UI_SCREEN_SENSOR_CAL);
+    run(200);
+    CHECK(preview_count_cmd(APP_CMD_ACCEL_CAL_START, 0, false) == 0);
+    render("39_sensor_cal_refused_recording");
+    tap_cal_right();   // Done
+    CHECK(ui_current() == UI_SCREEN_LEVEL);
+
+    g_snap.excl = APP_EXCL_NONE;
+    ui_show(UI_SCREEN_MOUNT_CAL);
+    run(200);
+    tap_cal_right();   // Start
+    CHECK(preview_count_cmd(APP_CMD_MOUNT_CAL_START, 0, false) == 1);
+    run(200);
+    g_snap.excl = APP_EXCL_REC;
+    g_snap.cal.refused++;
+    run(200);
+    tap_cal_left();    // Retry: refused at once now
+    CHECK(preview_count_cmd(APP_CMD_MOUNT_CAL_START, 0, false) == 1);
+    tap_cal_right();   // Done
+    CHECK(ui_current() == UI_SCREEN_LEVEL);
+    CHECK(g_lock_depth == 0);
+}
+
 static void touch_checks(void)
 {
     printf("touch checks\n");
@@ -469,8 +550,27 @@ int main(int argc, char **argv)
     g_snap.ota_percent = 40;
     render("13_ota_40");
 
-    // --- touch behaviour (also renders 14) ---
+    // --- recorder ---
+    base_state();
+    g_snap.rec = (app_rec_status_t){.state = APP_REC_STATE_READY};
+    render("16_rec_ready");
+    base_state();
+    g_snap.rec = (app_rec_status_t){.state = APP_REC_STATE_RECORDING, .elapsed_s = 83};
+    render("17_rec_recording");
+    base_state();
+    g_snap.reading = floor_r(0.3f, 0.1f, LEVEL_STATUS_ON_TARGET);
+    // Below UI_LOW_BATTERY_PCT (the banner), not yet below REC_BATT_STOP_PCT
+    // (the take would stop): a take started at 15 % or more runs down to here.
+    g_snap.battery.percent = 9;
+    CHECK(g_snap.battery.percent < UI_LOW_BATTERY_PCT &&
+          g_snap.battery.percent >= REC_BATT_STOP_PCT && REC_BATT_START_PCT > UI_LOW_BATTERY_PCT);
+    g_snap.rec = (app_rec_status_t){.state = APP_REC_STATE_RECORDING, .elapsed_s = 1199};
+    render("18_rec_floor_low_battery");
+
+    // --- touch behaviour (also renders 14 and 39) ---
     touch_checks();
+    rec_touch_checks();
+    cal_refusal_checks();
 
     // --- burn-in shift ---
     base_state();
