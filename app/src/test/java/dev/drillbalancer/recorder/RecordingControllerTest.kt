@@ -161,7 +161,7 @@ class RecordingControllerTest {
         assertEquals("read", fake.recorderLog.first())
         assertEquals(listOf("open", "take_start", "stop", "take_start", "stop", "close"), fake.recorderLog.filter { it != "read" })
         assertEquals(1, server.hellos)
-        assertEquals(RecState.IDLE, fake.recorderState.state)
+        assertDeviceIdleSoon()
         // Each closed journal is handed on to be finalized, and becomes a recording.
         assertEquals(listOf(first, second), finished.toList())
         for (id in finished) {
@@ -707,6 +707,13 @@ class RecordingControllerTest {
         c.await(what = "done") { it.phase == RecordPhase.DONE }
         assertEquals(JournalState.COMPLETE, store.read(id)!!.state)
         assertEquals(listOf("stop", "close"), fake.recorderLog.filter { it == "stop" || it == "close" })
+        assertDeviceIdleSoon()
+    }
+
+    /** The device goes IDLE only after it has read the app's FIN, which can be after DONE. */
+    private fun assertDeviceIdleSoon() {
+        val until = System.nanoTime() + 5_000_000_000L
+        while (fake.recorderState.state != RecState.IDLE && System.nanoTime() < until) Thread.sleep(10)
         assertEquals(RecState.IDLE, fake.recorderState.state)
     }
 }
