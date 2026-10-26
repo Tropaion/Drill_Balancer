@@ -81,9 +81,11 @@ the descriptor check.
 
 `rec pull` opens a session if none is open, waits for `rec_state`
 WAIT_CLIENT, connects to the stream address it gives and sends HELLO (the
-session token and the stream version). On the board's soft-AP it first asks
-you to join the Wi-Fi network shown; the simulator's LAN mode (`NO_AP`)
-needs nothing. With `--start` it starts a take once the connection is up,
+session token and the stream version), then waits for the device's
+HELLO_OK record (the device took this connection; it is not saved). On the
+board's soft-AP it first asks you to join the Wi-Fi network shown; the
+simulator's LAN mode (`NO_AP`) needs nothing. With `--start` it starts a
+take once the connection is up,
 `--duration` stops it after that many seconds. It saves everything to the
 `.dbrec` file until `--takes` END records arrived (1 by default; 0: until
 Ctrl-C or the device closes the stream) and prints what came: records by

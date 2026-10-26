@@ -47,6 +47,7 @@ class DeviceActions(
     val send: (Command) -> Unit = {},
     val disconnect: () -> Unit = {},
     val openFirmwareUpdate: () -> Unit = {},
+    val openTrainingData: () -> Unit = {},
     val dismissMessage: () -> Unit = {},
 )
 
@@ -104,6 +105,9 @@ fun DeviceScreen(state: DeviceUiState, actions: DeviceActions, modifier: Modifie
 
         SectionTitle("Firmware")
         ActionButton("Firmware update", actions.openFirmwareUpdate, Modifier.fillMaxWidth(), kind = ButtonKind.SECONDARY)
+
+        SectionTitle("Training data")
+        ActionButton("Recordings", actions.openTrainingData, Modifier.fillMaxWidth(), kind = ButtonKind.SECONDARY)
 
         SectionTitle("Power")
         Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {

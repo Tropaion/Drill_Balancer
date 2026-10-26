@@ -17,10 +17,16 @@ import dev.drillbalancer.protocol.OtaException
 import dev.drillbalancer.protocol.OtaProgress
 import dev.drillbalancer.protocol.OtaStatus
 import dev.drillbalancer.protocol.PowerState
+import dev.drillbalancer.protocol.RecCtrl
+import dev.drillbalancer.protocol.RecFlags
+import dev.drillbalancer.protocol.RecReason
+import dev.drillbalancer.protocol.RecState
+import dev.drillbalancer.protocol.RecorderStatus
 import dev.drillbalancer.protocol.SensorCalResult
 import dev.drillbalancer.protocol.SettingsUpdate
 import dev.drillbalancer.protocol.StatusFlags
 import dev.drillbalancer.protocol.StatusPacket
+import dev.drillbalancer.protocol.TakeRequest
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.NonCancellable
@@ -99,6 +105,7 @@ class FakeDeviceSession(
     private val _battery = MutableStateFlow<Int?>(null)
     private val _info = MutableStateFlow<DeviceInfo?>(null)
     private val _settings = MutableStateFlow<DeviceSettings?>(null)
+    private val _recorder = MutableStateFlow<RecorderStatus?>(null)
     private var deviceInfo = info
 
     override val connection: StateFlow<ConnectionState> = _connection.asStateFlow()
@@ -107,9 +114,94 @@ class FakeDeviceSession(
     override val batteryPct: StateFlow<Int?> = _battery.asStateFlow()
     override val info: StateFlow<DeviceInfo?> = _info.asStateFlow()
     override val settings: StateFlow<DeviceSettings?> = _settings.asStateFlow()
+    override val recorder: StateFlow<RecorderStatus?> = _recorder.asStateFlow()
+
+    // ---- recorder knobs (thread-safe: a stream server on another thread drives the device side) ----
+
+    /** The firmware has the recorder service (set before connecting). */
+    var recorderSupported = true
+
+    /** What rec_state announces from WAIT_CLIENT on: a local test server (NO_AP) by default. */
+    @Volatile var recorderEndpoint = FakeRecorderEndpoint()
+
+    /** OPEN brings the endpoint up at once; false: AP_STARTING until [recorderApUp] / [recorderApFailed]. */
+    @Volatile var recorderAutoAp = true
+
+    /** Every rec_ctrl write takes this long to be answered. */
+    @Volatile var recorderReplyMs = 0L
+
+    /** Called after the device took a rec_ctrl write (another thread may be the caller's). */
+    @Volatile var onRecorderOp: ((RecCtrl) -> Unit)? = null
+
+    /** rec_ctrl writes and secured rec_state reads the device answered, in order ("read" for a read). */
+    val recorderLog: List<String> get() = synchronized(recLock) { recLog.toList() }
+
+    private val recLock = Any()
+    private val recLog = mutableListOf<String>()
+    private val recFailures = mutableMapOf<String, DeviceError>()
+    private val recLostAnswers = mutableMapOf<String, DeviceError>()
+    private var rec = RecorderStatus.NOT_READ.copy(read = true)
+    private var takeRan = false            // a take ran since OPEN: STOP is OK after it ended
+
+    /** The next rec_ctrl write of [op] ("open", "close", "take_start", "stop", "mark", "read") fails with [error]. */
+    fun failRecorder(op: String, error: DeviceError) = synchronized(recLock) { recFailures[op] = error }
+
+    /** The next rec_ctrl write of [op] reaches the device and does its work, but its answer is lost: [error]. */
+    fun loseRecorderAnswer(op: String, error: DeviceError) = synchronized(recLock) { recLostAnswers[op] = error }
+
+    /** The device's own change of its recorder (notified, as rec_state would be). */
+    fun setRecorderState(change: (RecorderStatus) -> RecorderStatus) = synchronized(recLock) {
+        rec = change(rec)
+        publishRecorder()
+    }
+
+    val recorderState: RecorderStatus get() = synchronized(recLock) { rec }
+
+    fun recorderApUp() = setRecorderState { endpointState(RecState.WAIT_CLIENT) }
+
+    fun recorderApFailed() = setRecorderState { idle(RecReason.AP_FAIL) }
+
+    /** The stream client sent a good HELLO. */
+    fun recorderClientConnected() = setRecorderState { it.copy(state = RecState.READY, flags = it.flags or RecFlags.CLIENT) }
+
+    /** The take's END went out (or the take ended without a client): READY again. */
+    fun recorderTakeEnded(reason: RecReason = RecReason.USER) = setRecorderState {
+        it.copy(state = if (it.flags and RecFlags.CLIENT != 0) RecState.READY else RecState.WAIT_CLIENT, reasonCode = reason.wire)
+    }
+
+    /** The stream client is gone: the take stops (CLIENT_LOST), the session waits for a client. */
+    fun recorderClientLost() = setRecorderState {
+        it.copy(
+            state = RecState.WAIT_CLIENT, flags = it.flags and RecFlags.CLIENT.inv(),
+            reasonCode = if (it.state == RecState.RECORDING || it.state == RecState.DRAINING) RecReason.CLIENT_LOST.wire else it.reasonCode,
+        )
+    }
+
+    /** The session ended (CLOSE drained, the BLE grace, shutdown). */
+    fun recorderSessionEnded(reason: RecReason = RecReason.USER) = setRecorderState { idle(reason) }
+
+    private fun endpointState(state: RecState): RecorderStatus {
+        val e = recorderEndpoint
+        return rec.copy(
+            state = state, flags = if (e.noAp) RecFlags.NO_AP else 0, port = e.port, ip = e.ip,
+            ssid = if (e.noAp) "" else e.ssid, pass = if (e.noAp) "" else e.pass, token = e.tokenHex,
+            channel = if (e.noAp) 0 else 6,
+        )
+    }
+
+    private fun idle(reason: RecReason) = rec.copy(
+        state = RecState.IDLE, reasonCode = reason.wire, flags = 0, port = 0, ip = "", ssid = "", pass = "", token = "0".repeat(32),
+    )
+
+    private fun publishRecorder() {
+        if (_connection.value is ConnectionState.Connected && recorderSupported && _recorder.value != null) _recorder.value = rec
+    }
 
     init {
-        if (connected) publishAll()
+        if (connected) {
+            _recorder.value = RecorderStatus.NOT_READ
+            publishAll()
+        }
     }
 
     // ---- DeviceSession ----
@@ -120,6 +212,7 @@ class FakeDeviceSession(
         _connection.value = ConnectionState.Connecting(address)
         // Like the BLE session: Device Information is read before the link counts as connected.
         _info.value = deviceInfo
+        _recorder.value = if (recorderSupported) RecorderStatus.NOT_READ else null
         _connection.value = ConnectionState.Connected(address, name, bonded)
         publishAll()
     }
@@ -203,6 +296,68 @@ class FakeDeviceSession(
     }
 
     override fun startOta(image: FirmwareImage): Flow<OtaProgress> = flow { otaLock.withLock { ota(image) } }
+
+    override suspend fun refreshRecorder(): RecorderStatus {
+        requireRecorder("read")
+        return synchronized(recLock) {
+            recLog += "read"
+            _recorder.value = rec
+            rec
+        }
+    }
+
+    override suspend fun openRecorderSession() = recCtrl("open", RecCtrl.Open) {
+        if (it.state != RecState.IDLE) throw DeviceError.Att(AttError.REC_STATE.code)
+        takeRan = false
+        if (recorderAutoAp) endpointState(RecState.WAIT_CLIENT) else it.copy(state = RecState.AP_STARTING)
+    }
+
+    override suspend fun closeRecorderSession() = recCtrl("close", RecCtrl.Close) {
+        when {
+            it.state == RecState.IDLE -> it
+            // Without a stream server nobody drains: the session ends at once.
+            onRecorderOp == null -> idle(RecReason.USER)
+            else -> it.copy(state = RecState.CLOSING)
+        }
+    }
+
+    override suspend fun startTake(request: TakeRequest) = recCtrl("take_start", RecCtrl.TakeStart(request)) {
+        if (it.state != RecState.READY) throw DeviceError.Att(AttError.REC_STATE.code)
+        takeRan = true
+        it.copy(state = RecState.RECORDING, takeId = request.takeId, maxS = request.maxS, profileCode = request.profile.wire, elapsedS = 0)
+    }
+
+    override suspend fun stopTake() = recCtrl("stop", RecCtrl.Stop) {
+        when {
+            it.state == RecState.RECORDING -> it.copy(state = RecState.DRAINING, reasonCode = RecReason.USER.wire)
+            // STOP races are OK: READY, DRAINING, or after a take ran since OPEN.
+            it.state == RecState.READY || it.state == RecState.DRAINING || takeRan -> it
+            else -> throw DeviceError.Att(AttError.REC_STATE.code)
+        }
+    }
+
+    override suspend fun mark(code: Int, text: String) = recCtrl("mark", RecCtrl.Mark(code, text)) {
+        if (it.state != RecState.RECORDING) throw DeviceError.Att(AttError.REC_STATE.code)
+        it
+    }
+
+    private fun requireRecorder(op: String) {
+        requireLink(secure = true)
+        if (!recorderSupported) throw DeviceError.NoRecorder()
+        synchronized(recLock) { recFailures.remove(op) }?.let { throw it }
+    }
+
+    private suspend fun recCtrl(op: String, ctrl: RecCtrl, step: (RecorderStatus) -> RecorderStatus) {
+        requireRecorder(op)
+        if (recorderReplyMs > 0) delay(recorderReplyMs)
+        synchronized(recLock) {
+            rec = step(rec)
+            recLog += op
+            _recorder.value = rec
+        }
+        onRecorderOp?.invoke(ctrl)
+        synchronized(recLock) { recLostAnswers.remove(op) }?.let { throw it }
+    }
 
     // Like BleDeviceSession: one transfer at a time, the next after the stopped one's clean-up.
     private suspend fun FlowCollector<OtaProgress>.ota(image: FirmwareImage) {
@@ -321,6 +476,7 @@ class FakeDeviceSession(
         _angle.value = null
         _status.value = null
         _battery.value = null
+        _recorder.value = null
         _connection.value = ConnectionState.Disconnected(error, reconnecting)
     }
 
@@ -421,6 +577,18 @@ class FakeDeviceSession(
             firmwareRevision = "0.1.0",
         )
     }
+}
+
+/** The stream endpoint the fake announces; a test server's port and token. */
+data class FakeRecorderEndpoint(
+    val ip: String = "127.0.0.1",
+    val port: Int = 47100,
+    val token: ByteArray = ByteArray(16) { (0xA0 + it).toByte() },
+    val noAp: Boolean = true,
+    val ssid: String = "DB-1a2b-k7q2",
+    val pass: String = "abcdefghijklmnopqrst",
+) {
+    val tokenHex: String get() = token.joinToString("") { "%02x".format(it.toInt() and 0xFF) }
 }
 
 // FLOOR judges the bubble, WALL and ANGLE the elevation: a change between the two

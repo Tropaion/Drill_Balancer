@@ -163,9 +163,13 @@ REC_HDR_LEN = 8
 REC_CRC_LEN = 4
 REC_MAX_PAYLOAD = 4096
 REC_TYPES = {0x01: "SESSION", 0x02: "IMU", 0x03: "AUDIO", 0x04: "EVENT", 0x05: "STATS",
-             0x06: "LEVEL", 0x0F: "END"}    # REC_T_*
+             0x06: "LEVEL", 0x07: "HELLO_OK", 0x0F: "END"}    # REC_T_*
 REC_T_SESSION = 0x01
+REC_T_HELLO_OK = 0x07
 REC_T_END = 0x0F
+# The device's first record on a connection it took (no payload, seq 0).
+_hello_ok_head = struct.pack(REC_HDR_FMT, REC_T_HELLO_OK, 1, 0, 0)
+REC_HELLO_OK = _hello_ok_head + struct.pack("<I", zlib.crc32(_hello_ok_head))
 REC_END_FMT = "<QB7I"          # rec_end_t: host_us, reason, records, dropped_records, dropped_bytes,
 REC_END_SIZE = 37              # imu_frames, imu_lost, audio_frames, audio_overflows
 
@@ -240,17 +244,24 @@ class RecScanner:
 async def rec_pull_stream(host: str, port: int, token: bytes, out, *, takes: int = 1,
                           stop: Optional[asyncio.Event] = None, connect_timeout: float = 5.0,
                           on_ready=None, progress=None) -> RecScanner:
-    """Connects to the stream, sends HELLO and writes everything to the
-    binary file out until `takes` END records arrived (0: until stop is set
-    or the device closes the connection). on_ready() runs once the
-    connection is up (e.g. to send TAKE_START); progress(scanner) after each
-    chunk."""
+    """Connects to the stream, sends HELLO, waits for the device's HELLO_OK
+    and writes everything after it to the binary file out until `takes` END
+    records arrived (0: until stop is set or the device closes the
+    connection). on_ready() runs once the device took the connection (e.g.
+    to send TAKE_START); progress(scanner) after each chunk. ConnectionError
+    if the device closes the connection instead (a wrong token)."""
     reader, writer = await asyncio.wait_for(asyncio.open_connection(host, port), connect_timeout)
     scan = RecScanner()
     stopper = asyncio.ensure_future(stop.wait()) if stop is not None else None
     try:
         writer.write(encode_hello(token))
         await writer.drain()
+        try:
+            ok = await asyncio.wait_for(reader.readexactly(len(REC_HELLO_OK)), connect_timeout)
+        except asyncio.IncompleteReadError:
+            raise ConnectionError("the device refused the stream connection (an old session token?)") from None
+        if ok != REC_HELLO_OK:
+            raise ConnectionError(f"the stream began with {ok.hex()}, not HELLO_OK")
         if on_ready is not None:
             await on_ready()
         while True:
@@ -786,6 +797,7 @@ def self_check(verbose: bool = True) -> bool:
     rec_h = _header_path("recorder", "include", "rec_stream.h")
     check(REC_END_SIZE == struct.calcsize(REC_END_FMT), "END payload format is 37 bytes")
     check(encode_hello(bytes(range(16))) == bytes(range(16)) + b"\x01\x00", "HELLO is token + u16 1")
+    check(REC_HELLO_OK.hex() == "0701000000000000c4dd90c9", "HELLO_OK is the 12 bytes of test_rec_stream.c")
     # A 32-byte SESSION: its header read one byte early has a length above
     # REC_MAX_PAYLOAD, so the scanner skips the junk instead of waiting for it.
     sc = RecScanner()

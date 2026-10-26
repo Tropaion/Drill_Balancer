@@ -358,6 +358,59 @@ class FirmwareConformanceTest {
     }
 
     @Test
+    fun recorderService() {
+        val rec = defines(proto, "DB_REC_")
+        assertSameMap(
+            "DB_REC_OP_* and limits",
+            rec.filterKeys { k -> listOf("DB_REC_STATE_", "DB_REC_REASON_", "DB_REC_FLAG_").none { k.startsWith(it) } },
+            mapOf(
+                "DB_REC_OP_OPEN" to RecOpcode.OPEN, "DB_REC_OP_CLOSE" to RecOpcode.CLOSE,
+                "DB_REC_OP_TAKE_START" to RecOpcode.TAKE_START, "DB_REC_OP_STOP" to RecOpcode.STOP,
+                "DB_REC_OP_MARK" to RecOpcode.MARK, "DB_REC_TAKE_START_LEN" to RecOpcode.TAKE_START_LEN,
+                "DB_REC_MARK_TEXT_MAX" to RecOpcode.MARK_TEXT_MAX, "DB_REC_GAIN_MAX_DB" to RecOpcode.GAIN_MAX_DB,
+                "DB_REC_MAX_S_DEFAULT" to RecOpcode.MAX_S_DEFAULT, "DB_REC_MAX_S_LIMIT" to RecOpcode.MAX_S_LIMIT,
+                "DB_REC_MIC_1" to RecOpcode.MIC_1, "DB_REC_MIC_2" to RecOpcode.MIC_2,
+            ).mapValues { it.value.toLong() } + RecProfile.entries.associate { "DB_REC_PROFILE_${it.name}" to it.wire.toLong() },
+        )
+        assertSameMap("DB_REC_STATE_*", defines(proto, "DB_REC_STATE_"), RecState.entries.associate { "DB_REC_STATE_${it.name}" to it.wire.toLong() })
+        assertSameMap("DB_REC_REASON_*", defines(proto, "DB_REC_REASON_"), RecReason.entries.associate { "DB_REC_REASON_${it.name}" to it.wire.toLong() })
+        assertSameMap(
+            "DB_REC_FLAG_*", defines(proto, "DB_REC_FLAG_"),
+            mapOf(
+                "DB_REC_FLAG_NO_AP" to RecFlags.NO_AP, "DB_REC_FLAG_CLIENT" to RecFlags.CLIENT, "DB_REC_FLAG_AUDIO" to RecFlags.AUDIO,
+                "DB_REC_FLAG_IMU_LOST" to RecFlags.IMU_LOST, "DB_REC_FLAG_BATTERY_LOW" to RecFlags.BATTERY_LOW,
+            ).mapValues { it.value.toLong() },
+        )
+        // The stream's reasons and profiles are the same numbers.
+        val stream = FirmwareSources.intDefines("components/recorder/include/rec_stream.h")
+        for (r in RecReason.entries) assertEquals(r.name, r.wire.toLong(), stream["REC_REASON_${r.name}"])
+        for (p in RecProfile.entries) assertEquals(p.name, p.wire.toLong(), stream["REC_PROFILE_${p.name}"])
+
+        val (fields, size) = FirmwareSources.layout(proto, "db_rec_state_packet_t")
+        assertEquals(
+            listOf(
+                "uint8_t version @0", "uint8_t state @1", "uint8_t reason @2", "uint8_t flags @3", "uint32_t take_id @4",
+                "uint16_t elapsed_s @8", "uint16_t max_s @10", "uint32_t sent_kib @12", "uint32_t dropped @16",
+                "uint8_t ring_pct @20", "uint8_t profile @21", "uint8_t channel @22", "uint8_t reserved @23",
+                "uint16_t port @24", "uint8_t ip[4] @26", "char ssid[16] @30", "char pass[24] @46", "uint8_t token[16] @70",
+            ),
+            fields,
+        )
+        assertEquals(RecorderStatus.SIZE, size)
+        assertTrue("} db_rec_state_packet_t;      // ${RecorderStatus.SIZE} bytes" in FirmwareSources.text(proto))
+        assertTrue("_Static_assert(sizeof(db_rec_state_packet_t) == ${RecorderStatus.SIZE}" in FirmwareSources.text("components/ble/src/ble_codec.c"))
+
+        // rec_ctrl is written on an authenticated link, rec_state read on one and notified.
+        val table = FirmwareSources.code("components/ble/src/ble_service.c")
+        fun flags(chr: String) = Regex("""\{\.uuid = &$chr\.u,[^}]*?\.flags = ([^,]+),""").find(table)?.groupValues?.get(1)
+        assertEquals("BLE_GATT_CHR_F_WRITE | SEC_WRITE", flags("UUID_CHR_REC_CTRL"))
+        assertEquals("BLE_GATT_CHR_F_READ | BLE_GATT_CHR_F_NOTIFY | SEC_READ", flags("UUID_CHR_REC_STATE"))
+        // The ATT codes rec_ctrl answers with, besides its own.
+        val text = FirmwareSources.text(proto)
+        assertTrue("rec_ctrl also answers 0x84 (unknown op), 0x85 (TAKE_START or MARK argument" in text)
+    }
+
+    @Test
     fun byteHelpersAgreeWithNio() {
         // u16/u32 helpers agree with java.nio little-endian.
         val b = ByteBuffer.allocate(6).order(ByteOrder.LITTLE_ENDIAN).putShort(0x1234).putInt(0x89ABCDEF.toInt()).array()

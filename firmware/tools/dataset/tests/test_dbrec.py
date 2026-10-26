@@ -475,6 +475,21 @@ class DecoderTest(unittest.TestCase):
         self.assertEqual([t.end is not None for t in takes], [True, False, False])
         self.assertEqual([t.missing_records for t in takes], [0, 1, 1])
 
+    def test_hello_ok_is_not_part_of_a_take(self):
+        # A raw capture of a connection begins with the device's HELLO_OK (seq 0).
+        hello_ok = bytes.fromhex("0701000000000000c4dd90c9")    # test_rec_stream.c
+        self.assertEqual(dbrec.encode_record(dbrec.T_HELLO_OK, 1, 0, b""), hello_ok)
+        w = Writer()
+        w.rec(dbrec.T_SESSION, session_payload(take_id=7))
+        w.rec(dbrec.T_END, dbrec.END.pack(2, 1, 2, 0, 0, 0, 0, 0, 0))
+        recs, st = dbrec.decode(hello_ok + bytes(w.out))
+        self.assertEqual((st.unknown, st.malformed), (0, 0))
+        self.assertIsInstance(recs[0].data, dbrec.HelloOk)
+        takes = dbrec.split_takes(recs)
+        self.assertEqual(len(takes), 1)
+        self.assertEqual(takes[0].session.take_id, 7)
+        self.assertEqual(takes[0].missing_records, 0)
+
 
 class ImuTrackTest(unittest.TestCase):
     def take(self, *reads):

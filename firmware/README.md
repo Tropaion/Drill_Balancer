@@ -121,7 +121,7 @@ Tasks:
 | LVGL (esp_lvgl_adapter) | 6 | The UI. Reads `app_state` snapshots about 15 times a second. |
 | `control` (main/control.c) | 5 | Executes app commands (from the UI and BLE). Polls the AXP2101 every 200 and 500 ms. Runs the power policy. |
 | `rec` (components/recorder/src/recorder.c) | 5 | The recorder's session/take state machine: rec_ctrl commands, Wi-Fi, TCP, BLE and IMU events, a 100 ms tick (timeouts, LEVEL records at 10 Hz, STATS at 1 Hz). Short steps only: a command is answered within milliseconds. |
-| `rec_tx` (components/recorder/src/rec_wifi.c) | 4, core 0 | Brings the soft-AP up and down (the slow part, asked for by `rec`). The stream server on 192.168.4.1:47100: checks HELLO, sends the ring to the one client. |
+| `rec_tx` (components/recorder/src/rec_wifi.c) | 4, core 0 | Brings the soft-AP up and down (the slow part, asked for by `rec`). The stream server on 192.168.4.1:47100: checks HELLO, answers HELLO_OK once `rec` holds the client, sends the ring to it. |
 | NimBLE host | IDF default, core 0 | GATT, pairing, OTA writes |
 | Wi-Fi, lwIP (`tcpip`), event loop | IDF default | Only while a recording session is open |
 | esp_timer | IDF default | BLE notifications (10 Hz), the OTA timeout, the reboot after OTA, the recorder tick |
@@ -297,7 +297,8 @@ SESSION ... END on the stream.
 - `rec_wifi.c`: the soft-AP `DB-XXXX-YYYY` (WPA2, a new 20-character
   passphrase per session, channel 6, one station, RAM storage, torn down
   completely at the end) and the TCP server (HELLO with the session token,
-  one client, a send blocked for 10 s or a station leaving loses it).
+  HELLO_OK back once the recorder holds the connection, one client, a send
+  blocked for 10 s or a station leaving loses it).
 - `rec_audio.c`: its own RX-only I2S channel on the BSP pins (16 kHz, 16-bit
   stereo, MCLK 256 x fs), the ES7210 through `esp_codec_dev` with the take's
   microphones and gain, powered only during a take; a DMA timestamp per

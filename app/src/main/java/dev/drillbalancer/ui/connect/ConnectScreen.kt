@@ -19,6 +19,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
@@ -36,6 +37,7 @@ import dev.drillbalancer.ui.components.MessageBanner
 import dev.drillbalancer.ui.components.Panel
 import dev.drillbalancer.ui.components.SectionTitle
 import dev.drillbalancer.ui.components.SignalBars
+import dev.drillbalancer.ui.components.TouchHeight
 import dev.drillbalancer.ui.theme.Blue
 import dev.drillbalancer.ui.theme.Dark
 import dev.drillbalancer.ui.theme.Green
@@ -51,6 +53,7 @@ class ConnectActions(
     val cancelConnect: () -> Unit = {},
     val rescan: () -> Unit = {},
     val dismissMessage: () -> Unit = {},
+    val openTrainingData: () -> Unit = {},
 )
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -65,7 +68,17 @@ fun ConnectScreen(
 ) {
     Scaffold(
         modifier = modifier,
-        topBar = { TopAppBar(title = { Text("Connect") }) },
+        topBar = {
+            TopAppBar(
+                title = { Text("Connect") },
+                // The recordings on the phone need no device.
+                actions = {
+                    TextButton(actions.openTrainingData, Modifier.heightIn(min = TouchHeight).padding(end = 8.dp)) {
+                        Text("Training data", style = MaterialTheme.typography.titleMedium)
+                    }
+                },
+            )
+        },
     ) { padding ->
         Column(
             Modifier

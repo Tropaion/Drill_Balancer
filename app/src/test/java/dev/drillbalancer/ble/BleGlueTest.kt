@@ -116,6 +116,7 @@ class BleGlueTest {
             override fun onStatus(value: ByteArray) = Unit
             override fun onBattery(value: ByteArray) = Unit
             override fun onOtaCtrl(value: ByteArray) = Unit
+            override fun onRecState(value: ByteArray) = Unit
             override fun clearCacheOnClose() = false
             override fun onPairingRequest() = Unit
         })

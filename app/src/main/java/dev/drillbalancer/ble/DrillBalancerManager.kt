@@ -48,6 +48,7 @@ internal class DrillBalancerManager(
         fun onStatus(value: ByteArray)
         fun onBattery(value: ByteArray)
         fun onOtaCtrl(value: ByteArray)
+        fun onRecState(value: ByteArray)
 
         /**
          * Asked as the link closes, before the request in flight fails: whether to clear the
@@ -73,9 +74,12 @@ internal class DrillBalancerManager(
     private var firmwareRev: BluetoothGattCharacteristic? = null
     private var otaCtrl: BluetoothGattCharacteristic? = null
     private var otaData: BluetoothGattCharacteristic? = null
+    private var recCtrl: BluetoothGattCharacteristic? = null
+    private var recState: BluetoothGattCharacteristic? = null
 
     val currentMtu: Int get() = mtu
     val hasOta: Boolean get() = otaCtrl != null && otaData != null
+    val hasRecorder: Boolean get() = recCtrl != null && recState != null
 
     override fun log(priority: Int, message: String) {
         Log.println(priority, TAG, message)
@@ -101,6 +105,11 @@ internal class DrillBalancerManager(
             otaCtrl = it.find(Uuids.CHR_OTA_CTRL, PROP_WRITE or PROP_INDICATE)
             otaData = it.find(Uuids.CHR_OTA_DATA, PROP_WRITE_NO_RESPONSE)
         }
+        // Optional: firmware before the training-data recorder has no such service.
+        gatt.getService(Uuids.SVC_REC)?.let {
+            recCtrl = it.find(Uuids.CHR_REC_CTRL, PROP_WRITE)
+            recState = it.find(Uuids.CHR_REC_STATE, PROP_READ or PROP_NOTIFY)
+        }
         // Any Device Information service: BlueZ (the simulator's host) adds its own, with
         // only the PnP ID, ahead of the device's.
         manufacturer = gatt.services.findCharacteristic(Uuids.SVC_DEVICE_INFO, Uuids.CHR_MANUFACTURER, PROP_READ)
@@ -117,6 +126,7 @@ internal class DrillBalancerManager(
         setNotificationCallback(status).with { _, data -> data.value?.let(events::onStatus) }
         setNotificationCallback(battery).with { _, data -> data.value?.let(events::onBattery) }
         setIndicationCallback(otaCtrl).with { _, data -> data.value?.let(events::onOtaCtrl) }
+        setNotificationCallback(recState).with { _, data -> data.value?.let(events::onRecState) }
         // 247 = 251-byte LL packets (the device sets that data length) minus L2CAP header.
         requestMtu(MTU).enqueue()
         setPreferredPhy(PhyRequest.PHY_LE_2M_MASK, PhyRequest.PHY_LE_2M_MASK, PhyRequest.PHY_OPTION_NO_PREFERRED)
@@ -135,6 +145,8 @@ internal class DrillBalancerManager(
         firmwareRev = null
         otaCtrl = null
         otaData = null
+        recCtrl = null
+        recState = null
     }
 
     // In close(), which Nordic runs as our link drops (autoConnect off) and on our disconnect.
@@ -198,12 +210,27 @@ internal class DrillBalancerManager(
         requestConnectionPriority(priority).suspend()
     }
 
+    /**
+     * rec_state: needs the authenticated link (READ_ENC | AUTHEN). [atAnswer] runs on the
+     * handler thread as the answer arrives, in order with the notifications.
+     */
+    suspend fun readRecState(atAnswer: () -> Unit): ByteArray = read(recState, atAnswer)
+
+    /** Notified to an authenticated link only: subscribe once the link is (the device notifies once it trusts it). */
+    suspend fun enableRecStateNotifications() = enableNotifications(recState).timeout(TIMEOUT_MS).awaitOnHandler()
+
+    /** Answered once the recorder has taken the op (or refused it, ATT 0x88..0x8A). */
+    suspend fun writeRecCtrl(value: ByteArray) = write(recCtrl, value, BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT)
+
     /** Starts pairing if the phone holds no bond; Android shows its passkey dialog. */
     suspend fun pair() = createBondInsecure().suspend()
 
-    private suspend fun read(c: BluetoothGattCharacteristic?): ByteArray {
+    private suspend fun read(c: BluetoothGattCharacteristic?, atAnswer: () -> Unit = {}): ByteArray {
         var data: Data? = null
-        readCharacteristic(c).timeout(TIMEOUT_MS).with { _, d -> data = d }.awaitOnHandler()
+        readCharacteristic(c).timeout(TIMEOUT_MS).with { _, d ->
+            data = d
+            atAnswer()
+        }.awaitOnHandler()
         return data?.value ?: ByteArray(0)
     }
 

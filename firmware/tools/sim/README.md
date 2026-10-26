@@ -251,7 +251,8 @@ use towards the network, which sends nothing and changes no setting.
 that address and port, and the session token: the app connects over the
 network the phone is on, with no join dialog. The client sends HELLO (the
 16-byte token, then u16 version 1) within 5 s, or the connection is closed;
-one client at a time. A firewall on the PC must let the phone reach that TCP
+one client at a time. A client the device takes gets the HELLO_OK record
+first (the app waits for it before a take). A firewall on the PC must let the phone reach that TCP
 port; `--rec-host 127.0.0.1` keeps the stream on the PC (scripts, tests).
 The address must be IPv4 (`rec_state` carries 4 bytes): a name is served
 on its IPv4 address. A server that cannot start (an IPv6 address, the port

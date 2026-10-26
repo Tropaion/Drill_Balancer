@@ -3,14 +3,12 @@ package dev.drillbalancer.ui.settings
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
@@ -18,7 +16,6 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Surface
@@ -34,8 +31,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.semantics.contentDescription
-import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -49,6 +44,7 @@ import dev.drillbalancer.ui.components.MessageBanner
 import dev.drillbalancer.ui.components.ModeSelector
 import dev.drillbalancer.ui.components.Panel
 import dev.drillbalancer.ui.components.SectionTitle
+import dev.drillbalancer.ui.components.StepButton
 import dev.drillbalancer.ui.components.TouchHeight
 import dev.drillbalancer.ui.components.UiMessage
 import dev.drillbalancer.ui.theme.Amber
@@ -206,18 +202,6 @@ private fun Label(text: String, changed: Boolean) {
     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         Text(text, style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f, fill = false))
         if (changed) Text("changed", style = MaterialTheme.typography.labelMedium, color = Amber)
-    }
-}
-
-@Composable
-private fun StepButton(symbol: String, description: String, enabled: Boolean, onClick: () -> Unit) {
-    OutlinedButton(
-        onClick, Modifier.size(TouchHeight).semantics { contentDescription = description }, enabled,
-        shape = RoundedCornerShape(12.dp),
-        border = BorderStroke(1.dp, Grey),
-        contentPadding = PaddingValues(0.dp),
-    ) {
-        Text(symbol, style = MaterialTheme.typography.headlineMedium, color = MaterialTheme.colorScheme.onSurface)
     }
 }
 

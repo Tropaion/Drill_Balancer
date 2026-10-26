@@ -1,5 +1,8 @@
 package dev.drillbalancer.ui.components
 
+import android.content.ActivityNotFoundException
+import android.content.Context
+import android.content.Intent
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.layout.Arrangement
@@ -113,6 +116,8 @@ fun ActionButton(
 fun Panel(
     modifier: Modifier = Modifier,
     border: Color = Dark,
+    padding: PaddingValues = PaddingValues(16.dp),
+    spacing: Dp = 8.dp,
     content: @Composable ColumnScope.() -> Unit,
 ) {
     Surface(
@@ -122,7 +127,7 @@ fun Panel(
         contentColor = MaterialTheme.colorScheme.onSurface,
         border = BorderStroke(1.dp, border),
     ) {
-        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp), content = content)
+        Column(Modifier.padding(padding), verticalArrangement = Arrangement.spacedBy(spacing), content = content)
     }
 }
 
@@ -176,20 +181,30 @@ val LevelMode.title: String
     }
 
 /** The level mode as one segmented row. A null [textStyle] keeps the button's own label style. */
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ModeSelector(
     selected: LevelMode,
     onMode: (LevelMode) -> Unit,
     inactiveColor: Color,
     textStyle: TextStyle? = null,
+) = SegmentedSelector(LevelMode.entries.map { it to it.title }, selected, inactiveColor, textStyle, onMode)
+
+/** One of [options] (value to label) as a segmented row of glove-sized buttons. */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun <T> SegmentedSelector(
+    options: List<Pair<T, String>>,
+    selected: T,
+    inactiveColor: Color = MaterialTheme.colorScheme.surface,
+    textStyle: TextStyle? = null,
+    onSelect: (T) -> Unit,
 ) {
     SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
-        LevelMode.entries.forEachIndexed { i, mode ->
+        options.forEachIndexed { i, (value, label) ->
             SegmentedButton(
-                selected = mode == selected,
-                onClick = { onMode(mode) },
-                shape = SegmentedButtonDefaults.itemShape(i, LevelMode.entries.size),
+                selected = value == selected,
+                onClick = { onSelect(value) },
+                shape = SegmentedButtonDefaults.itemShape(i, options.size),
                 modifier = Modifier.heightIn(min = TouchHeight),
                 icon = {},
                 colors = SegmentedButtonDefaults.colors(
@@ -198,9 +213,30 @@ fun ModeSelector(
                     inactiveContainerColor = inactiveColor,
                 ),
             ) {
-                Text(mode.title, style = textStyle ?: LocalTextStyle.current, maxLines = 1)
+                Text(label, style = textStyle ?: LocalTextStyle.current, maxLines = 1)
             }
         }
+    }
+}
+
+/** A glove-sized −/+ button; [description] is what a screen reader says. */
+@Composable
+fun StepButton(symbol: String, description: String, enabled: Boolean, onClick: () -> Unit) {
+    OutlinedButton(
+        onClick, Modifier.size(TouchHeight).semantics { contentDescription = description }, enabled,
+        shape = RoundedCornerShape(12.dp),
+        border = BorderStroke(1.dp, if (enabled) Grey else Dark),
+        contentPadding = PaddingValues(0.dp),
+    ) {
+        Text(symbol, style = MaterialTheme.typography.headlineMedium, color = MaterialTheme.colorScheme.onSurface)
+    }
+}
+
+/** Opens a settings screen or the like; nothing if the phone has no activity for [intent]. */
+fun Context.startActivitySafely(intent: Intent) {
+    try {
+        startActivity(intent)
+    } catch (_: ActivityNotFoundException) {
     }
 }
 

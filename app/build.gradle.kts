@@ -32,6 +32,7 @@ android {
 
     buildFeatures {
         compose = true
+        buildConfig = true      // VERSION_NAME for the recordings' journal
     }
 
     testOptions {
@@ -61,15 +62,21 @@ roborazzi {
 
 // Those screenshots are outside build/: a test task restored from the build cache would put
 // back old images instead of rendering, so the unit tests always run for real.
-// The conformance tests read the firmware sources at run time, so a change there alone
-// must also make the tests run again.
+// The conformance tests read the firmware sources (and the stream's golden vector and the
+// dataset contract) at run time, so a change there alone must also make the tests run again.
+// DB_SIM_URL (the opt-in simulator check, README) is an input too.
 tasks.withType<Test>().configureEach {
     outputs.cacheIf { false }
     inputs.files(
         fileTree(layout.projectDirectory.dir("../firmware")) {
-            include("components/**/*.h", "components/**/*.c", "partitions.csv", "CMakeLists.txt", "test_host/**/*.c")
+            include(
+                "components/**/*.h", "components/**/*.c", "partitions.csv", "CMakeLists.txt", "test_host/**/*.c",
+                "test_host/**/vectors/*.bin", "tools/dataset/dbdata/contract/*.json",
+            )
         },
     ).withPathSensitivity(PathSensitivity.RELATIVE).withPropertyName("firmwareSources")
+    inputs.property("simUrl", providers.environmentVariable("DB_SIM_URL").orElse(""))
+    providers.environmentVariable("DB_SIM_URL").orNull?.let { environment("DB_SIM_URL", it) }
 }
 
 dependencies {

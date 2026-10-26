@@ -131,10 +131,3 @@ sealed interface FirmwareParseResult {
         override val message get() = "The image is for project '$projectName', not DrillBalancer."
     }
 }
-
-// A NUL-padded char[len] field.
-private fun ByteArray.cString(offset: Int, len: Int): String {
-    var end = offset
-    while (end < offset + len && this[end] != 0.toByte()) end++
-    return copyOfRange(offset, end).decodeToString()
-}

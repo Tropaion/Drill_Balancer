@@ -12,9 +12,10 @@ join without the board.
 RecorderServer is the device's rec_endpoint (device.py): START_AP ->
 ap_start(), STOP_AP -> ap_stop(). One client at a time; it must send HELLO
 (the 16-byte session token from rec_state, then u16 REC_STREAM_VERSION)
-within HELLO_TIMEOUT_S, or it is closed. Then the server sends whatever the
-device's sender takes out of the ring (DbSimDevice.rec_pop), as fast as the
-client takes it. The bytes on their way are bounded as on the board: at
+within HELLO_TIMEOUT_S, or it is closed. A HELLO the device takes is
+answered with the HELLO_OK record (rec_stream.h); then the server sends
+whatever the device's sender takes out of the ring (DbSimDevice.rec_pop),
+as fast as the client takes it. The bytes on their way are bounded as on the board: at
 most TCP_SND_BUF of them wait on the PC side (the socket's unsent queue
 plus asyncio's buffer), so a client that stops reading backs the stream up
 into the ring once its own receive buffer and those bytes are full (the
@@ -328,6 +329,9 @@ class RecorderServer:
             sock.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, SNDBUF)
         writer.transport.set_write_buffer_limits(high=CHUNK)
         self._client = (reader, writer)
+        # The FSM took the HELLO into READY at once: HELLO_OK goes first (rec_wifi.c welcome()).
+        writer.write(dc.REC_HELLO_OK)
+        self._count(len(dc.REC_HELLO_OK))
         self._pending = b""
         self._drop = asyncio.Event()
         self.clients += 1

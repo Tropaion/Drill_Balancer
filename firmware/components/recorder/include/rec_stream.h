@@ -9,7 +9,13 @@
 // gives (DB_REC_FLAG_NO_AP: the simulator on the LAN). The client first
 // sends HELLO (REC_HELLO_LEN bytes): the 16-byte session token from
 // rec_state, then u16 REC_STREAM_VERSION. A wrong token or version closes
-// the connection. After that only the device sends.
+// the connection. After that only the device sends. Its first record on a
+// connection it takes is HELLO_OK (no payload, seq 0), sent once the
+// recorder holds that connection as its client (rec_state READY): a client
+// waits for it before TAKE_START, since rec_state cannot tell its
+// connection from one that went before it (after a drop the device may
+// still hold the old one, or show READY of the old one with the new one
+// just accepted).
 //
 // Records, all integers little-endian, no padding:
 //   rec_hdr_t (8 B) | payload (len B) | CRC-32 (4 B)
@@ -20,7 +26,8 @@
 // was full: a seq jump of k means k - 1 records are missing. A decoder skips
 // records of unknown type or version (len says how far) and resynchronises
 // byte by byte after a CRC error or an implausible header (unknown version
-// 0, len > REC_MAX_PAYLOAD). Between takes the connection carries nothing.
+// 0, len > REC_MAX_PAYLOAD). Between takes the connection carries nothing
+// (HELLO_OK before the first take aside); HELLO_OK is not part of a take.
 //
 // Times: host_us is the device's esp_timer (us since boot); IMU and audio
 // sample clocks are tied to it by (count, host_us) pairs, which the app fits.
@@ -48,6 +55,7 @@ extern "C" {
 #define REC_T_EVENT   0x04
 #define REC_T_STATS   0x05
 #define REC_T_LEVEL   0x06
+#define REC_T_HELLO_OK 0x07    // no payload; the connection's, not a take's
 #define REC_T_END     0x0F
 #define REC_V_SESSION 1
 #define REC_V_IMU     1
@@ -55,6 +63,7 @@ extern "C" {
 #define REC_V_EVENT   1
 #define REC_V_STATS   1
 #define REC_V_LEVEL   1
+#define REC_V_HELLO_OK 1
 #define REC_V_END     1
 
 typedef struct __attribute__((packed)) {

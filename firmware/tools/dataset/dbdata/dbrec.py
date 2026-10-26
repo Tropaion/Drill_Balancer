@@ -37,9 +37,10 @@ CRC_LEN = 4
 MAX_PAYLOAD = 4096
 
 T_SESSION, T_IMU, T_AUDIO, T_EVENT, T_STATS, T_LEVEL, T_END = 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x0F
+T_HELLO_OK = 0x07           # the connection's first record (no payload), not part of a take
 TYPE_NAMES = {T_SESSION: "SESSION", T_IMU: "IMU", T_AUDIO: "AUDIO", T_EVENT: "EVENT",
-              T_STATS: "STATS", T_LEVEL: "LEVEL", T_END: "END"}
-VERSIONS = {T_SESSION: 1, T_IMU: 1, T_AUDIO: 1, T_EVENT: 1, T_STATS: 1, T_LEVEL: 1, T_END: 1}
+              T_STATS: "STATS", T_LEVEL: "LEVEL", T_HELLO_OK: "HELLO_OK", T_END: "END"}
+VERSIONS = {T_SESSION: 1, T_IMU: 1, T_AUDIO: 1, T_EVENT: 1, T_STATS: 1, T_LEVEL: 1, T_HELLO_OK: 1, T_END: 1}
 
 HDR = struct.Struct("<BBHI")                                  # rec_hdr_t
 SESSION = struct.Struct("<IQ4s32sBBBBIHHBbBbBbIBBBBHH")       # rec_session_t, then JSON
@@ -206,6 +207,11 @@ class End:
 
 
 @dataclass
+class HelloOk:
+    """The device took the connection (before its first take)."""
+
+
+@dataclass
 class Record:
     """One record as framed on the wire. data is the typed payload, or None for
     an unknown type/version (passed through) or a payload too short for its type."""
@@ -274,6 +280,7 @@ _PARSERS = {    # the types of VERSIONS: (fixed part, parser)
     T_LEVEL: (LEVEL.size, lambda p: Level(*LEVEL.unpack_from(p))),
     T_STATS: (STATS.size, lambda p: Stats(*STATS.unpack_from(p))),
     T_END: (END.size, lambda p: End(*END.unpack_from(p))),
+    T_HELLO_OK: (0, lambda p: HelloOk()),
 }
 
 
@@ -445,10 +452,12 @@ class Take:
 def split_takes(records: list[Record]) -> list[Take]:
     """Groups records into takes. A SESSION (or a seq restarting below the last
     one) starts a take, END closes it. Records whose SESSION was lost form a
-    take with session None."""
+    take with session None. HELLO_OK belongs to the connection: left out."""
     takes = []
     cur = None
     for r in records:
+        if r.type == T_HELLO_OK:
+            continue
         if r.type == T_SESSION or (cur is not None and r.seq <= cur.records[-1].seq):
             cur = Take(r.data if isinstance(r.data, Session) else None, [r])
             takes.append(cur)

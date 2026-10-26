@@ -20,8 +20,11 @@ import dev.drillbalancer.protocol.FirmwareImage
 import dev.drillbalancer.protocol.OtaException
 import dev.drillbalancer.protocol.OtaProgress
 import dev.drillbalancer.protocol.OtaTransport
+import dev.drillbalancer.protocol.RecCtrl
+import dev.drillbalancer.protocol.RecorderStatus
 import dev.drillbalancer.protocol.SettingsUpdate
 import dev.drillbalancer.protocol.StatusPacket
+import dev.drillbalancer.protocol.TakeRequest
 import dev.drillbalancer.protocol.decodeBatteryLevel
 import dev.drillbalancer.protocol.getOrNull
 import kotlinx.coroutines.CancellationException
@@ -85,6 +88,7 @@ class BleDeviceSession(
     private val _battery = MutableStateFlow<Int?>(null)
     private val _info = MutableStateFlow<DeviceInfo?>(null)
     private val _settings = MutableStateFlow<DeviceSettings?>(null)
+    private val recState = RecStateOrder()
     private val otaIndications = MutableSharedFlow<ByteArray>(extraBufferCapacity = 64)
 
     override val connection: StateFlow<ConnectionState> = _connection.asStateFlow()
@@ -93,6 +97,10 @@ class BleDeviceSession(
     override val batteryPct: StateFlow<Int?> = _battery.asStateFlow()
     override val info: StateFlow<DeviceInfo?> = _info.asStateFlow()
     override val settings: StateFlow<DeviceSettings?> = _settings.asStateFlow()
+    override val recorder: StateFlow<RecorderStatus?> = recState.value
+
+    // rec_state notifications are on for this link (subscribed after a secured read).
+    @Volatile private var recSubscribed = false
 
     // The connect in progress got a pairing request although the phone held a bond when
     // it started. Checked against the start: Android marks the device BONDING before it
@@ -130,6 +138,11 @@ class BleDeviceSession(
 
             override fun onOtaCtrl(value: ByteArray) {
                 otaIndications.tryEmit(value)
+            }
+
+            override fun onRecState(value: ByteArray) {
+                if (!recSubscribed) return   // a late one from a link that went
+                RecorderStatus.decode(value).getOrNull()?.let { recState.set(it) }
             }
 
             override fun clearCacheOnClose() = drops.clearsCache
@@ -251,6 +264,41 @@ class BleDeviceSession(
         if (!manager.hasOta) throw OtaException("The device's firmware does not offer updates over Bluetooth.")
     }
 
+    // ---- recorder ----
+
+    override suspend fun refreshRecorder(): RecorderStatus {
+        requireReady()
+        if (!manager.hasRecorder) throw DeviceError.NoRecorder()
+        // READ_ENC | AUTHEN: on a link that is not authenticated yet this fails with 0x05 /
+        // 0x0F, which the PairingGate answers with pairing.
+        // A notification newer than the answer may be applied before this resumes: it wins.
+        var at = 0L
+        val raw = gatt(GattOp.REC_READ) { readRecState { at = recState.stamp() } }
+        val st = recState.answered(decode(raw, "recorder state") { RecorderStatus.decode(it) }, at)
+        if (!recSubscribed) {
+            gatt(GattOp.SUBSCRIBE) { enableRecStateNotifications() }
+            recSubscribed = true
+        }
+        return st
+    }
+
+    override suspend fun openRecorderSession() = recCtrl(RecCtrl.Open)
+
+    override suspend fun closeRecorderSession() = recCtrl(RecCtrl.Close)
+
+    override suspend fun startTake(request: TakeRequest) = recCtrl(RecCtrl.TakeStart(request))
+
+    override suspend fun stopTake() = recCtrl(RecCtrl.Stop)
+
+    override suspend fun mark(code: Int, text: String) = recCtrl(RecCtrl.Mark(code, text))
+
+    private suspend fun recCtrl(c: RecCtrl) {
+        requireReady()
+        if (!manager.hasRecorder) throw DeviceError.NoRecorder()
+        if (!recSubscribed) refreshRecorder()
+        gatt(GattOp.REC_CTRL) { writeRecCtrl(c.encode()) }
+    }
+
     /**
      * The UI is gone for good (activity finished): ends the link and any reconnecting in
      * the background. The session stays usable for the next activity.
@@ -331,6 +379,9 @@ class BleDeviceSession(
         gatt(GattOp.READ) { readBattery() }?.let { _battery.value = decodeBatteryLevel(it).getOrNull() }
         gatt(GattOp.READ) { readDeviceInfo() }?.let { _info.value = it }
         fetchSettings()
+        // rec_state is read once the link is authenticated (refreshRecorder).
+        recSubscribed = false
+        recState.set(if (manager.hasRecorder) RecorderStatus.NOT_READ else null)
     }
 
     private suspend fun fetchSettings(): DeviceSettings {
@@ -383,6 +434,8 @@ class BleDeviceSession(
         _angle.value = null
         _status.value = null
         _battery.value = null
+        recState.set(null)
+        recSubscribed = false
     }
 
     private fun startReconnect(address: String, cause: DeviceError.Link) {

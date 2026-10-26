@@ -22,6 +22,12 @@ object FirmwareSources {
         return f.readText()
     }
 
+    fun bytes(path: String): ByteArray {
+        val f = File(dir, path)
+        check(f.isFile) { "missing firmware file $f" }
+        return f.readBytes()
+    }
+
     /** Text with comments removed (string literals here hold no comment markers). */
     fun code(path: String): String =
         text(path).replace(Regex("/\\*.*?\\*/", RegexOption.DOT_MATCHES_ALL), " ").replace(Regex("//[^\n]*"), "")
@@ -80,5 +86,33 @@ object FirmwareSources {
         val m = Regex("""typedef\s+struct\s+__attribute__\(\(packed\)\)\s*\{([^}]*)\}\s*$name\s*;""").find(code(path))
             ?: error("struct $name not found in $path")
         return Regex("""(\w+)\s+(\w+)\s*;""").findAll(m.groupValues[1]).map { it.groupValues[1] to it.groupValues[2] }.toList()
+    }
+
+    /** A field of a packed struct; [count] > 1 for an array. */
+    data class CField(val type: String, val name: String, val count: Int)
+
+    /** Fields of `typedef struct __attribute__((packed)) { ... } name;`, arrays included. */
+    fun packedFields(path: String, name: String): List<CField> {
+        val m = Regex("""typedef\s+struct\s+__attribute__\(\(packed\)\)\s*\{([^}]*)\}\s*$name\s*;""").find(code(path))
+            ?: error("struct $name not found in $path")
+        return Regex("""(\w+)\s+(\w+)(?:\[(\d+)])?\s*;""").findAll(m.groupValues[1])
+            .map { CField(it.groupValues[1], it.groupValues[2], it.groupValues[3].toIntOrNull() ?: 1) }.toList()
+    }
+
+    /** Each field as "type name" ("type name[n]" for arrays and char) at its byte offset, and the struct's size. */
+    fun layout(path: String, name: String, sizes: Map<String, Int> = emptyMap()): Pair<List<String>, Int> {
+        var at = 0
+        val fields = packedFields(path, name).map { f ->
+            val size = when (f.type) {
+                "uint8_t", "int8_t", "char" -> 1
+                "uint16_t", "int16_t" -> 2
+                "uint32_t", "int32_t" -> 4
+                "uint64_t", "int64_t" -> 8
+                else -> sizes[f.type] ?: error("size of ${f.type} unknown")
+            }
+            val label = if (f.count > 1 || f.type == "char") "${f.type} ${f.name}[${f.count}]" else "${f.type} ${f.name}"
+            "$label @$at".also { at += size * f.count }
+        }
+        return fields to at
     }
 }

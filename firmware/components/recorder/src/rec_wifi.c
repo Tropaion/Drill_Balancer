@@ -89,6 +89,7 @@ static volatile bool s_sta_left;
 static int s_listen = -1;
 static int s_sock = -1;
 static bool s_nodelay;              // TCP_NODELAY on s_sock
+static bool s_welcomed;             // HELLO_OK went out on s_sock
 
 static void close_fd(int *fd)
 {
@@ -189,6 +190,7 @@ static void accept_client(void)
     setsockopt(fd, IPPROTO_TCP, TCP_KEEPCNT, &ka[2], sizeof(ka[2]));
     s_sock = fd;
     s_nodelay = false;
+    s_welcomed = false;
     s_sta_left = false;
     taskENTER_CRITICAL(&s_cli_mux);
     uint32_t id = ++s_client_id;
@@ -242,11 +244,32 @@ static void apply_push(void)
     }
 }
 
+// One send() of up to n bytes: the bytes written (progress is then now), 0
+// while it would block, or -1 once the client is lost: no progress since
+// *progress for SEND_STALL_MS, or a closed connection.
+static int send_some(const uint8_t *d, size_t n, int64_t *progress)
+{
+    int w = send(s_sock, d, n, 0);
+    int64_t now = esp_timer_get_time();
+    if (w > 0) {
+        *progress = now;
+        return w;
+    }
+    if (w < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+        if (now - *progress < (int64_t)SEND_STALL_MS * 1000) {
+            return 0;
+        }
+        drop_client("send blocked for 10 s", true);
+        return -1;
+    }
+    drop_client("send failed", true);
+    return -1;
+}
+
 // Sends what the ring holds until it is empty, or until `until` (esp_timer
 // us; a stop's drain limit) passes; without a limit a stop request ends it
-// too. A send() that makes no progress for SEND_STALL_MS, a closed
-// connection or the station leaving lose the client. True once the ring
-// is empty.
+// too. A stalled or closed connection (send_some) or the station leaving
+// lose the client. True once the ring is empty.
 #define NO_LIMIT INT64_MAX
 static bool send_ring(int64_t until)
 {
@@ -268,20 +291,13 @@ static bool send_ring(int64_t until)
             break;
         }
         apply_push();
-        int w = send(s_sock, d, n, 0);
-        int64_t now = esp_timer_get_time();
+        int w = send_some(d, n, &progress);
+        if (w < 0) {
+            return false;
+        }
         if (w > 0) {
             rec_ring_consume(s_ring, (size_t)w);
-            progress = now;
             sent = true;
-        } else if (w < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
-            if (now - progress >= (int64_t)SEND_STALL_MS * 1000) {
-                drop_client("send blocked for 10 s", true);
-                return false;
-            }
-        } else {
-            drop_client("send failed", true);
-            return false;
         }
     }
     if (sent && empty) {
@@ -290,12 +306,41 @@ static bool send_ring(int64_t until)
     return empty;
 }
 
+// HELLO_OK, the served client's first record (rec_stream.h): the recorder
+// holds this connection now, which rec_state alone cannot tell the client.
+// Sent before any of the ring's bytes. False if the client was lost.
+static bool welcome(void)
+{
+    if (s_welcomed) {
+        return true;
+    }
+    uint8_t rec[REC_HDR_LEN + REC_CRC_LEN];
+    size_t n = rec_stream_encode(REC_T_HELLO_OK, REC_V_HELLO_OK, 0, NULL, 0, rec, sizeof(rec));
+    size_t off = 0;
+    int64_t progress = esp_timer_get_time();
+    while (off < n) {
+        if (s_sta_left) {
+            drop_client("station left", true);
+            return false;
+        }
+        int w = send_some(&rec[off], n - off, &progress);
+        if (w < 0) {
+            return false;
+        }
+        off += (size_t)w;
+    }
+    s_welcomed = true;
+    return true;
+}
+
 static void serve(void)
 {
     if (peer_gone() || !s_serving) {
         return;     // or only watches the connection until rec_wifi_serve()
     }
-    send_ring(NO_LIMIT);
+    if (welcome()) {
+        send_ring(NO_LIMIT);
+    }
 }
 
 // The stream ends: FIN after what lwIP still holds (up to TCP_SND_BUF, END
@@ -457,7 +502,7 @@ fail:
 static void wifi_down(uint32_t drain_ms)
 {
     int64_t t0 = esp_timer_get_time();
-    if (s_sock >= 0 && s_serving) {
+    if (s_sock >= 0 && s_serving && welcome()) {
         send_ring(t0 + (int64_t)drain_ms * 1000);
         if (s_sock >= 0) {
             finish_stream();

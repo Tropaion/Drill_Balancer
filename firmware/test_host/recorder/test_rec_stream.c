@@ -181,6 +181,21 @@ static void test_check_finds_records(void)
     TEST_ASSERT_EQUAL_INT((int)n, rec_stream_check(buf, n, &h));
 }
 
+// rec_wifi.c's HELLO_OK: the same 12 bytes in the app's StreamVectorsTest
+// and db_client.py.
+static void test_hello_ok_is_byte_exact(void)
+{
+    static const uint8_t expect[] = {0x07, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                                     0xC4, 0xDD, 0x90, 0xC9};
+    uint8_t buf[REC_HDR_LEN + REC_CRC_LEN];
+    size_t n = rec_stream_encode(REC_T_HELLO_OK, REC_V_HELLO_OK, 0, NULL, 0, buf, sizeof(buf));
+    TEST_ASSERT_EQUAL_UINT(sizeof(expect), n);
+    TEST_ASSERT_EQUAL_HEX8_ARRAY(expect, buf, sizeof(expect));
+    rec_hdr_t h;
+    TEST_ASSERT_EQUAL_INT((int)n, rec_stream_check(buf, n, &h));
+    TEST_ASSERT_EQUAL_UINT16(0, h.len);
+}
+
 static void test_check_rejects_implausible_headers(void)
 {
     uint8_t buf[16] = {REC_T_IMU, 0, 0, 0, 0, 0, 0, 0};
@@ -235,6 +250,7 @@ int main(void)
     RUN_TEST(test_encode_limits);
     RUN_TEST(test_event_payload);
     RUN_TEST(test_check_finds_records);
+    RUN_TEST(test_hello_ok_is_byte_exact);
     RUN_TEST(test_check_rejects_implausible_headers);
     RUN_TEST(test_constants);
     RUN_TEST(test_fw_text);

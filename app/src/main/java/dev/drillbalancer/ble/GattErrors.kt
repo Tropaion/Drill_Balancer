@@ -10,16 +10,23 @@ import dev.drillbalancer.protocol.hexByte
 import no.nordicsemi.android.ble.callback.FailCallback
 import no.nordicsemi.android.ble.observer.ConnectionObserver
 
-/** What a failed request was doing: it decides which device error codes it can carry. */
-enum class GattOp(val label: String, val secure: Boolean) {
+/** What a failed request was doing: it decides which device error codes ([deviceCodes]) it can carry. */
+enum class GattOp(val label: String, val secure: Boolean, val deviceCodes: Set<Int> = emptySet()) {
     CONNECT("connect", false),
     READ("read", false),
     SUBSCRIBE("subscribe", false),
-    CONFIG_WRITE("settings write", true),
-    COMMAND("command", true),
-    OTA("firmware update", true),
+    CONFIG_WRITE("settings write", true, codes(AttError.JSON_PARSE, AttError.JSON_TYPE, AttError.JSON_RANGE, AttError.STORE)),
+    COMMAND("command", true, codes(AttError.UNKNOWN_CMD, AttError.BUSY)),
+    OTA("firmware update", true, codes(AttError.UNAVAILABLE)),
     PAIRING("pairing", true),
+    REC_CTRL(
+        "recorder command", true,
+        codes(AttError.UNKNOWN_CMD, AttError.BUSY, AttError.REC_STATE, AttError.REC_RADIO, AttError.REC_BATTERY),
+    ),
+    REC_READ("recorder state read", true),
 }
+
+private fun codes(vararg errors: AttError): Set<Int> = errors.mapTo(HashSet()) { it.code }
 
 /**
  * Turns the status of a failed Nordic request into a DeviceError. Pure, so the mapping is
@@ -67,6 +74,10 @@ object GattErrors {
         // The bond broadcast failed the request (Nordic's only -4 here; no reliable writes):
         // pairing was cancelled or the code was wrong.
         status == FailCallback.REASON_REQUEST_FAILED -> DeviceError.PairingFailed()
+        // The device's application codes the op can carry are its answer, before any rule for
+        // the stack's codes: the recorder's are Android's GATT_PENDING / GATT_AUTH_FAIL /
+        // GATT_MORE too (a real auth failure on rec_ctrl then reads as REC_RADIO).
+        linkUp && status in op.deviceCodes -> DeviceError.Att(status)
         // Stored keys rejected, either answered on the link or as the reason it dropped. An
         // ATT answer needs a live link; 0x08 as a drop reason is a plain connection timeout.
         op.secure && phoneBonded && (if (linkUp) status in AUTH_CODES else status in KEY_FAILURES) ->
@@ -76,14 +87,11 @@ object GattErrors {
         status in AUTH_CODES -> DeviceError.Att(
             if (status == GATT_INSUFFICIENT_AUTHORIZATION) AttError.INSUFFICIENT_AUTHENTICATION.code else status,
         )
-        status in 0x80..0x83 && op == GattOp.CONFIG_WRITE -> DeviceError.Att(status)
         // 0x85 is also the device's BAD_ARG, but the app only sends arguments the firmware
         // knows (an older firmware aside), so Android's common GATT_ERROR is far likelier.
-        status == GATT_ERROR && op == GattOp.COMMAND -> DeviceError.Link(
+        status == GATT_ERROR && (op == GattOp.COMMAND || op == GattOp.REC_CTRL) -> DeviceError.Link(
             "The command failed (Bluetooth error ${hexByte(GATT_ERROR)}). Try again; if it keeps failing, update the device's firmware.",
         )
-        (status == AttError.UNKNOWN_CMD.code || status == AttError.BUSY.code) && op == GattOp.COMMAND -> DeviceError.Att(status)
-        status == AttError.UNAVAILABLE.code && op == GattOp.OTA -> DeviceError.Att(status)
         status in 0x01..0x7F -> DeviceError.Att(status)   // standard ATT error from the device
         else -> DeviceError.Link("Bluetooth error ${hexByte(status)} during the ${op.label}.")
     }
@@ -110,7 +118,7 @@ object GattErrors {
             if (!error.sent || error.reason == DisconnectReason.NOT_SUPPORTED) Delivery.NOT_SENT else Delivery.LOST
         is DeviceError.Timeout -> Delivery.LOST
         is DeviceError.StaleBond -> if (error.dropped) Delivery.LOST else Delivery.ANSWERED
-        is DeviceError.NotConnected, is DeviceError.MissingPermission -> Delivery.NOT_SENT
+        is DeviceError.NotConnected, is DeviceError.MissingPermission, is DeviceError.NoRecorder -> Delivery.NOT_SENT
         is DeviceError.Att, is DeviceError.PairingFailed, is DeviceError.InvalidData -> Delivery.ANSWERED
         else -> Delivery.LOST
     }

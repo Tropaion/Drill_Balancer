@@ -1,6 +1,5 @@
 package dev.drillbalancer.ui
 
-import android.content.ActivityNotFoundException
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.LocalOnBackPressedDispatcherOwner
 import androidx.compose.foundation.BorderStroke
@@ -30,8 +29,13 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -45,6 +49,7 @@ import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.LocalViewModelStoreOwner
 import androidx.lifecycle.viewmodel.compose.viewModel
+import androidx.navigation.NavDestination
 import androidx.navigation.NavDestination.Companion.hasRoute
 import androidx.navigation.NavGraph.Companion.findStartDestination
 import androidx.navigation.compose.NavHost
@@ -54,12 +59,14 @@ import androidx.navigation.compose.rememberNavController
 import dev.drillbalancer.ble.BlePermissions
 import dev.drillbalancer.ble.ScannedDevice
 import dev.drillbalancer.device.DeviceSession
+import dev.drillbalancer.recorder.RecordPhase
 import dev.drillbalancer.ui.calibration.CalibrationActions
 import dev.drillbalancer.ui.calibration.CalibrationScreen
 import dev.drillbalancer.ui.calibration.CalibrationViewModel
 import dev.drillbalancer.ui.components.BatteryIndicator
 import dev.drillbalancer.ui.components.DbIcons
 import dev.drillbalancer.ui.components.TouchHeight
+import dev.drillbalancer.ui.components.startActivitySafely
 import dev.drillbalancer.ui.connect.ConnectRoute
 import dev.drillbalancer.ui.connect.ConnectViewModel
 import dev.drillbalancer.ui.device.DeviceActions
@@ -74,9 +81,18 @@ import dev.drillbalancer.ui.settings.SettingsActions
 import dev.drillbalancer.ui.settings.SettingsScreen
 import dev.drillbalancer.ui.settings.SettingsViewModel
 import dev.drillbalancer.ui.theme.Amber
+import dev.drillbalancer.ui.training.OfflineTraining
+import dev.drillbalancer.ui.training.RecordViewModel
+import dev.drillbalancer.ui.training.TrainingDeps
+import dev.drillbalancer.ui.training.TrainingListRoute
+import dev.drillbalancer.ui.training.TrainingListViewModel
+import dev.drillbalancer.ui.training.TrainingRecordRoute
+import dev.drillbalancer.ui.training.TrainingSetupRoute
+import dev.drillbalancer.ui.training.TrainingSetupViewModel
 import dev.drillbalancer.ui.theme.Green
 import kotlinx.coroutines.flow.Flow
 import kotlinx.serialization.Serializable
+import kotlin.reflect.KClass
 
 /** Navigation destinations of the connected app. */
 @Serializable
@@ -86,7 +102,28 @@ sealed interface Dest {
     @Serializable data object Calibrate : Dest
     @Serializable data object Device : Dest
     @Serializable data object Firmware : Dest
+    @Serializable data object Training : Dest
+    @Serializable data object TrainingSetup : Dest
+    @Serializable data object TrainingRecord : Dest
 }
+
+/** Screens below the tabs: a back arrow and their title instead of the tab bar. */
+enum class SubScreen(val route: KClass<out Dest>, val title: String) {
+    FIRMWARE(Dest.Firmware::class, "Firmware update"),
+    TRAINING(Dest.Training::class, "Training data"),
+    TRAINING_SETUP(Dest.TrainingSetup::class, "New recording"),
+    TRAINING_RECORD(Dest.TrainingRecord::class, "Recording"),
+}
+
+/**
+ * Whether the connect screen gives way to the training screens: opened from it ([opened]),
+ * or a session that runs without the link. It stays (the session's end, DONE or FAILED,
+ * included) until the user leaves it; a link that is back ends it.
+ */
+fun offlineTraining(opened: Boolean, showMain: Boolean, phase: RecordPhase): Boolean = !showMain && (opened || phase.active)
+
+/** The sub-screen [d] shows, or null for a tab. */
+fun subScreenOf(d: NavDestination?): SubScreen? = if (d == null) null else SubScreen.entries.firstOrNull { d.hasRoute(it.route) }
 
 enum class Tab(val dest: Dest, val label: String, val icon: ImageVector) {
     LIVE(Dest.Live, "Live", DbIcons.Live),
@@ -97,17 +134,28 @@ enum class Tab(val dest: Dest, val label: String, val icon: ImageVector) {
 
 /**
  * The whole UI: the connect screen until a device is connected, then the tabs. The
- * pairing screen covers everything while an action waits for a bond.
+ * pairing screen covers everything while an action waits for a bond. The training data
+ * opens from the connect screen too (the list works without a device), and a recording
+ * session that outlives the Bluetooth link stays on screen.
  */
 @Composable
-fun AppRoot(session: DeviceSession, scan: () -> Flow<List<ScannedDevice>>, lastAddress: Flow<String?>) {
+fun AppRoot(session: DeviceSession, scan: () -> Flow<List<ScannedDevice>>, lastAddress: Flow<String?>, training: TrainingDeps) {
     val sessionVm = viewModel { SessionViewModel(session) }
     val shell by sessionVm.shell.collectAsStateWithLifecycle()
     val prompt by sessionVm.gate.prompt.collectAsStateWithLifecycle()
+    // The phase alone: the whole state changes up to 10 times a second during a take.
+    val phase by training.controller.phase.collectAsStateWithLifecycle()
     val context = LocalContext.current
+    var offlineOpen by rememberSaveable { mutableStateOf(false) }
+    val offline = offlineTraining(offlineOpen, shell.showMain, phase)
+    if (offline != offlineOpen) SideEffect { offlineOpen = offline }
 
     if (!shell.showMain) {
-        ConnectRoute(viewModel { ConnectViewModel(session, scan, lastAddress) })
+        if (offline) {
+            OfflineTraining(training, onClose = { offlineOpen = false })
+        } else {
+            ConnectRoute(viewModel { ConnectViewModel(session, scan, lastAddress) }, openTrainingData = { offlineOpen = true })
+        }
         return
     }
     val screens = remember(sessionVm.screens) {
@@ -117,7 +165,7 @@ fun AppRoot(session: DeviceSession, scan: () -> Flow<List<ScannedDevice>>, lastA
     }
     Box(Modifier.fillMaxSize()) {
         CompositionLocalProvider(LocalViewModelStoreOwner provides screens) {
-            ConnectedApp(sessionVm, shell)
+            ConnectedApp(sessionVm, shell, training)
         }
         prompt?.let { p ->
             BackHandler { sessionVm.gate.cancel() }
@@ -125,25 +173,20 @@ fun AppRoot(session: DeviceSession, scan: () -> Flow<List<ScannedDevice>>, lastA
                 p, shell.deviceName,
                 onPair = sessionVm.gate::pair,
                 onCancel = sessionVm.gate::cancel,
-                onOpenBluetoothSettings = {
-                    try {
-                        context.startActivity(BlePermissions.bluetoothSettingsIntent())
-                    } catch (_: ActivityNotFoundException) {
-                    }
-                },
+                onOpenBluetoothSettings = { context.startActivitySafely(BlePermissions.bluetoothSettingsIntent()) },
             )
         }
     }
 }
 
 @Composable
-private fun ConnectedApp(sessionVm: SessionViewModel, shell: ShellState) {
+private fun ConnectedApp(sessionVm: SessionViewModel, shell: ShellState, training: TrainingDeps) {
     val session = sessionVm.session
     val gate = sessionVm.gate
     val nav = rememberNavController()
     val entry by nav.currentBackStackEntryAsState()
-    val sub = entry?.destination?.hasRoute(Dest.Firmware::class) == true
-    val tab = if (sub) null else Tab.entries.firstOrNull { t -> entry?.destination?.hasRoute(t.dest::class) == true } ?: Tab.LIVE
+    val sub = subScreenOf(entry?.destination)
+    val tab = if (sub != null) null else Tab.entries.firstOrNull { t -> entry?.destination?.hasRoute(t.dest::class) == true } ?: Tab.LIVE
     val backDispatcher = LocalOnBackPressedDispatcherOwner.current?.onBackPressedDispatcher
     // Saves the state of the tab it leaves, so for example unsaved settings edits stay.
     val goToTab: (Tab) -> Unit = { t ->
@@ -158,10 +201,10 @@ private fun ConnectedApp(sessionVm: SessionViewModel, shell: ShellState) {
         shell = shell,
         tab = tab,
         onTab = goToTab,
-        // The firmware update is a sub-screen: back arrow instead of the tabs. It goes the
-        // way of system Back, so the screen's own back handling (stop an update?) applies.
-        onBack = if (sub) ({ if (backDispatcher != null) backDispatcher.onBackPressed() else nav.popBackStack() }) else null,
-        title = if (sub) "Firmware update" else null,
+        // Sub-screens: back arrow instead of the tabs. It goes the way of system Back, so a
+        // screen's own back handling (stop an update? finish the recording?) applies.
+        onBack = if (sub != null) ({ if (backDispatcher != null) backDispatcher.onBackPressed() else nav.popBackStack() }) else null,
+        title = sub?.title,
         onStopReconnect = sessionVm::disconnect,
     ) { padding ->
         NavHost(nav, startDestination = Dest.Live, modifier = Modifier.padding(padding)) {
@@ -210,6 +253,7 @@ private fun ConnectedApp(sessionVm: SessionViewModel, shell: ShellState) {
                         send = vm::send,
                         disconnect = sessionVm::disconnect,
                         openFirmwareUpdate = { nav.navigate(Dest.Firmware) },
+                        openTrainingData = { nav.navigate(Dest.Training) },
                         dismissMessage = vm::dismissMessage,
                     ),
                 )
@@ -217,7 +261,29 @@ private fun ConnectedApp(sessionVm: SessionViewModel, shell: ShellState) {
             composable<Dest.Firmware> {
                 FirmwareRoute(viewModel { FirmwareViewModel(session, gate) }, onDone = { nav.popBackStack() })
             }
+            composable<Dest.Training> {
+                TrainingListRoute(
+                    viewModel { TrainingListViewModel(training.store, training.controller, session) },
+                    onNew = { nav.navigate(Dest.TrainingSetup) },
+                    onOpenSession = { nav.navigate(Dest.TrainingRecord) { launchSingleTop = true } },
+                )
+            }
+            composable<Dest.TrainingSetup> {
+                TrainingSetupRoute(viewModel { TrainingSetupViewModel(training.prefs, session, training.controller, gate) }) {
+                    nav.navigate(Dest.TrainingRecord) { popUpTo<Dest.Training>() }
+                }
+            }
+            composable<Dest.TrainingRecord> {
+                TrainingRecordRoute(viewModel { RecordViewModel(training.controller, gate) }, onBack = { nav.popBackStack() })
+            }
         }
+    }
+    // Back on the tabs after the link was given up while a session ran: show the session again.
+    var resumed by rememberSaveable { mutableStateOf(false) }
+    LaunchedEffect(Unit) {
+        if (resumed) return@LaunchedEffect
+        resumed = true
+        if (training.controller.phase.value.active) nav.navigate(Dest.TrainingRecord) { launchSingleTop = true }
     }
 }
 

@@ -6,8 +6,10 @@ import dev.drillbalancer.protocol.Command
 import dev.drillbalancer.protocol.DeviceSettings
 import dev.drillbalancer.protocol.FirmwareImage
 import dev.drillbalancer.protocol.OtaProgress
+import dev.drillbalancer.protocol.RecorderStatus
 import dev.drillbalancer.protocol.SettingsUpdate
 import dev.drillbalancer.protocol.StatusPacket
+import dev.drillbalancer.protocol.TakeRequest
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.StateFlow
 
@@ -73,6 +75,35 @@ interface DeviceSession {
      * within OtaClient.REBOOT_WINDOW. Cancelling the collection aborts the transfer on the device.
      */
     fun startOta(image: FirmwareImage): Flow<OtaProgress>
+
+    /**
+     * The device's training-data recorder (rec_state): null while there is no link or the
+     * firmware has no recorder service; RecorderStatus.NOT_READ until the first secured read
+     * (rec_state needs the authenticated link), then read and notified.
+     */
+    val recorder: StateFlow<RecorderStatus?>
+
+    /**
+     * Secured read of rec_state, which also subscribes to its notifications on this link
+     * (only an authenticated link gets them); updates [recorder]. Every recorder call below
+     * does this first on a link that has not. DeviceError.NoRecorder without the service.
+     */
+    suspend fun refreshRecorder(): RecorderStatus
+
+    /** OPEN: the device starts its soft-AP (or LAN stream server); [recorder] then says WAIT_CLIENT. */
+    suspend fun openRecorderSession()
+
+    /** CLOSE: ends the take (if any) and the session; the stream drains and ends with a FIN. */
+    suspend fun closeRecorderSession()
+
+    /** TAKE_START (ATT 0x8A: battery too low; 0x88: not READY). */
+    suspend fun startTake(request: TakeRequest)
+
+    /** STOP: the device drains and sends END. Answered OK also after the take already ended. */
+    suspend fun stopTake()
+
+    /** MARK: an EVENT MARK in the stream (RecCtrl.Mark checks the text). */
+    suspend fun mark(code: Int, text: String = "")
 }
 
 sealed interface ConnectionState {
@@ -140,6 +171,9 @@ sealed class DeviceError(message: String) : Exception(message) {
 
     /** The device sent something that does not decode. */
     class InvalidData(message: String) : DeviceError(message)
+
+    /** The device's firmware has no training-data recorder (no DB_SVC_REC). */
+    class NoRecorder : DeviceError("The device's firmware has no training-data recorder. Update its firmware.")
 }
 
 /** Why a link ended; the expected ones follow a command, a settings change or an update. */

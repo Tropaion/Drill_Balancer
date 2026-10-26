@@ -3,7 +3,9 @@
 The companion app for the DrillBalancer (see [../firmware](../firmware/README.md)).
 Over BLE it shows the live level (wall, floor and angle mode), edits all
 device settings, runs both calibrations, sends power commands and updates
-the firmware.
+the firmware. It also records training data: the device streams its raw IMU
+and both microphones over its own Wi-Fi to the phone (see
+[Training data](#training-data)).
 
 Kotlin, Jetpack Compose (Material 3), one activity, coroutines/Flow, manual
 DI. BLE runs on Nordic's Android-BLE-Library. minSdk 26 (Android 8.0),
@@ -95,6 +97,25 @@ the device's link policy it keeps the device awake for about 10 minutes.
   first frame, without which Robolectric captures screens with no animation
   as blank.
 
+### Against the simulator's recorder (opt-in)
+
+`recorder/SimulatorEndToEndTest` records one take from a running simulator
+through `RecordingController`, `LanLink` and the journal, and checks that the
+journal decodes without loss. It is skipped unless `DB_SIM_URL` names the
+simulator's web panel; without Bluetooth the panel's API stands in for
+`rec_ctrl` / `rec_state`:
+
+```sh
+cd ../firmware/tools/sim && ./run.sh --no-ble --rec-host 127.0.0.1     # one terminal
+DB_SIM_URL=http://127.0.0.1:8765 DB_SIM_OUT=/tmp/e2e \
+  ./gradlew testDebugUnitTest --tests '*SimulatorEndToEndTest'        # another
+```
+
+`DB_SIM_OUT` (optional) keeps the journal as `<id>.dbrec` with its
+`take.json`, for the dataset tools:
+`python -m dbdata.dbrec info /tmp/e2e/<id>.dbrec` (in
+`firmware/tools/dataset`).
+
 ### Against the device simulator
 
 Without the board, test the app on a phone against
@@ -120,10 +141,13 @@ cd ../firmware/tools/sim && ./run.sh   # then open http://127.0.0.1:8765
 | `protocol` | The wire contract, no Android: UUIDs, angle/status packets, commands, ATT errors, settings JSON with the firmware's ranges and cross-field rules, firmware image checks, the OTA wire format and `OtaClient` (the transfer loop of `db_client.py`). |
 | `device` | `DeviceSession`: what the UI sees of one link (StateFlows for connection, angle, status, battery, info, settings; suspend calls for settings, commands, pairing; a cold OTA flow) and `DeviceError`. |
 | `ble` | The real implementation: `BleDeviceSession` (connect, setup, pairing probe, reconnect, OTA transport) on `DrillBalancerManager` (Nordic `BleManager`), `DeviceScanner`, permissions, GATT error mapping, `ReconnectPolicy`, `LastDeviceStore`. |
-| `ui` | Compose screens and their ViewModels: connect, pairing, live, settings, calibrate, device, firmware update. `SessionViewModel` picks the connect screen or the tabs and owns the `PairingGate`, which pairs on the first protected action. |
+| `recorder` | The training-data recorder, at app scope: `RecordingController` (session, takes, stop and reconnect paths), `RecordingStore` (the journals, recovery), `SessionSetup` / `Taxonomy` / `RecordingIds` (the dataset contract's labels and ids), `LivePreview`, `RecorderService` (foreground service). `recorder/stream`: the stream's constants, records, the incremental `StreamDecoder` and `StreamStats`. `recorder/net`: `StreamLink` with `ApLink` (the device's soft-AP) and `LanLink` (the simulator), `WifiPermissions`. |
+| `ui` | Compose screens and their ViewModels: connect, pairing, live, settings, calibrate, device, firmware update, training data (list, setup, record). `SessionViewModel` picks the connect screen or the tabs and owns the `PairingGate`, which pairs on the first protected action. |
 
-`DrillBalancerApp` creates the scanner, the last-device store and one
-`BleDeviceSession` for the process, so a rotation keeps the link. Leaving
+`DrillBalancerApp` creates the scanner, the last-device store, one
+`BleDeviceSession` and the recorder (`RecordingController`, its store and
+setup) for the process, so a rotation keeps the link and a recording
+outlives the screens. Leaving
 the app (the activity finishes) ends the link. The connected screens'
 ViewModels are cleared when the app returns to the connect screen.
 `FakeDeviceSession` exists only in the test sources.
@@ -140,6 +164,60 @@ fails when a constant, limit, default or packet layout in `protocol` no
 longer matches, and `FakeOtaDeviceTest` replays the cases of the firmware's
 host tests for `ota_proto.c`. Change the firmware header first, then the
 app, and run the tests.
+
+## Training data
+
+*Device → Recordings* (under Training data; or *Training data* on the connect screen, where the
+list works without a device) lists the recordings on the phone. *New
+recording* asks for the session's labels (material, thickness, mode, bit,
+drill; the taxonomy of the dataset contract, remembered for the next
+session) and the recording settings (hammer mode records ±16 g, the
+microphones, their gain, the longest take), then opens a session:
+
+1. **OPEN** over BLE (the first time this pairs, as any protected action).
+   The device starts its Wi-Fi soft-AP; `rec_state` (an authenticated read,
+   then notifications) carries the SSID, passphrase, address and a session
+   token.
+2. **Join**: on Android 10+ the app requests that network for itself
+   (`WifiNetworkSpecifier`, without internet, so mobile data stays the
+   default and the process is never bound to it). The first time Android
+   asks "connect to device?"; the record screen says so (not on a join
+   again after a drop: Android remembers the approval). Android 8-9 cannot
+   do this: the screen shows the network and password to join in the
+   system settings, and the app connects once the user has. The simulator
+   (`NO_AP`) is reached over the network the phone is on.
+3. **TCP + HELLO** to the stream server; READY once the device answers
+   HELLO_OK on that connection (rec_state cannot tell a new connection from
+   the one before a drop): *Start take* / *Stop take*, as many takes as
+   wanted; *Finish session* closes it.
+
+Each take is one folder `files/recordings/<recording id>/` with
+`stream.dbr`, the stream's bytes exactly as received (synced to storage
+once a second), and `take.json` (ids, labels, the phone's clock, how the
+take ended). Milestone 6 turns them into the dataset files; a take whose
+END never came is kept as *Interrupted*. After a crash the journals the
+app was writing are cut to their last complete record and marked
+interrupted at the next start.
+
+What survives what: a **BLE drop** does not stop a take (the device keeps it
+120 s; *Stop* then closes the stream, which stops it too). A **dropped
+stream** (Wi-Fi gone, the phone out of range, 10 s without data) ends the
+take as interrupted and reconnects to the same session. *Stop* waits 5 s
+for the take's END, then does the same.
+
+A foreground service (type `connectedDevice`) keeps the session alive with
+the screen off; its notification shows the take time and has a *Stop*
+button. The record screen keeps the display on.
+
+Permissions: Android 13+ *Nearby devices* (Wi-Fi, never for location) and
+*Notifications*; Android 17+ also the local network permission
+(`ACCESS_LOCAL_NETWORK`, for the stream's TCP connection); Android 10-12
+*Location* with location services on (Android needs it to join a network);
+Android 8-9 none. *Start* asks only while a required one is missing (the
+notification permission with it, so a refusal is not asked again each
+time); a refused one, or location services off on Android 10-12, stops
+*Start* with a button to the settings that fix it. A recording needs 500 MB
+free.
 
 ## First run on real hardware
 
@@ -202,3 +280,14 @@ None of this could be checked without a phone and a board.
     (the link and progress survive). Leave the app with Back on Android 11
     or older: the link ends. On Android 12+ Back only moves the app to the
     background and the link stays until the process ends.
+15. **Training data**: the join dialog on Android 10+ (approve, decline:
+    *Try again* reuses the device's session), whether mobile data stays the
+    default with the soft-AP joined, the foreground notification and its
+    *Stop* with the screen off, a 20 min take (no stall, the journal's
+    size), Bluetooth out of range during a take (the take goes on; after
+    2 min the device ends it), walking out of Wi-Fi range (interrupted,
+    reconnect), the manual join on Android 8-9 (which network the socket
+    takes), and the `rec_state` subscription after a reconnect. On an
+    Android 17 phone: the local network permission dialog on the first
+    *Start*, the stream with it granted, and what a refusal does (whether a
+    network the app requested itself is exempt is not documented).

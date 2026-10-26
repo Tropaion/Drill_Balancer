@@ -87,12 +87,23 @@ const val LOW_BATTERY_PCT = 10
 fun displayBatteryPct(status: StatusPacket?, battery: Int?): Int? =
     if (status != null) status.batteryPct.takeIf { status.batteryValid } else battery
 
-/** "1.2 MB" / "640 KB" for file sizes and transfer counts (1 KB = 1024 bytes). */
+/** "1.2 MB" / "640 KB" for file sizes and transfer counts (1 KB = 1024 bytes); "12.0 GB" for free storage. */
 fun formatBytes(bytes: Long): String = when {
+    bytes >= 1024L * 1024 * 1024 -> formatFixed(bytes / (1024f * 1024f * 1024f), 1, suffix = " GB")
     bytes >= 1024 * 1024 -> formatFixed(bytes / (1024f * 1024f), 1, suffix = " MB")
     bytes >= 1024 -> "${(bytes + 512) / 1024} KB"
     else -> "$bytes B"
 }
 
-/** "1:05" minutes and seconds. */
-fun formatMinSec(seconds: Long): String = "%d:%02d".format(seconds / 60, seconds % 60)
+/** A rate with one decimal and no saturation, e.g. "16000.4 Hz" (formatFixed stops at 9999). */
+fun formatRate(v: Double, unit: String): String = if (v.isFinite()) "%.1f %s".format(java.util.Locale.ROOT, v, unit) else "-- $unit"
+
+/**
+ * "1:05" minutes and seconds, "1:02:03" past an hour; [padMinutes] gives a clock of steady
+ * width, "01:05" (the elapsed take time, the recording notification).
+ */
+fun formatMinSec(seconds: Long, padMinutes: Boolean = false): String = when {
+    seconds >= 3600 -> "%d:%02d:%02d".format(seconds / 3600, seconds / 60 % 60, seconds % 60)
+    padMinutes -> "%02d:%02d".format(seconds / 60, seconds % 60)
+    else -> "%d:%02d".format(seconds / 60, seconds % 60)
+}

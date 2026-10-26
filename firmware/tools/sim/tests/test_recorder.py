@@ -1060,6 +1060,8 @@ class StreamServerTest(unittest.IsolatedAsyncioTestCase):
         reader, writer = await asyncio.open_connection(rs.ip, rs.port)
         writer.write(dc.encode_hello(rs.token))
         await self.until(lambda: self.state().state_name == "ready")
+        # The device took this connection: HELLO_OK first (rec_wifi.c welcome()).
+        self.assertEqual(await asyncio.wait_for(reader.readexactly(len(dc.REC_HELLO_OK)), 2), dc.REC_HELLO_OK)
         self.assertTrue(self.srv.drop_client())
         self.assertEqual(await asyncio.wait_for(reader.read(100), 2), b"")
         await self.until(lambda: self.state().reason_name == "client_lost")
