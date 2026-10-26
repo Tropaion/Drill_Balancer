@@ -1,0 +1,5 @@
+# DrillBalancer dataset tools (tools/dataset, package dbdata).
+numpy>=1.24
+pandas>=2.0
+soundfile>=0.12     # FLAC/WAV through libsndfile (bundled in the wheels)
+jsonschema>=4.18    # JSON Schema 2020-12

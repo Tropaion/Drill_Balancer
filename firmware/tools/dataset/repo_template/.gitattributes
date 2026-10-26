@@ -1,0 +1,6 @@
+# Recordings are binary or generated; never merge or diff them as text.
+*.gz      binary
+*.flac    binary
+*.wav     binary
+index.csv linguist-generated
+stats.md  linguist-generated

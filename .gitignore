@@ -28,4 +28,7 @@ app/src/test/screenshots/*_actual.png
 firmware/tools/sim/.venv/
 firmware/tools/sim/core/build/
 firmware/tools/sim/state/
+
+# Dataset tools (firmware/tools/dataset)
+firmware/tools/dataset/.venv/
 __pycache__/

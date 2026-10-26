@@ -1,0 +1,139 @@
+{
+  "schema": "drillbalancer.taxonomy/1",
+  "version": 1,
+  "rules": [
+    "Ids never change. New entries are only appended and raise version.",
+    "Hierarchy uses '/': a split class keeps its parent (wood -> wood/softwood).",
+    "A retired id gets deprecated: true and replaced_by; data that uses it stays valid.",
+    "Every recording-level field accepts 'unknown', and 'other' with other_text (<= 40 chars).",
+    "Integer class indices belong in training configs, never in data."
+  ],
+  "special": ["unknown", "other"],
+  "other_text_max": 40,
+  "point_events": [
+    {"id": "motor_on", "added": 1},
+    {"id": "contact", "added": 1, "hole": true},
+    {"id": "breakthrough", "added": 1, "hole": true},
+    {"id": "retract", "added": 1, "hole": true, "note": "bit leaves a blind hole"},
+    {"id": "motor_off", "added": 1},
+    {"id": "kickback", "added": 1, "grammar": false}
+  ],
+  "span_events": [
+    {"id": "stuck", "added": 1, "group": "problem"},
+    {"id": "wander", "added": 1, "group": "problem"},
+    {"id": "wobble", "added": 1, "group": "problem"},
+    {"id": "handling", "added": 1, "group": "handling", "note": "moved with the motor off"},
+    {"id": "ignore", "added": 1, "group": "ignore", "reasons": ["speech", "bump", "other"],
+     "note": "excluded from the loss"}
+  ],
+  "grammar": "(motor_on (contact (motor_off motor_on)* (breakthrough|retract))* (motor_off | contact (motor_off motor_on)* motor_off retract))*; the last run may stop anywhere",
+  "phases": [
+    {"id": "off", "added": 1},
+    {"id": "spinup", "added": 1},
+    {"id": "free_run", "added": 1},
+    {"id": "drilling", "added": 1},
+    {"id": "breakthrough", "added": 1},
+    {"id": "spindown", "added": 1},
+    {"id": "unknown", "added": 1}
+  ],
+  "phase_params": {
+    "windows_ms": {
+      "spinup_max": 300,
+      "breakthrough_pre": 50,
+      "breakthrough_post": 250,
+      "spindown_max": 600
+    },
+    "guard_ms": 50
+  },
+  "coarse": {
+    "phase": {
+      "off": "off",
+      "spinup": "motor_free",
+      "free_run": "motor_free",
+      "spindown": "motor_free",
+      "drilling": "cutting",
+      "breakthrough": "cutting",
+      "unknown": "unknown"
+    }
+  },
+  "fields": {
+    "material": [
+      {"id": "wood", "added": 1},
+      {"id": "wood/softwood", "added": 1},
+      {"id": "wood/hardwood", "added": 1},
+      {"id": "wood/plywood", "added": 1},
+      {"id": "wood/mdf_chipboard", "added": 1},
+      {"id": "metal", "added": 1},
+      {"id": "metal/steel", "added": 1},
+      {"id": "metal/stainless", "added": 1},
+      {"id": "metal/aluminium", "added": 1},
+      {"id": "metal/copper_brass", "added": 1},
+      {"id": "masonry", "added": 1},
+      {"id": "masonry/concrete", "added": 1},
+      {"id": "masonry/brick", "added": 1},
+      {"id": "masonry/aerated_concrete", "added": 1},
+      {"id": "masonry/sand_lime", "added": 1},
+      {"id": "drywall", "added": 1},
+      {"id": "tile_stone", "added": 1},
+      {"id": "tile_stone/ceramic", "added": 1},
+      {"id": "tile_stone/porcelain", "added": 1},
+      {"id": "tile_stone/natural_stone", "added": 1},
+      {"id": "plastic", "added": 1},
+      {"id": "composite", "added": 1}
+    ],
+    "mode": [
+      {"id": "drill", "added": 1},
+      {"id": "hammer", "added": 1},
+      {"id": "screw", "added": 1}
+    ],
+    "bit_type": [
+      {"id": "twist_hss", "added": 1},
+      {"id": "brad_point", "added": 1},
+      {"id": "spade", "added": 1},
+      {"id": "forstner", "added": 1},
+      {"id": "masonry_cyl", "added": 1},
+      {"id": "masonry_sds", "added": 1},
+      {"id": "tile_diamond", "added": 1},
+      {"id": "step", "added": 1},
+      {"id": "hole_saw", "added": 1},
+      {"id": "auger", "added": 1}
+    ],
+    "outcome_tag": [
+      {"id": "clean", "added": 1},
+      {"id": "off_angle", "added": 1, "derived": true},
+      {"id": "wandered_start", "added": 1},
+      {"id": "breakout_chipping", "added": 1},
+      {"id": "oversized", "added": 1},
+      {"id": "aborted", "added": 1},
+      {"id": "bit_stuck", "added": 1},
+      {"id": "kickback", "added": 1}
+    ],
+    "orientation": [
+      {"id": "wall", "added": 1},
+      {"id": "floor", "added": 1},
+      {"id": "ceiling", "added": 1},
+      {"id": "angled", "added": 1}
+    ],
+    "imu_profile": [
+      {"id": "LEVEL", "added": 1, "note": "the level pipeline's filtered profile"},
+      {"id": "RAW448", "added": 1, "note": "448.4 Hz, accel LPF off, +-4 g"},
+      {"id": "RAW448_16G", "added": 1, "note": "448.4 Hz, accel LPF off, +-16 g (hammer)"},
+      {"id": "RAW897", "added": 1, "note": "896.8 Hz, LPF off, experimental"}
+    ],
+    "quality_flag": [
+      {"id": "imu_gap", "added": 1},
+      {"id": "audio_gap", "added": 1},
+      {"id": "audio_clip", "added": 1},
+      {"id": "imu_clip", "added": 1},
+      {"id": "sync_poor", "added": 1},
+      {"id": "low_odr", "added": 1},
+      {"id": "truncated", "added": 1}
+    ]
+  },
+  "derived_rules": {
+    "orientation": "median signed bit elevation over drilling (LEVEL rows with IMU_OK; elevation_cdeg plus zero_elevation_cdeg on ZERO_SET rows): wall if |e| < 30, floor if e < -60, ceiling if e > 60, else angled",
+    "orientation_limits_deg": {"wall": 30, "vertical": 60},
+    "off_angle_deg": "median |deviation| over drilling, LEVEL rows with IMU_OK (wall: elevation, angle: elevation - target, floor: tilt from vertical)",
+    "off_angle_tag": "outcome tag off_angle when off_angle_deg > level.tol_deg"
+  }
+}

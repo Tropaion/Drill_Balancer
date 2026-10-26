@@ -1,0 +1,158 @@
+# Validates new or changed recordings and regenerates index.csv + stats.md.
+#
+# The validator (package dbdata) comes from the public main repo at a pinned
+# tag, so no secret is needed. Only meta.json/events.json of all recordings
+# are checked out (sparse, blobless); the data files only for the recordings
+# being validated. A validation is tied to the git tree id of the recording's
+# folder, which covers the files left out too. Nothing else writes index.csv
+# or stats.md, and they are never merged or rebased: a run works on the
+# branch tip and, when the push races another one, regenerates them on the
+# new tip.
+name: validate
+
+on:
+  push:
+    branches: [main]
+    paths: ["recordings/**"]
+  workflow_dispatch:
+    inputs:
+      all:
+        description: "Validate every recording (downloads all data files)"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+# One run at a time: index.csv is regenerated from the whole tree.
+concurrency:
+  group: index
+  cancel-in-progress: false
+
+env:
+  DBDATA_REPO: Tropaion/Drill_Balancer
+  DBDATA_REF: dataset-v1
+  DBDATA_DIR: .dbdata/firmware/tools/dataset
+  # DBDATA_DIR spelled out: the env context is not available at workflow level
+  PYTHONPATH: ${{ github.workspace }}/.dbdata/firmware/tools/dataset
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out the metadata (sparse, blobless)
+        uses: actions/checkout@v4
+        with:
+          # the branch tip, not the pushed commit: a queued run starts after the previous
+          # run's index commit and must build on it
+          ref: ${{ github.ref_name }}
+          fetch-depth: 0
+          filter: blob:none
+          sparse-checkout-cone-mode: false
+          sparse-checkout: |
+            /README.md
+            /index.csv
+            /stats.md
+            /.gitattributes
+            /.gitignore
+            /taxonomy/
+            /schema/
+            /recordings/**/meta.json
+            /recordings/**/events.json
+
+      - name: Check out the validator (public main repo, pinned)
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.DBDATA_REPO }}
+          ref: ${{ env.DBDATA_REF }}
+          path: .dbdata
+          sparse-checkout: firmware/tools/dataset
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: ${{ env.DBDATA_DIR }}/requirements.txt
+
+      - name: Install the validator's dependencies
+        run: python -m pip install -r "$DBDATA_DIR/requirements.txt"
+
+      - name: Find the recordings to validate
+        env:
+          ALL: ${{ inputs.all }}
+          BEFORE: ${{ github.event.before }}
+        run: |
+          set -euo pipefail
+          list="$RUNNER_TEMP/changed.txt"
+          : > "$list"
+          if [ "${ALL:-false}" = "true" ]; then
+            git ls-tree -r --name-only HEAD -- recordings/ | sed -n 's#/meta\.json$##p' >> "$list"
+          else
+            # changed in this push (label edits included) ...
+            if [ -n "${BEFORE:-}" ] && git cat-file -e "${BEFORE}^{commit}" 2>/dev/null; then
+              git diff --name-only "$BEFORE" HEAD -- recordings/ \
+                | sed -nE 's#^(recordings/[0-9]{4}/[0-9]{4}-[0-9]{2}/[^/]+)/.*#\1#p' >> "$list"
+            fi
+            # ... plus everything index.csv does not list yet or any file of which
+            # changed since its last full validation (the folder's tree id; covers
+            # pushes whose run was superseded in the concurrency queue)
+            python -m dbdata.index . --list-unchecked >> "$list"
+          fi
+          sort -u -o "$list" "$list"
+          if [ -s "$list" ]; then
+            sed 's#.*#/&/#' "$list" | git sparse-checkout add --stdin
+          fi
+          echo "$(wc -l < "$list") recording(s) to validate"
+
+      - name: Validate
+        id: validate
+        run: |
+          set -uo pipefail
+          status=0
+          python -m dbdata.validate --contract . || status=1
+          dirs=()
+          while read -r d; do [ -d "$d" ] && dirs+=("$d"); done < "$RUNNER_TEMP/changed.txt"
+          if [ "${#dirs[@]}" -gt 0 ]; then
+            # writes the report even when a path holds no recording (exit 2) or a recording fails
+            python -m dbdata.validate --quiet --report "$RUNNER_TEMP/report.json" "${dirs[@]}" || status=1
+          else
+            echo "{}" > "$RUNNER_TEMP/report.json"
+          fi
+          echo "status=$status" >> "$GITHUB_OUTPUT"
+
+      - name: Regenerate and commit index.csv and stats.md
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          n="$(wc -l < "$RUNNER_TEMP/changed.txt")"
+          for i in 1 2 3 4 5; do
+            # a missing report fails here: the validator crashed
+            python -m dbdata.index . --report "$RUNNER_TEMP/report.json"
+            git add index.csv stats.md
+            if git diff --cached --quiet; then
+              echo "index unchanged"
+              exit 0
+            fi
+            git commit -m "Update index ($n recording(s) validated)"
+            if git push origin "HEAD:${GITHUB_REF_NAME}"; then
+              exit 0
+            fi
+            # Another push landed meanwhile. Drop this index commit and regenerate on the new
+            # tip: the report applies only to recordings whose files are still the validated
+            # ones (fingerprint: the folder's tree id); the rest get W_UNCHECKED, and the run queued by
+            # that push validates them (diff + --list-unchecked).
+            sleep $((i * 5))
+            git fetch origin "${GITHUB_REF_NAME}"
+            git reset --hard FETCH_HEAD
+          done
+          echo "push failed after 5 attempts" >&2
+          exit 1
+
+      - name: Fail if a recording is invalid
+        if: steps.validate.outputs.status != '0'
+        run: |
+          echo "Validation failed; see the Validate step. index.csv marks the recording valid=0." >&2
+          exit 1

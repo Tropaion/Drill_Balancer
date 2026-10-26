@@ -1,0 +1,88 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:drillbalancer:schema:events:1",
+  "title": "drillbalancer.events/1",
+  "description": "The labels of one recording (events.json): point events, spans and holes, all in device microseconds. The only place labels live; editing them never rewrites the data files.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "taxonomy_version", "recording_id", "revision", "coverage_us", "events", "spans", "holes"],
+  "properties": {
+    "schema": {"const": "drillbalancer.events/1"},
+    "taxonomy_version": {"type": "integer", "minimum": 1},
+    "recording_id": {"type": "string", "pattern": "^[0-9]{8}T[0-9]{6}Z_[a-z2-7]{4}_[0-9a-z]{4}$"},
+    "revision": {"type": "integer", "minimum": 0},
+    "coverage_us": {"type": "array", "minItems": 2, "maxItems": 2, "items": {"type": "integer"},
+                    "description": "[t0, t1): the time range the labels describe; outside it phases are unknown"},
+    "detector": {
+      "type": "object", "additionalProperties": false,
+      "required": ["version"],
+      "properties": {
+        "version": {"type": "string", "maxLength": 64},
+        "params_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      }
+    },
+    "events": {
+      "type": "array",
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["id", "type", "t_us", "source", "confidence"],
+        "properties": {
+          "id": {"$ref": "#/$defs/id"},
+          "type": {"$ref": "#/$defs/tax_id"},
+          "t_us": {"type": "integer"},
+          "hole": {"type": "integer", "minimum": 1},
+          "source": {"$ref": "#/$defs/source"},
+          "confidence": {"$ref": "#/$defs/confidence"},
+          "edited": {"type": "boolean"},
+          "confirmed": {"type": "boolean", "description": "a person checked this auto label (tap to confirm)"},
+          "auto_t_us": {"type": "integer", "description": "the detector's time before a user edit"}
+        }
+      }
+    },
+    "spans": {
+      "type": "array",
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["id", "type", "t0_us", "t1_us", "source", "confidence"],
+        "properties": {
+          "id": {"$ref": "#/$defs/id"},
+          "type": {"$ref": "#/$defs/tax_id"},
+          "reason": {"$ref": "#/$defs/tax_id"},
+          "t0_us": {"type": "integer"},
+          "t1_us": {"type": "integer"},
+          "hole": {"type": "integer", "minimum": 1},
+          "source": {"$ref": "#/$defs/source"},
+          "confidence": {"$ref": "#/$defs/confidence"},
+          "edited": {"type": "boolean"},
+          "confirmed": {"type": "boolean", "description": "a person checked this auto label (tap to confirm)"},
+          "auto_t0_us": {"type": "integer"},
+          "auto_t1_us": {"type": "integer"}
+        }
+      }
+    },
+    "holes": {
+      "type": "array",
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["hole", "through", "material", "outcome_tags", "off_angle_deg", "off_angle_source"],
+        "properties": {
+          "hole": {"type": "integer", "minimum": 1},
+          "through": {"oneOf": [{"type": "null"}, {"type": "boolean"}]},
+          "material": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/tax_id"}],
+                       "description": "null inherits meta.session.material"},
+          "other_text": {"type": "object", "additionalProperties": {"type": "string", "minLength": 1, "maxLength": 40}},
+          "outcome_tags": {"type": "array", "uniqueItems": true, "items": {"$ref": "#/$defs/tax_id"}},
+          "off_angle_deg": {"oneOf": [{"type": "null"}, {"type": "number", "minimum": 0}]},
+          "off_angle_source": {"enum": ["computed", "user", "none"]},
+          "orientation": {"$ref": "#/$defs/tax_id"}
+        }
+      }
+    }
+  },
+  "$defs": {
+    "id": {"type": "string", "pattern": "^[A-Za-z0-9_-]{1,32}$"},
+    "tax_id": {"type": "string", "pattern": "^[A-Za-z0-9_]+(/[a-z0-9_]+)*$"},
+    "source": {"enum": ["auto", "user"]},
+    "confidence": {"type": "number", "minimum": 0, "maximum": 1}
+  }
+}

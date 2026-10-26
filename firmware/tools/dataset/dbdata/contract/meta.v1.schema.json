@@ -1,0 +1,266 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:drillbalancer:schema:meta:1",
+  "title": "drillbalancer.meta/1",
+  "description": "Per-recording metadata (meta.json). Labels live in events.json; taxonomy ids are checked against taxonomy.v1.json by the validator.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "taxonomy_version", "recording_id", "session_id", "start_utc",
+               "device_t0_us", "duration_s", "device", "app", "imu", "audio", "sync", "gaps",
+               "level", "session", "derived", "review", "quality", "files"],
+  "properties": {
+    "schema": {"const": "drillbalancer.meta/1"},
+    "taxonomy_version": {"type": "integer", "minimum": 1},
+    "recording_id": {"$ref": "#/$defs/recording_id"},
+    "session_id": {"type": "string", "pattern": "^[0-9A-Za-z_-]{4,64}$"},
+    "start_utc": {"type": "string",
+                  "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]{1,6})?Z$"},
+    "device_t0_us": {"type": "integer", "minimum": 0},
+    "duration_s": {"type": "number", "exclusiveMinimum": 0, "maximum": 1260},
+    "device": {
+      "type": "object", "additionalProperties": false,
+      "required": ["board", "fw_version", "fw_git", "board_id"],
+      "properties": {
+        "board": {"type": "string", "maxLength": 64},
+        "fw_version": {"type": "string", "maxLength": 32},
+        "fw_git": {"type": "string", "maxLength": 40},
+        "board_id": {"type": "string", "pattern": "^[0-9a-f]{8}$",
+                     "description": "salted SHA-256 of the board's id, first 8 hex chars"}
+      }
+    },
+    "app": {
+      "type": "object", "additionalProperties": false,
+      "required": ["version"],
+      "properties": {
+        "version": {"type": "string", "maxLength": 32},
+        "phone_model": {"type": "string", "maxLength": 64},
+        "android_sdk": {"type": "integer", "minimum": 1},
+        "tool": {"type": "string", "maxLength": 64,
+                 "description": "set instead of phone_model by PC tools (simulator export, synth)"}
+      }
+    },
+    "imu": {
+      "type": "object", "additionalProperties": false,
+      "required": ["chip", "profile", "odr_nominal_hz", "odr_measured_hz", "accel_range_g",
+                   "gyro_range_dps", "accel_lsb_per_g", "gyro_lsb_per_dps", "accel_lpf",
+                   "gyro_lpf", "frame", "axis_map", "accel_cal", "mount", "gyro_bias_rad_s"],
+      "properties": {
+        "chip": {"type": "string", "maxLength": 32},
+        "profile": {"$ref": "#/$defs/tax_id"},
+        "odr_nominal_hz": {"type": "number", "exclusiveMinimum": 0},
+        "odr_measured_hz": {"type": "number", "exclusiveMinimum": 0},
+        "accel_range_g": {"type": "number", "exclusiveMinimum": 0},
+        "gyro_range_dps": {"type": "number", "exclusiveMinimum": 0},
+        "accel_lsb_per_g": {"type": "number", "exclusiveMinimum": 0},
+        "gyro_lsb_per_dps": {"type": "number", "exclusiveMinimum": 0},
+        "accel_lpf": {"type": "string", "maxLength": 32},
+        "gyro_lpf": {"type": "string", "maxLength": 32},
+        "frame": {"type": "string", "maxLength": 200},
+        "axis_map": {"type": "string", "pattern": "^x=[+-]c[xyz],y=[+-]c[xyz],z=[+-]c[xyz]$"},
+        "accel_cal": {
+          "oneOf": [
+            {"type": "null"},
+            {"type": "object", "additionalProperties": false,
+             "required": ["valid", "bias_g", "scale"],
+             "properties": {
+               "valid": {"type": "boolean"},
+               "bias_g": {"$ref": "#/$defs/vec3"},
+               "scale": {"$ref": "#/$defs/vec3"}
+             }}
+          ],
+          "description": "corrected_g = (raw_g - bias_g) * scale, per axis"
+        },
+        "mount": {
+          "oneOf": [
+            {"type": "null"},
+            {"type": "object", "additionalProperties": false,
+             "required": ["valid", "drill_axis"],
+             "properties": {
+               "valid": {"type": "boolean"},
+               "drill_axis": {"$ref": "#/$defs/vec3"}
+             }}
+          ],
+          "description": "unit vector of the bit in the board frame (-Z for a perfect mount)"
+        },
+        "gyro_bias_rad_s": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/vec3"}]},
+        "registers": {
+          "type": "object", "additionalProperties": false,
+          "required": ["ctrl2", "ctrl3", "ctrl5"],
+          "properties": {
+            "ctrl2": {"$ref": "#/$defs/u8"},
+            "ctrl3": {"$ref": "#/$defs/u8"},
+            "ctrl5": {"$ref": "#/$defs/u8"}
+          },
+          "description": "the chip's CTRL2/CTRL3/CTRL5 values from the SESSION record"
+        }
+      }
+    },
+    "take": {
+      "type": "object", "additionalProperties": false,
+      "required": ["take_id", "end_reason"],
+      "properties": {
+        "take_id": {"type": "integer", "minimum": 0, "maximum": 4294967295},
+        "end_reason": {"enum": ["user", "max_s", "client_lost", "ble_lost", "battery", "imu", "shutdown",
+                                "unknown"],
+                       "description": "why the take ended (END record); anything but user means it was cut short"},
+        "stats": {
+          "type": "object", "additionalProperties": false,
+          "properties": {
+            "ring_high_water_pct": {"type": "number", "minimum": 0, "maximum": 100},
+            "dropped_records": {"type": "integer", "minimum": 0},
+            "dropped_bytes": {"type": "integer", "minimum": 0},
+            "audio_overflows": {"type": "integer", "minimum": 0},
+            "battery_pct_start": {"type": "number", "minimum": 0, "maximum": 100},
+            "battery_pct_end": {"type": "number", "minimum": 0, "maximum": 100}
+          },
+          "description": "summary of the device's STATS and END records"
+        }
+      }
+    },
+    "audio": {
+      "oneOf": [
+        {"type": "null"},
+        {"type": "object", "additionalProperties": false,
+         "required": ["codec", "file", "rate_nominal_hz", "rate_measured_hz", "bits", "channels",
+                      "adc", "gain_db", "muted_spans_us", "clipped_frac"],
+         "properties": {
+           "codec": {"enum": ["flac", "wav"]},
+           "file": {"enum": ["audio.flac", "audio.wav"]},
+           "rate_nominal_hz": {"type": "number", "exclusiveMinimum": 0},
+           "rate_measured_hz": {"type": "number", "exclusiveMinimum": 0},
+           "bits": {"const": 16},
+           "channels": {"type": "array", "minItems": 1, "maxItems": 4, "uniqueItems": true,
+                        "items": {"enum": ["mic1", "mic2", "mic3", "mic4"]}},
+           "adc": {"type": "string", "maxLength": 32},
+           "gain_db": {"type": "number"},
+           "muted_spans_us": {"$ref": "#/$defs/spans_us"},
+           "clipped_frac": {"type": "number", "minimum": 0, "maximum": 1},
+           "block_frames": {"type": "integer", "minimum": 1}
+         }}
+      ]
+    },
+    "sync": {
+      "oneOf": [
+        {"type": "null"},
+        {"type": "object", "additionalProperties": false,
+         "required": ["method", "fit", "a_us", "b_us_per_frame", "residual_rms_us"],
+         "properties": {
+           "method": {"type": "string", "maxLength": 64},
+           "fit": {"const": "t_us = a + b*frame"},
+           "a_us": {"type": "number"},
+           "b_us_per_frame": {"type": "number", "exclusiveMinimum": 0},
+           "residual_rms_us": {"type": "number", "minimum": 0},
+           "adc_delay_us": {"type": "number",
+                            "description": "fixed ADC/filter delay, subtracted from the fit (tap test)"}
+         }}
+      ]
+    },
+    "gaps": {
+      "type": "object", "additionalProperties": false,
+      "required": ["imu_filled_samples", "imu_missing_samples", "transport_gaps", "audio_missing_frames"],
+      "properties": {
+        "imu_filled_samples": {"type": "integer", "minimum": 0},
+        "imu_missing_samples": {"type": "integer", "minimum": 0},
+        "transport_gaps": {"$ref": "#/$defs/spans_us"},
+        "audio_missing_frames": {"type": "integer", "minimum": 0},
+        "audio_gap_frames": {"$ref": "#/$defs/spans_us",
+                             "description": "[f0, f1) frame ranges filled with silence; windows over them are invalid"}
+      }
+    },
+    "level": {
+      "type": "object", "additionalProperties": false,
+      "required": ["mode", "target_deg", "tol_deg"],
+      "properties": {
+        "mode": {"enum": ["wall", "floor", "angle"]},
+        "target_deg": {"type": "number", "minimum": -90, "maximum": 90},
+        "tol_deg": {"type": "number", "exclusiveMinimum": 0},
+        "near_deg": {"type": "number", "exclusiveMinimum": 0}
+      },
+      "description": "the device level settings; the zero is per row in level.csv.gz (zero_*_cdeg columns), since it can be set, moved or cleared during a take"
+    },
+    "session": {
+      "type": "object", "additionalProperties": false,
+      "required": ["material", "mode", "bit", "drill", "notes"],
+      "properties": {
+        "material": {"$ref": "#/$defs/tax_id"},
+        "layers": {"type": "array", "maxItems": 8,
+                   "items": {"type": "object", "additionalProperties": false,
+                             "required": ["material", "thickness_mm"],
+                             "properties": {
+                               "material": {"$ref": "#/$defs/tax_id"},
+                               "thickness_mm": {"oneOf": [{"type": "null"},
+                                                          {"type": "number", "exclusiveMinimum": 0}]}
+                             }}},
+        "mode": {"$ref": "#/$defs/tax_id"},
+        "bit": {"type": "object", "additionalProperties": false,
+                "required": ["type", "diameter_mm"],
+                "properties": {
+                  "type": {"$ref": "#/$defs/tax_id"},
+                  "diameter_mm": {"oneOf": [{"type": "null"},
+                                            {"type": "number", "exclusiveMinimum": 0, "maximum": 200}]}
+                }},
+        "drill": {"type": "object", "additionalProperties": false,
+                  "required": ["model", "gear", "speed_setting"],
+                  "properties": {
+                    "model": {"type": "string", "maxLength": 64},
+                    "gear": {"enum": [1, 2, 3, null]},
+                    "speed_setting": {"oneOf": [{"type": "null"}, {"type": "number"}]}
+                  }},
+        "outcome_tags": {"$ref": "#/$defs/tags"},
+        "other_text": {"$ref": "#/$defs/other_text"},
+        "notes": {"type": "string", "maxLength": 200}
+      }
+    },
+    "derived": {
+      "type": "object", "additionalProperties": false,
+      "required": ["orientation", "off_angle_deg", "tags"],
+      "properties": {
+        "orientation": {"$ref": "#/$defs/tax_id"},
+        "off_angle_deg": {"oneOf": [{"type": "null"}, {"type": "number", "minimum": 0}]},
+        "tags": {"$ref": "#/$defs/tags"}
+      }
+    },
+    "review": {
+      "type": "object", "additionalProperties": false,
+      "required": ["status", "detector", "revision", "edited_events"],
+      "properties": {
+        "status": {"enum": ["auto_only", "reviewed", "rejected"]},
+        "detector": {"type": "string", "maxLength": 64},
+        "revision": {"type": "integer", "minimum": 0},
+        "edited_events": {"type": "integer", "minimum": 0},
+        "reviewer": {"oneOf": [{"type": "null"}, {"type": "string", "pattern": "^[a-z2-7]{4}$"}],
+                     "description": "install id of the reviewer, never a name"}
+      }
+    },
+    "quality": {
+      "type": "object", "additionalProperties": false,
+      "required": ["flags"],
+      "properties": {"flags": {"$ref": "#/$defs/tags"}}
+    },
+    "files": {
+      "type": "object",
+      "propertyNames": {"enum": ["imu.csv.gz", "audio.flac", "audio.wav", "audio_sync.csv", "level.csv.gz",
+                                 "device_events.csv"]},
+      "required": ["imu.csv.gz", "level.csv.gz"],
+      "additionalProperties": {
+        "type": "object", "additionalProperties": false,
+        "required": ["sha256", "bytes"],
+        "properties": {
+          "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+          "bytes": {"type": "integer", "minimum": 0}
+        }
+      }
+    },
+    "ext": {"type": "object", "description": "experimental fields; still checked for forbidden keys"}
+  },
+  "$defs": {
+    "recording_id": {"type": "string", "pattern": "^[0-9]{8}T[0-9]{6}Z_[a-z2-7]{4}_[0-9a-z]{4}$"},
+    "tax_id": {"type": "string", "pattern": "^[A-Za-z0-9_]+(/[a-z0-9_]+)*$"},
+    "vec3": {"type": "array", "minItems": 3, "maxItems": 3, "items": {"type": "number"}},
+    "u8": {"type": "integer", "minimum": 0, "maximum": 255},
+    "tags": {"type": "array", "uniqueItems": true, "items": {"$ref": "#/$defs/tax_id"}},
+    "spans_us": {"type": "array",
+                 "items": {"type": "array", "minItems": 2, "maxItems": 2, "items": {"type": "integer"}}},
+    "other_text": {"type": "object", "additionalProperties": {"type": "string", "minLength": 1, "maxLength": 40}}
+  }
+}
