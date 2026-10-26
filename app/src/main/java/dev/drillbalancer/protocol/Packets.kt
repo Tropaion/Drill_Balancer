@@ -60,6 +60,7 @@ object StatusFlags {
     const val MOUNT_CAL = 1 shl 4
     const val ACCEL_CAL = 1 shl 5
     const val CALIBRATING = 1 shl 6
+    const val RECORDING = 1 shl 7   // a recorder session is open
 }
 
 /** db_angle_packet_t (14 bytes), notified at 10 Hz. Angles are kept as on the wire. */

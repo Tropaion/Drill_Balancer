@@ -66,6 +66,7 @@ target_include_directories(dbsim PRIVATE
     ${C}/ble/src
     ${C}/power/include
     ${C}/app_core/include
+    ${C}/recorder/include
     ${C}/ui/src
     ${C}/board/include
     ${C}/board/src

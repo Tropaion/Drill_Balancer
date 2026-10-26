@@ -50,6 +50,9 @@ UUID_IDS = {
     "DB_SVC_OTA": 0x0100,
     "DB_CHR_OTA_CTRL": 0x0101,
     "DB_CHR_OTA_DATA": 0x0102,
+    "DB_SVC_REC": 0x0200,
+    "DB_CHR_REC_CTRL": 0x0201,
+    "DB_CHR_REC_STATE": 0x0202,
 }
 SVC_MAIN = db_uuid(UUID_IDS["DB_SVC_MAIN"])
 CHR_ANGLE = db_uuid(UUID_IDS["DB_CHR_ANGLE"])
@@ -59,6 +62,9 @@ CHR_STATUS = db_uuid(UUID_IDS["DB_CHR_STATUS"])
 SVC_OTA = db_uuid(UUID_IDS["DB_SVC_OTA"])
 CHR_OTA_CTRL = db_uuid(UUID_IDS["DB_CHR_OTA_CTRL"])
 CHR_OTA_DATA = db_uuid(UUID_IDS["DB_CHR_OTA_DATA"])
+SVC_REC = db_uuid(UUID_IDS["DB_SVC_REC"])
+CHR_REC_CTRL = db_uuid(UUID_IDS["DB_CHR_REC_CTRL"])
+CHR_REC_STATE = db_uuid(UUID_IDS["DB_CHR_REC_STATE"])
 CHR_BATTERY = "00002a19-0000-1000-8000-00805f9b34fb"
 
 NAME_PREFIX = "DrillBalancer-"
@@ -80,6 +86,7 @@ STATUS_FLAGS = {
     "mount_cal": 1 << 4,
     "accel_cal": 1 << 5,
     "calibrating": 1 << 6,
+    "recording": 1 << 7,
 }
 MODES = ["wall", "floor", "angle"]                    # level_mode_t
 POWER_STATES = ["active", "dim", "sleep", "off"]      # app_power_t
@@ -114,6 +121,31 @@ ATT_ERRORS = {
     0x85: "command: bad argument",
     0x86: "command: queue full, try again",
     0x87: "OTA not available",
+    0x88: "recorder: not in this state, or OTA / calibration running",
+    0x89: "recorder: Wi-Fi or the stream buffer could not be set up",
+    0x8A: "recorder: battery too low for a take (plug in USB)",
+}
+
+# ---- recorder (rec_ctrl / rec_state) -----------------------------------------
+
+REC_OPS = {"open": 0x01, "close": 0x02, "take-start": 0x03, "stop": 0x04, "mark": 0x05}
+REC_TAKE_START_LEN = 10
+REC_MARK_TEXT_MAX = 40
+REC_PROFILES = ["LEVEL", "RAW448", "RAW448_16G", "RAW897"]        # DB_REC_PROFILE_*
+REC_MICS = {"mic_1": 1 << 0, "mic_2": 1 << 1}
+REC_GAIN_MAX_DB = 37
+REC_MAX_S_DEFAULT = 300
+REC_MAX_S_LIMIT = 1200
+REC_STATES = ["idle", "ap_starting", "wait_client", "ready", "recording", "draining",
+              "closing"]                                          # DB_REC_STATE_*
+REC_REASONS = ["none", "user", "max_s", "client_lost", "ble_lost", "battery", "imu",
+               "shutdown", "ap_fail", "no_client", "idle"]        # DB_REC_REASON_*
+REC_FLAGS = {
+    "no_ap": 1 << 0,
+    "client": 1 << 1,
+    "audio": 1 << 2,
+    "imu_lost": 1 << 3,
+    "battery_low": 1 << 4,
 }
 
 # ---- OTA protocol (ota_proto.h) ---------------------------------------------
@@ -149,12 +181,21 @@ CAL_RESULT_OK_MOUNT_DROPPED = -3
 
 ANGLE_FMT = "<BBBBhhhhh"     # db_angle_packet_t, 14 bytes
 STATUS_FMT = "<BBHBBBBBb"    # db_status_packet_t, 10 bytes
+# db_rec_state_packet_t, 86 bytes: version state reason flags take_id elapsed_s
+# max_s sent_kib dropped ring_pct profile channel reserved port ip ssid pass token
+REC_STATE_FMT = "<BBBBIHHIIBBBBH4s16s24s16s"
 ANGLE_SIZE = struct.calcsize(ANGLE_FMT)
 STATUS_SIZE = struct.calcsize(STATUS_FMT)
+REC_STATE_SIZE = struct.calcsize(REC_STATE_FMT)
 
 
 def _flag_names(value: int, table: dict) -> list:
     return [name for name, bit in table.items() if value & bit]
+
+
+def _name(table, i: int, fallback: str | None = None) -> str:
+    """table[i], or fallback (default str(i)) for a value it does not know."""
+    return table[i] if 0 <= i < len(table) else (fallback if fallback is not None else str(i))
 
 
 @dataclass
@@ -171,7 +212,7 @@ class Angle:
 
     @property
     def mode_name(self) -> str:
-        return MODES[self.mode] if self.mode < len(MODES) else str(self.mode)
+        return _name(MODES, self.mode)
 
     @property
     def flag_names(self) -> list:
@@ -249,6 +290,90 @@ def encode_cmd(name: str, arg: Optional[str] = None) -> bytes:
     return bytes([op])
 
 
+def encode_rec(op: str, *, profile: int = 1, mic_mask: int = 3, gain_db: int = 6,
+               max_s: int = 0, take_id: int = 0, code: int = 0, text: str = "") -> bytes:
+    """A rec_ctrl write. take-start and mark use their keyword arguments."""
+    if op not in REC_OPS:
+        raise ValueError(f"unknown recorder op {op!r}; one of: {', '.join(REC_OPS)}")
+    b = bytes([REC_OPS[op]])
+    if op == "take-start":
+        if not 0 <= profile < len(REC_PROFILES):
+            raise ValueError(f"profile out of range: {profile}")
+        if mic_mask & ~sum(REC_MICS.values()) or not 0 <= gain_db <= REC_GAIN_MAX_DB:
+            raise ValueError("mic_mask or gain_db out of range")
+        if not 0 <= max_s <= REC_MAX_S_LIMIT:
+            raise ValueError(f"max_s out of range: {max_s}")
+        return b + struct.pack("<BBBHI", profile, mic_mask, gain_db, max_s, take_id & 0xFFFFFFFF)
+    if op == "mark":
+        t = text.encode("utf-8")    # a lone surrogate raises here
+        # the firmware refuses C0/C1 controls and DEL (ble_codec.c mark_text_ok)
+        if len(t) > REC_MARK_TEXT_MAX or any(ord(c) < 0x20 or 0x7F <= ord(c) <= 0x9F for c in text):
+            raise ValueError(f"mark text: at most {REC_MARK_TEXT_MAX} bytes, printable")
+        return b + struct.pack("<H", code & 0xFFFF) + t
+    return b
+
+
+@dataclass
+class RecState:
+    version: int
+    state: int
+    reason: int
+    flags: int
+    take_id: int
+    elapsed_s: int
+    max_s: int
+    sent_kib: int
+    dropped: int
+    ring_pct: int
+    profile: int
+    channel: int
+    port: int
+    ip: str
+    ssid: str
+    password: str
+    token: bytes
+
+    @property
+    def state_name(self) -> str:
+        return _name(REC_STATES, self.state)
+
+    @property
+    def reason_name(self) -> str:
+        return _name(REC_REASONS, self.reason)
+
+    @property
+    def flag_names(self) -> list:
+        return _flag_names(self.flags, REC_FLAGS)
+
+
+def _cstr(b: bytes) -> str:
+    return b.split(b"\0", 1)[0].decode("utf-8", "replace")
+
+
+def decode_rec_state(data: bytes) -> RecState:
+    if len(data) != REC_STATE_SIZE:
+        raise ValueError(f"rec_state packet is {len(data)} bytes, expected {REC_STATE_SIZE}")
+    (v, st, reason, flags, take, el, mx, kib, dropped, ring, prof, ch, _res, port, ip, ssid,
+     pw, token) = struct.unpack(REC_STATE_FMT, data)
+    return RecState(v, st, reason, flags, take, el, mx, kib, dropped, ring, prof, ch, port,
+                    ".".join(str(x) for x in ip), _cstr(ssid), _cstr(pw), token)
+
+
+def encode_rec_state(r: RecState) -> bytes:
+    ip = bytes(int(x) for x in r.ip.split(".")) if r.ip else bytes(4)
+    return struct.pack(REC_STATE_FMT, r.version, r.state, r.reason, r.flags, r.take_id,
+                       r.elapsed_s, r.max_s, r.sent_kib, r.dropped, r.ring_pct, r.profile,
+                       r.channel, 0, r.port, ip, r.ssid.encode(), r.password.encode(), r.token)
+
+
+def format_rec_state(r: RecState) -> str:
+    prof = _name(REC_PROFILES, r.profile)
+    return (f"rec: {r.state_name} (last end: {r.reason_name}) take {r.take_id} "
+            f"{r.elapsed_s}/{r.max_s} s {prof}, sent {r.sent_kib} KiB, dropped {r.dropped}, "
+            f"ring {r.ring_pct}%, {r.ip}:{r.port} ssid {r.ssid!r} ch {r.channel}  "
+            f"[{' '.join(r.flag_names)}]")
+
+
 def encode_ota_start(size: int, sha256: bytes) -> bytes:
     if len(sha256) != 32:
         raise ValueError("sha256 must be 32 bytes")
@@ -283,7 +408,7 @@ def decode_ota_msg(data: bytes) -> dict:
 
 
 def status_name(code: int) -> str:
-    return OTA_STATUS[code] if code < len(OTA_STATUS) else f"status {code}"
+    return _name(OTA_STATUS, code, f"status {code}")
 
 
 def parse_config_value(text: str):
@@ -330,8 +455,8 @@ def cal_result_name(code: int) -> str:
 
 
 def format_status(s: Status) -> str:
-    power = POWER_STATES[s.power_state] if s.power_state < len(POWER_STATES) else s.power_state
-    kind = CAL_KINDS[s.cal_kind] if s.cal_kind < len(CAL_KINDS) else s.cal_kind
+    power = _name(POWER_STATES, s.power_state)
+    kind = _name(CAL_KINDS, s.cal_kind)
     return (f"status: battery {s.battery_pct}% {s.battery_mv} mV, power {power}, "
             f"cal {kind} samples {s.cal_samples} coverage 0x{s.cal_coverage:02x} "
             f"last {cal_result_name(s.cal_last_result)}  [{' '.join(s.flag_names)}]")
@@ -369,6 +494,7 @@ def self_check(verbose: bool = True) -> bool:
 
     check(ANGLE_SIZE == 14, f"db_angle_packet_t is 14 bytes (got {ANGLE_SIZE})")
     check(STATUS_SIZE == 10, f"db_status_packet_t is 10 bytes (got {STATUS_SIZE})")
+    check(REC_STATE_SIZE == 86, f"db_rec_state_packet_t is 86 bytes (got {REC_STATE_SIZE})")
 
     a = Angle(1, 2, ANGLE_FLAGS["imu_ok"] | ANGLE_FLAGS["near"], 255,
               -12.34, 179.99, 0.01, -0.01, 327.67)
@@ -413,6 +539,29 @@ def self_check(verbose: bool = True) -> bool:
     except ValueError:
         check(True, "set-mode 3 rejected")
 
+    check(encode_rec("open") == b"\x01", "rec open")
+    ts = encode_rec("take-start", profile=2, mic_mask=3, gain_db=6, max_s=1200, take_id=0x12345678)
+    check(ts == bytes([3, 2, 3, 6, 0xB0, 0x04, 0x78, 0x56, 0x34, 0x12]) and
+          len(ts) == REC_TAKE_START_LEN, "rec take-start is 10 bytes, LE max_s and take_id")
+    check(encode_rec("mark", code=0xBEEF, text="hole 1") == b"\x05\xef\xbehole 1", "rec mark")
+    for bad in ({"profile": 4}, {"mic_mask": 4}, {"gain_db": 38}, {"max_s": 1201}):
+        try:
+            encode_rec("take-start", **bad)
+            check(False, f"take-start {bad} rejected")
+        except ValueError:
+            check(True, f"take-start {bad} rejected")
+    rs = RecState(1, 4, 2, REC_FLAGS["client"] | REC_FLAGS["audio"], 0xA1B2C3D4, 83, 300, 5120, 7,
+                  12, 1, 6, 47100, "192.168.4.1", "DB-1a2b-k7q2", "abcdefghijklmnopqrst",
+                  bytes(range(0xF0, 0x100)))
+    raw = encode_rec_state(rs)
+    check(len(raw) == 86 and raw[24:30] == bytes([0xFC, 0xB7, 192, 168, 4, 1]),
+          "rec_state port and ip at offset 24")
+    check(raw[30:46] == b"DB-1a2b-k7q2".ljust(16, b"\0") and raw[70:] == rs.token,
+          "rec_state ssid at 30, token at 70")
+    check(decode_rec_state(raw) == rs, "rec_state round trip")
+    check("recording" in format_rec_state(rs) and "max_s" in format_rec_state(rs),
+          "rec_state formats state and reason")
+
     sha = hashlib.sha256(b"abc").digest()
     start = encode_ota_start(0x01020304, sha)
     check(len(start) == 37 and start[:5] == b"\x01\x04\x03\x02\x01", "OTA START is 37 bytes, LE size")
@@ -452,6 +601,29 @@ def self_check(verbose: bool = True) -> bool:
             text = f.read()
         check("} db_angle_packet_t;          // 14 bytes" in text, "header says angle = 14 bytes")
         check("} db_status_packet_t;         // 10 bytes" in text, "header says status = 10 bytes")
+        check("} db_rec_state_packet_t;      // 86 bytes" in text, "header says rec_state = 86 bytes")
+        for name, op in REC_OPS.items():
+            cname = "DB_REC_OP_" + name.upper().replace("-", "_")
+            check(d.get(cname) == op, f"{cname} = 0x{op:02x} matches")
+        for i, name in enumerate(REC_PROFILES):
+            check(d.get("DB_REC_PROFILE_" + name) == i, f"DB_REC_PROFILE_{name} = {i}")
+        for i, name in enumerate(REC_STATES):
+            check(d.get("DB_REC_STATE_" + name.upper()) == i, f"DB_REC_STATE_{name.upper()} = {i}")
+        for i, name in enumerate(REC_REASONS):
+            check(d.get("DB_REC_REASON_" + name.upper()) == i, f"DB_REC_REASON_{name.upper()} = {i}")
+        for name, bit in REC_FLAGS.items():
+            check(d.get("DB_REC_FLAG_" + name.upper()) == bit, f"DB_REC_FLAG_{name.upper()} matches")
+        for name, bit in REC_MICS.items():
+            check(d.get("DB_REC_" + name.upper()) == bit, f"DB_REC_{name.upper()} matches")
+        for cname, v in (("DB_REC_TAKE_START_LEN", REC_TAKE_START_LEN),
+                         ("DB_REC_MARK_TEXT_MAX", REC_MARK_TEXT_MAX),
+                         ("DB_REC_GAIN_MAX_DB", REC_GAIN_MAX_DB),
+                         ("DB_REC_MAX_S_DEFAULT", REC_MAX_S_DEFAULT),
+                         ("DB_REC_MAX_S_LIMIT", REC_MAX_S_LIMIT)):
+            check(d.get(cname) == v, f"{cname} = {v}")
+        att = {k: v for k, v in d.items() if k.startswith("DB_ATT_ERR_")}
+        check(sorted(att.values()) == sorted(c for c in ATT_ERRORS if c >= 0x80),
+              "every DB_ATT_ERR_* has a description")
     else:
         print("skip ble_protocol.h drift check (not run from the repo)")
 

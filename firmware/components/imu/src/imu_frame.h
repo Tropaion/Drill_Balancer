@@ -1,42 +1,27 @@
 #pragma once
 
-// Hardware-independent parts of the QMI8658 driver: frame decoding, axis
-// mapping, FIFO gap bookkeeping and ODR estimation. Pure C, so test_host can
-// build it (with stub ESP-IDF headers for imu.h).
+// Hardware-independent parts of the QMI8658 driver: the profile table, frame
+// decoding, axis mapping, FIFO gap bookkeeping, raw timestamp runs and ODR
+// estimation. Pure C, so test_host can build it (with stub ESP-IDF headers
+// for imu.h).
 
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 #include "imu.h"
+#include "imu_ts.h"
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-// One 6DOF sample: AX AY AZ GX GY GZ, 16-bit little-endian each. Same layout
-// in the data registers (0x35..0x40) and in the FIFO (datasheet 8.9).
-#define IMU_FRAME_BYTES 12
-
-// CTRL2 aFS = +-4 g and CTRL3 gFS = +-512 dps (datasheet Table 22).
-#define IMU_ACCEL_LSB_PER_G 8192.0f
-#define IMU_GYRO_LSB_PER_DPS 64.0f
-
-// Board axis = sign * chip axis[src].
-typedef struct {
-    uint8_t src;    // 0 = chip X, 1 = chip Y, 2 = chip Z
-    int8_t sign;    // +1 or -1
-} imu_axis_t;
-
-typedef struct {
-    imu_axis_t x, y, z;
-} imu_axis_map_t;
-
 // A valid map uses every chip axis exactly once with sign +-1 and is a
 // rotation (determinant +1): both frames are right-handed.
 bool imu_axis_map_valid(const imu_axis_map_t *map);
 
-void imu_decode_frame(const imu_axis_map_t *map, const uint8_t frame[IMU_FRAME_BYTES],
-                      imu_sample_t *out);
+// Decodes with the scales of profile p.
+void imu_decode_frame(const imu_axis_map_t *map, const imu_profile_info_t *p,
+                      const uint8_t frame[IMU_FRAME_BYTES], imu_sample_t *out);
 
 // Complete 6DOF frames in the FIFO from FIFO_SMPL_CNT (0x15) and FIFO_STATUS
 // (0x16): the 10-bit count is in 16-bit words (datasheet 8.4).
@@ -48,7 +33,6 @@ size_t imu_fifo_frames(uint8_t smpl_cnt, uint8_t fifo_status);
 // samples follows from it and the driver can fill them in. Samples still in
 // the FIFO after a partial read are older than anything lost during that
 // read, so the gap sits after them.
-#define IMU_TS_MASK 0xFFFFFFu
 
 typedef struct {
     bool valid;
@@ -63,6 +47,11 @@ typedef struct {
     size_t insert_at;
     size_t n_read;        // FIFO samples to read now
     size_t n_fill;        // lost samples to interpolate now
+    // resync: g not valid, or a gap the plan does not report because it is
+    // inconsistent or above IMU_GAP_MAX. ts_first: timestamp of FIFO index
+    // 0, g->next_ts, or ts - frames + 1 after a resync.
+    bool resync;
+    uint32_t ts_first;
 } imu_gap_plan_t;
 
 // Gaps above this are not a few dropped samples but a stall or a FIFO
@@ -85,6 +74,13 @@ imu_gap_plan_t imu_gap_plan(const imu_gap_t *g, uint32_t ts, size_t frames, bool
 // After reading `read` of the `frames` samples (the gap, if any, was emitted
 // when read > plan.insert_at).
 void imu_gap_commit(imu_gap_t *g, uint32_t ts, size_t frames, size_t read);
+
+// The timestamp runs of one read (imu_raw_info_t.run) from the plan it
+// followed. Frames before p->insert_at carry p->ts_first + i, later ones
+// p->ts_first + i + p->lost. After a resynchronisation (p->resync) frame i
+// carries p->ts_first + i and run[0] is discontinuous. Returns the number
+// of runs used (0 when nothing is read); unused runs have count 0.
+size_t imu_raw_runs(const imu_gap_plan_t *p, imu_raw_run_t run[2]);
 
 // n samples linearly interpolated between a and b, excluding both ends.
 void imu_fill_gap(const imu_sample_t *a, const imu_sample_t *b, size_t n, imu_sample_t *out);

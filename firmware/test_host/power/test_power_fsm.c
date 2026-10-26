@@ -82,6 +82,14 @@ static void test_ota_blocks_sleep(void) { check_inhibitor(&in.ota_active); }
 static void test_calibration_blocks_sleep(void) { check_inhibitor(&in.calibrating); }
 static void test_ble_connection_blocks_sleep(void) { check_inhibitor(&in.ble_connected); }
 static void test_vbus_blocks_sleep(void) { check_inhibitor(&in.vbus_present); }
+static void test_recording_blocks_sleep(void) { check_inhibitor(&in.recording); }
+
+static void test_recording_does_not_hold_off_low_battery(void)
+{
+    in.recording = true;
+    in.battery_pct = 4;
+    TEST_ASSERT_EQUAL(POWER_OFF, power_fsm_update(&f, &in, 1001));
+}
 
 static void test_activity_during_inhibit_returns_to_active(void)
 {
@@ -655,6 +663,8 @@ int main(void)
     RUN_TEST(test_calibration_blocks_sleep);
     RUN_TEST(test_ble_connection_blocks_sleep);
     RUN_TEST(test_vbus_blocks_sleep);
+    RUN_TEST(test_recording_blocks_sleep);
+    RUN_TEST(test_recording_does_not_hold_off_low_battery);
     RUN_TEST(test_activity_during_inhibit_returns_to_active);
     RUN_TEST(test_low_battery_turns_off_at_once);
     RUN_TEST(test_battery_at_threshold_stays_on);

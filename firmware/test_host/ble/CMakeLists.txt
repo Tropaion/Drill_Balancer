@@ -5,6 +5,7 @@ target_include_directories(ble_codec_host PUBLIC
     ${COMPONENTS_DIR}/ble/include
     ${COMPONENTS_DIR}/ble/src
     ${COMPONENTS_DIR}/app_core/include
+    ${COMPONENTS_DIR}/recorder/include
     ${COMPONENTS_DIR}/settings/include)
 target_compile_options(ble_codec_host PRIVATE ${STRICT_WARNINGS})
 target_link_libraries(ble_codec_host PUBLIC level)

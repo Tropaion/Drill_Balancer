@@ -110,8 +110,8 @@ power_state_t power_fsm_update(power_fsm_t *f, const power_inputs_t *in, uint32_
     vibration_hold(f, in->vibrating, now_ms);
 
     uint32_t idle = power_fsm_idle_ms(f, now_ms);
-    bool sleep_blocked = in->ota_active || in->calibrating || in->ble_connected ||
-                         in->vbus_present;
+    bool sleep_blocked = in->ota_active || in->calibrating || in->recording ||
+                         in->ble_connected || in->vbus_present;
 
     if (idle >= f->cfg.sleep_after_ms) {
         // Blocked sleep still dims, even with dim_after_ms > sleep_after_ms.

@@ -22,7 +22,10 @@ enum class AttError(val code: Int, val message: String, val needsPairing: Boolea
     UNKNOWN_CMD(0x84, "The device does not know this command. Update its firmware."),
     BAD_ARG(0x85, "The device rejected the command's argument."),
     BUSY(0x86, "The device is busy. Try again."),
-    UNAVAILABLE(0x87, "Firmware update is not available on the device.");
+    UNAVAILABLE(0x87, "Firmware update is not available on the device."),
+    REC_STATE(0x88, "The recorder cannot do that now (another recording step, a firmware update or a calibration is running)."),
+    REC_RADIO(0x89, "The device could not start its Wi-Fi for the recording."),
+    REC_BATTERY(0x8A, "The battery is too low for a recording. Plug in USB.");
 
     companion object {
         fun fromCode(code: Int): AttError? = entries.firstOrNull { it.code == code }

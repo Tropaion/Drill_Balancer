@@ -3,7 +3,7 @@
 The contract (taxonomy, JSON Schemas) is in dbdata/contract/. Modules:
 io (read/write a recording), labels (phases from events), windows (aligned
 IMU + audio windows), dataset (index.csv-based loader), validate, index,
-stats. The names below are imported lazily, so `python -m dbdata.<module>`
+stats, dbrec (the device stream: decoder and export). The names below are imported lazily, so `python -m dbdata.<module>`
 runs each module only once.
 """
 

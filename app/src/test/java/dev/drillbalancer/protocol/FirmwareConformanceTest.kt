@@ -44,11 +44,14 @@ class FirmwareConformanceTest {
             "DB_CHR_CONFIG" to Uuids.DB_CHR_CONFIG, "DB_CHR_COMMAND" to Uuids.DB_CHR_COMMAND,
             "DB_CHR_STATUS" to Uuids.DB_CHR_STATUS, "DB_SVC_OTA" to Uuids.DB_SVC_OTA,
             "DB_CHR_OTA_CTRL" to Uuids.DB_CHR_OTA_CTRL, "DB_CHR_OTA_DATA" to Uuids.DB_CHR_OTA_DATA,
+            "DB_SVC_REC" to Uuids.DB_SVC_REC, "DB_CHR_REC_CTRL" to Uuids.DB_CHR_REC_CTRL,
+            "DB_CHR_REC_STATE" to Uuids.DB_CHR_REC_STATE,
         )
         val c = FirmwareSources.intDefines(proto).filterKeys { it.startsWith("DB_SVC_") || it.startsWith("DB_CHR_") }
         assertSameMap("UUID ids", c, ids.mapValues { it.value.toLong() })
         assertEquals(Uuids.db(0x0002), Uuids.CHR_ANGLE)
         assertEquals(Uuids.db(0x0102), Uuids.CHR_OTA_DATA)
+        assertEquals(Uuids.db(0x0202), Uuids.CHR_REC_STATE)
 
         // DB_UUID128_INIT(lo, hi): NimBLE little-endian byte order with x in bytes 12, 13.
         val m = Regex("""BLE_UUID128_INIT\((.*?0xd7)\)""", RegexOption.DOT_MATCHES_ALL).find(FirmwareSources.code(proto))!!
@@ -98,6 +101,7 @@ class FirmwareConformanceTest {
                 "DB_STATUS_FLAG_CHARGE_DONE" to StatusFlags.CHARGE_DONE, "DB_STATUS_FLAG_VBUS" to StatusFlags.VBUS,
                 "DB_STATUS_FLAG_MOUNT_CAL" to StatusFlags.MOUNT_CAL, "DB_STATUS_FLAG_ACCEL_CAL" to StatusFlags.ACCEL_CAL,
                 "DB_STATUS_FLAG_CALIBRATING" to StatusFlags.CALIBRATING,
+                "DB_STATUS_FLAG_RECORDING" to StatusFlags.RECORDING,
             ).mapValues { it.value.toLong() },
         )
     }

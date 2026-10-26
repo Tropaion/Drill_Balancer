@@ -57,6 +57,31 @@ typedef enum {
     APP_POWER_OFF,
 } app_power_t;
 
+// The recorder's state for the BLE rec_state characteristic, the status flag
+// and the UI. state and reason mirror rec_state_t / REC_REASON_* (rec_fsm.h,
+// rec_stream.h) without depending on them. While no session is open state
+// is 0 (idle) and the connection fields are zero, but reason and the take's
+// fields keep the last take and why it or the session ended (rec_fsm_t keeps
+// them), so an app that reconnects after the BLE grace can show it.
+typedef struct {
+    uint8_t state;               // rec_state_t, 0 = idle
+    uint8_t reason;              // REC_REASON_* of the last take or session end
+    uint8_t flags;               // DB_REC_FLAG_* (ble_protocol.h)
+    uint8_t profile;             // REC_PROFILE_* of the take
+    uint32_t take_id;
+    uint16_t elapsed_s;
+    uint16_t max_s;
+    uint64_t sent_bytes;         // stream bytes sent this session
+    uint32_t dropped;            // records dropped this take
+    uint8_t ring_pct;
+    uint8_t channel;             // Wi-Fi channel, 0 without AP
+    uint16_t port;
+    uint8_t ip[4];
+    char ssid[17];               // NUL-terminated
+    char pass[25];
+    uint8_t token[16];
+} app_rec_status_t;
+
 typedef struct {
     // motion (sensor task)
     bool imu_ok;
@@ -89,6 +114,9 @@ typedef struct {
 
     app_power_t power;
     app_cal_status_t cal;
+
+    // recorder
+    app_rec_status_t rec;
 } app_snapshot_t;
 
 void app_state_init(void);

@@ -15,8 +15,9 @@
 //   write, key press or movement; it dims and sleeps dim_after_ms and
 //   sleep_after_ms after that. A stamp older than power_fsm_init() (the
 //   boot, also a wake on motion) does not arm it.
-// - Never SLEEP while an OTA update or a calibration runs, while BLE is
-//   connected, or while USB power is present (DIM is still allowed).
+// - Never SLEEP while an OTA update or a calibration runs, while a recorder
+//   session is open, while BLE is connected, or while USB power is present
+//   (DIM is still allowed).
 // - Battery valid, not charging, no USB power and percent < off_battery_pct:
 //   OFF at once. On USB the cell is not drained even while the charger
 //   pauses, so vbus_present alone keeps the device on. The battery inputs
@@ -56,6 +57,7 @@ typedef struct {
     bool ble_connected;
     bool ota_active;
     bool calibrating;
+    bool recording;              // a recorder session is open (rec_fsm_session_open())
 } power_inputs_t;
 
 typedef struct {

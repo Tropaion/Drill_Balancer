@@ -9,6 +9,7 @@
 #include <stdint.h>
 #include "app_state.h"
 #include "ble_protocol.h"
+#include "rec_fsm.h"
 #include "settings.h"
 
 #ifdef __cplusplus
@@ -66,6 +67,26 @@ uint8_t ble_codec_parse_cmd(const uint8_t *data, size_t len, app_cmd_id_t *id, i
 
 // ATT error for a settings_apply_json() result (0 for OK).
 uint8_t ble_codec_settings_att_err(settings_json_result_t r);
+
+// Parses a rec_ctrl write into *cmd. Returns 0, or the ATT error to answer
+// with: BLE_CODEC_ATT_INVALID_LEN for a wrong length, DB_ATT_ERR_UNKNOWN_CMD,
+// DB_ATT_ERR_BAD_ARG for a MARK text with control characters or broken
+// UTF-8. The TAKE_START ranges are checked by the recorder (rec_fsm_step(),
+// its result through ble_codec_rec_att_err()).
+uint8_t ble_codec_parse_rec(const uint8_t *data, size_t len, rec_cmd_t *cmd);
+
+// ATT error for a recorder command result (0 for REC_OK).
+uint8_t ble_codec_rec_att_err(rec_err_t err);
+
+// The rec_state packet. Address, port, SSID, passphrase and token only while
+// the session can be joined (WAIT_CLIENT .. DRAINING), zero otherwise.
+void ble_codec_rec_state(const app_rec_status_t *r, db_rec_state_packet_t *out);
+
+// True if b differs from a in anything a client should hear about at once.
+// The counters that move during a take (elapsed_s, sent_kib, dropped,
+// ring_pct) are left out; they go out with the next notification or read.
+bool ble_codec_rec_state_changed(const db_rec_state_packet_t *a,
+                                 const db_rec_state_packet_t *b);
 
 #ifdef __cplusplus
 }

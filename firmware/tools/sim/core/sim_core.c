@@ -479,15 +479,17 @@ static void put_lsb(uint8_t *p, float v, float lsb_per_unit)
 }
 
 // What imu_read_fifo() returns for these physical values: a 12-byte FIFO
-// frame (+-4 g, +-512 dps) decoded by the driver's imu_decode_frame().
+// frame in the LEVEL profile's scales decoded by the driver's
+// imu_decode_frame().
 static void imu_sample_from(const float *v, imu_sample_t *out)
 {
+    const imu_profile_info_t *p = imu_profile_info(IMU_PROFILE_LEVEL);
     uint8_t frame[IMU_FRAME_BYTES];
     for (int i = 0; i < 3; i++) {
-        put_lsb(&frame[2 * i], v[i], IMU_ACCEL_LSB_PER_G);
-        put_lsb(&frame[6 + 2 * i], LEVEL_RAD2DEG(v[3 + i]), IMU_GYRO_LSB_PER_DPS);
+        put_lsb(&frame[2 * i], v[i], (float)p->accel_lsb_per_g);
+        put_lsb(&frame[6 + 2 * i], LEVEL_RAD2DEG(v[3 + i]), (float)p->gyro_lsb_per_dps);
     }
-    imu_decode_frame(&IMU_AXIS_MAP, frame, out);
+    imu_decode_frame(&IMU_AXIS_MAP, p, frame, out);
 }
 
 static void publish_cal_locked(void)

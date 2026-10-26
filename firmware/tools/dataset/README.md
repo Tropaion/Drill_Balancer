@@ -11,7 +11,10 @@ checks, indexes and loads it for training:
   source of truth; the app, the validator and the data repo follow them.
 - `dbdata/`: `io` (read/write a recording), `labels` (phases from events),
   `windows` (aligned IMU + audio windows), `dataset` (training loader),
-  `validate`, `index`, `stats`.
+  `validate`, `index`, `stats`, and `dbrec`: the decoder of the device's
+  recording stream (`.dbrec`, the format of
+  `firmware/components/recorder/include/rec_stream.h`), which also exports a
+  take as a recording folder (IMU and audio cut to the time both cover).
 - `repo_template/`: README, `.github/workflows/validate.yml` and git
   attributes for the data repo; `bootstrap_repo.py` copies them, plus the
   contract, into a clone of it.
@@ -42,6 +45,9 @@ commands below from this folder, or put it on `PYTHONPATH`.
 .venv/bin/python -m dbdata.index REPO --list-unchecked # recordings that need a full check
 .venv/bin/python -m dbdata.stats REPO [REPO...]       # statistics as Markdown
 .venv/bin/python bootstrap_repo.py ~/data/Drill_Balancer_Data [--check] [--force]
+.venv/bin/python -m dbdata.dbrec --self-check         # decoder vs rec_stream.h
+.venv/bin/python -m dbdata.dbrec info SESSION.dbrec   # records, losses, takes
+.venv/bin/python -m dbdata.dbrec export SESSION.dbrec ROOT --take 0 --recording-id ID --session-id SID
 ```
 
 `validate` takes recording folders or any folder above them; every folder
@@ -118,7 +124,9 @@ Setting the repo up: create the empty private repo, clone it,
 
 IMU flags: bit 0 filled (interpolated by the FIFO gap fill), bit 1 accel
 clipped, bit 2 gyro clipped, bit 3 first sample after a gap. Bit 3 is set
-exactly where `seq` jumps (a transport gap or a FIFO discontinuity); the
+exactly where `seq` jumps (a transport gap, a FIFO discontinuity, or an IMU
+reset, after which `seq` goes on by the samples the device clock says are
+missing); the
 windows treat every seq jump as a gap even without the flag. Audio frames
 filled with silence are listed in `gaps.audio_gap_frames`, whose total must
 equal `gaps.audio_missing_frames`.

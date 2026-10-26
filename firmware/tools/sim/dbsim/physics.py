@@ -25,7 +25,7 @@ from __future__ import annotations
 import math
 import random
 
-ODR_HZ = 448.4            # imu.c IMU_ODR_HZ (QMI8658 6DOF, 448.4 Hz)
+ODR_HZ = 448.4            # imu_frame.c PROFILES[IMU_PROFILE_LEVEL].odr_mhz (QMI8658 6DOF)
 SAMPLE_PERIOD_S = 1.0 / ODR_HZ
 G = 9.80665
 ACCEL_NOISE_G = 0.0015    # default sensor noise (the panel's noise level 1)

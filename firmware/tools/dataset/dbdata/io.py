@@ -19,6 +19,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from .contract import DEVICE_EVENT_CODES  # noqa: F401 - part of the io API (validate)
 from .contract import read_json as load_json  # noqa: F401 - the recording documents are read with it
 
 G = 9.80665  # m/s^2 per g
@@ -51,9 +52,6 @@ SYNC_FILE = "audio_sync.csv"
 DEVICE_EVENTS_FILE = "device_events.csv"
 AUDIO_FILES = ("audio.flac", "audio.wav")
 DEVICE_EVENTS_COLUMNS = ("t_us", "code", "arg", "text")
-# EVENT record codes of the device stream, by name
-DEVICE_EVENT_CODES = ("MARK", "TOUCH", "BLE_LOST", "BLE_BACK", "IMU_LOST", "IMU_BACK",
-                      "VIB_START", "VIB_STOP", "PROFILE")
 
 RECORDING_ID_RE = re.compile(r"^(\d{8})T(\d{6})Z_([a-z2-7]{4})_([0-9a-z]{4})$")
 

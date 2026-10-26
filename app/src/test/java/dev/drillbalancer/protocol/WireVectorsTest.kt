@@ -180,7 +180,7 @@ class WireVectorsTest {
         assertTrue(AttError.fromCode(0x0F)!!.needsPairing)
         assertTrue(AttError.fromCode(0x0C)!!.needsPairing)
         assertFalse(AttError.fromCode(0x0D)!!.needsPairing)
-        for (code in 0x80..0x87) assertTrue(AttError.fromCode(code) != null)
+        for (code in 0x80..0x8A) assertTrue(AttError.fromCode(code) != null)
         assertEquals("Bluetooth error 0x8F.", AttError.messageFor(0x8F))
         assertEquals(AttError.BUSY.message, AttError.messageFor(0x86))
     }

@@ -7,7 +7,7 @@
 #define AXIS_Y ((vec3_t){0.0f, 1.0f, 0.0f})
 #define AXIS_Z ((vec3_t){0.0f, 0.0f, 1.0f})
 
-#define TEST_IMU_DT (1.0f / 448.4f)   // imu.c IMU_ODR_HZ
+#define TEST_IMU_DT (1.0f / 448.4f)   // imu_frame.c PROFILES[IMU_PROFILE_LEVEL].odr_mhz
 #define TEST_SAMPLES(seconds) ((int)((seconds) / TEST_IMU_DT + 0.5f))
 
 quat_t rot_deg(vec3_t axis, float deg);

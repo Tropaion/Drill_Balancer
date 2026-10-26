@@ -451,6 +451,7 @@ static void update_power(uint32_t now)
         .ble_connected = snap.ble_holds_awake,
         .ota_active = snap.ota_active,
         .calibrating = snap.cal.kind != APP_CAL_IDLE,
+        .recording = false,     // no recorder yet
     };
     power_state_t st = power_fsm_update(&s_fsm, &in, now);
     // After the update, which has taken in the latest activity. A cancel

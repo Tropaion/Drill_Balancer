@@ -257,6 +257,14 @@ class CodecTest(unittest.TestCase):
         self.assertIn("value out of range",
                       dc.describe_ble_error(Exception("ATT error: 0x82 (Unknown)")))
 
+    def test_encode_rec_mark_text(self):
+        self.assertEqual(dc.encode_rec("mark", code=0x0102, text="ä€ "),
+                         bytes([dc.REC_OPS["mark"], 2, 1]) + "ä€ ".encode())
+        # what ble_codec.c mark_text_ok refuses: C0, DEL, C1 (NEL), a lone surrogate
+        for text in ("a\nb", "\x7f", "\x85", "\x9f", "\ud800", "x" * (dc.REC_MARK_TEXT_MAX + 1)):
+            with self.assertRaises(ValueError, msg=repr(text)):
+                dc.encode_rec("mark", text=text)
+
     def test_is_drillbalancer(self):
         def adv(name=None, uuids=()):
             return SimpleNamespace(local_name=name, service_uuids=list(uuids))

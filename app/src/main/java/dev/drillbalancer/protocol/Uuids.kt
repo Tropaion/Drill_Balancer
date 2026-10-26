@@ -13,6 +13,9 @@ object Uuids {
     const val DB_SVC_OTA = 0x0100
     const val DB_CHR_OTA_CTRL = 0x0101
     const val DB_CHR_OTA_DATA = 0x0102
+    const val DB_SVC_REC = 0x0200
+    const val DB_CHR_REC_CTRL = 0x0201
+    const val DB_CHR_REC_STATE = 0x0202
 
     fun db(id: Int): UUID = UUID.fromString("d71b${hex4(id)}-8a3e-4f6c-b5d2-1c9e0a7f4b63")
 
@@ -29,6 +32,9 @@ object Uuids {
     val SVC_OTA: UUID = db(DB_SVC_OTA)
     val CHR_OTA_CTRL: UUID = db(DB_CHR_OTA_CTRL)  // write, indicate
     val CHR_OTA_DATA: UUID = db(DB_CHR_OTA_DATA)  // write without response
+    val SVC_REC: UUID = db(DB_SVC_REC)            // training-data recorder (not used yet)
+    val CHR_REC_CTRL: UUID = db(DB_CHR_REC_CTRL)  // write: u8 op | args
+    val CHR_REC_STATE: UUID = db(DB_CHR_REC_STATE) // read, notify: 86-byte recorder state
 
     val SVC_DEVICE_INFO: UUID = sig(0x180A)
     val CHR_MANUFACTURER: UUID = sig(0x2A29)

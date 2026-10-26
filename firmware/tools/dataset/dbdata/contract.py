@@ -29,6 +29,11 @@ REPO_COPIES = {
 UNKNOWN = "unknown"
 OTHER = "other"
 
+# EVENT record codes of the device stream, by name: code 1.. in this order
+# (rec_stream.h REC_EV_*)
+DEVICE_EVENT_CODES = ("MARK", "TOUCH", "BLE_LOST", "BLE_BACK", "IMU_LOST", "IMU_BACK",
+                      "VIB_START", "VIB_STOP", "PROFILE")
+
 
 def contract_path(name: str) -> Path:
     return CONTRACT_DIR / name

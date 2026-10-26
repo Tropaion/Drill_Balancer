@@ -61,21 +61,8 @@ static const char *TAG = "imu";
 // FIFO bytes (decoded FIFO samples read ~1 g at rest, like imu_read()).
 #define CTRL1_FIFO_READ   CTRL1_BE
 
-// CTRL2/CTRL3: full scale <<4 | ODR. aFS 001 = +-4 g, gFS 101 = +-512 dps,
-// ODR 0100 = 448.4 Hz in 6DOF mode, the closest to 470 Hz. In 6DOF the
-// accelerometer runs at the gyro-derived rate, and the FIFO needs both at
-// the same ODR (Table 22 note 13, 8.2).
-#define CTRL2_RUN         ((0x1 << 4) | 0x4)
-#define CTRL3_RUN         ((0x5 << 4) | 0x4)
-#define IMU_ODR_HZ        448.4f
-
-// CTRL5 LPF: gLPF mode 10 (5.39% of ODR = 24.2 Hz), aLPF mode 00 (2.66% =
-// 11.9 Hz) (Tables 11, 13). Hand motion is well below both; the accel only
-// feeds the slow tilt correction, so it gets the stronger filter against
-// drill vibration. The vibration detector (level/src/vibration.c) sees only
-// what the aLPF passes: retune its defaults whenever the aLPF changes.
-// TODO(hw): tune both on a running drill.
-#define CTRL5_RUN         ((0x2 << 5) | (1 << 4) | (0x0 << 1) | 1)
+// CTRL2, CTRL3 and CTRL5 (range, ODR, LPF) come from the profile table in
+// imu_frame.c.
 
 #define CTRL7_AEN         0x01
 #define CTRL7_GEN         0x02
@@ -129,6 +116,7 @@ static i2c_master_dev_handle_t s_dev;
 static SemaphoreHandle_t s_lock;
 static StaticSemaphore_t s_lock_buf;
 static bool s_running;            // 6DOF + FIFO configured by imu_init()
+static imu_profile_t s_profile = IMU_PROFILE_LEVEL;
 // Leaving FIFO read mode failed: the FIFO does not fill (and its count stays
 // 0) until FIFO_CTRL and CTRL1 are written again, which the next read does
 // first, whatever the count says.
@@ -138,6 +126,7 @@ static imu_rate_t s_rate;
 static imu_sample_t s_last;       // last sample handed out, for gap filling
 static bool s_have_last;
 static uint32_t s_filled;         // synthesised samples, for the log
+static uint32_t s_epoch;          // configure() runs (imu_raw_info_t.epoch)
 static uint8_t s_fifo_buf[IMU_FIFO_MAX_FRAMES * IMU_FRAME_BYTES];
 
 static esp_err_t rd(uint8_t reg, uint8_t *buf, size_t len)
@@ -198,8 +187,19 @@ static esp_err_t ctrl9(uint8_t cmd, bool fast)
     return wait_cmd_done(false, fast);
 }
 
+static const imu_profile_info_t *profile(void)
+{
+    return imu_profile_info(s_profile);
+}
+
+static float odr_hz(void)
+{
+    return (float)profile()->odr_mhz * 1e-3f;
+}
+
 static esp_err_t configure(void)
 {
+    const imu_profile_info_t *p = profile();
     uint8_t v = 0;
     ESP_RETURN_ON_ERROR(rd(REG_WHO_AM_I, &v, 1), TAG, "no answer at 0x%02x", IMU_I2C_ADDR);
     if (v != WHO_AM_I_VALUE) {
@@ -218,9 +218,9 @@ static esp_err_t configure(void)
     }
 
     ESP_RETURN_ON_ERROR(wr(REG_CTRL1, CTRL1_RUN), TAG, "CTRL1");
-    ESP_RETURN_ON_ERROR(wr(REG_CTRL2, CTRL2_RUN), TAG, "CTRL2");
-    ESP_RETURN_ON_ERROR(wr(REG_CTRL3, CTRL3_RUN), TAG, "CTRL3");
-    ESP_RETURN_ON_ERROR(wr(REG_CTRL5, CTRL5_RUN), TAG, "CTRL5");
+    ESP_RETURN_ON_ERROR(wr(REG_CTRL2, p->ctrl2), TAG, "CTRL2");
+    ESP_RETURN_ON_ERROR(wr(REG_CTRL3, p->ctrl3), TAG, "CTRL3");
+    ESP_RETURN_ON_ERROR(wr(REG_CTRL5, p->ctrl5), TAG, "CTRL5");
     ESP_RETURN_ON_ERROR(wr(REG_CTRL8, CTRL8_RUN), TAG, "CTRL8");
     // FIFO set up with the sensors off, as in SensorLib's configFifo().
     ESP_RETURN_ON_ERROR(wr(REG_FIFO_CTRL, FIFO_CTRL_RUN), TAG, "FIFO_CTRL");
@@ -233,9 +233,10 @@ static esp_err_t configure(void)
 
     s_gap = (imu_gap_t){0};
     s_restore_pending = false;
-    imu_rate_init(&s_rate, 1.0f / IMU_ODR_HZ);
+    imu_rate_init(&s_rate, 1.0f / odr_hz());
     s_have_last = false;
     s_filled = 0;
+    s_epoch++;
     s_running = true;
     return ESP_OK;
 }
@@ -262,15 +263,44 @@ esp_err_t imu_init(i2c_master_bus_handle_t bus)
     esp_err_t err = configure();
     unlock();
     if (err == ESP_OK) {
-        ESP_LOGI(TAG, "QMI8658 6DOF %.1f Hz, +-4 g, +-512 dps, FIFO stream", (double)IMU_ODR_HZ);
+        ESP_LOGI(TAG, "QMI8658 6DOF %.1f Hz, +-%u g, +-512 dps, profile %s, FIFO stream",
+                 (double)odr_hz(), 32768u / profile()->accel_lsb_per_g, profile()->name);
     }
     return err;
+}
+
+esp_err_t imu_set_profile(imu_profile_t p)
+{
+    ESP_RETURN_ON_FALSE(imu_profile_info(p), ESP_ERR_INVALID_ARG, TAG, "profile %d", (int)p);
+    if (!s_dev) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    lock();
+    // Already in effect: no reset, so the samples and the bookkeeping go on
+    // (a LEVEL take asks for LEVEL at its start and end).
+    bool same = s_running && s_profile == p;
+    esp_err_t err = ESP_OK;
+    if (!same) {
+        s_profile = p;
+        s_running = false;
+        err = configure();
+    }
+    unlock();
+    if (err == ESP_OK && !same) {
+        ESP_LOGI(TAG, "profile %s, %.1f Hz", profile()->name, (double)odr_hz());
+    }
+    return err;
+}
+
+imu_profile_t imu_get_profile(void)
+{
+    return s_profile;
 }
 
 float imu_sample_period_s(void)
 {
     // A float load is atomic; the estimate only moves slowly.
-    return s_running ? s_rate.period_s : 1.0f / IMU_ODR_HZ;
+    return s_running ? s_rate.period_s : 1.0f / odr_hz();
 }
 
 // TIMESTAMP and FIFO count from the same instant: a sample landing between
@@ -338,7 +368,8 @@ static esp_err_t restore_run_mode(void)
 // confirms before any filling happens.
 // TODO(hw): log s_filled against the read count on the board; expect about
 // 10% at 448 Hz.
-static esp_err_t read_fifo_locked(imu_sample_t *out, size_t max, size_t *n_out)
+static esp_err_t read_fifo_locked(imu_sample_t *out, size_t max, size_t *n_out,
+                                  imu_raw_info_t *raw)
 {
     uint32_t ts;
     size_t frames;
@@ -353,11 +384,21 @@ static esp_err_t read_fifo_locked(imu_sample_t *out, size_t max, size_t *n_out)
     if (n > 0) {
         ESP_RETURN_ON_ERROR(read_fifo_bytes(s_fifo_buf, n * IMU_FRAME_BYTES), TAG, "FIFO read");
     }
+    if (raw) {
+        imu_raw_runs(&plan, raw->run);
+        raw->frames = s_fifo_buf;
+        raw->n = (uint16_t)n;
+        raw->map = &IMU_AXIS_MAP;
+        raw->chip_ts = ts;
+        raw->host_us = now_us;
+        raw->epoch = s_epoch;
+    }
 
+    const imu_profile_info_t *p = profile();
     size_t o = 0;
     for (size_t i = 0; i < n; i++) {
         imu_sample_t s;
-        imu_decode_frame(&IMU_AXIS_MAP, &s_fifo_buf[i * IMU_FRAME_BYTES], &s);
+        imu_decode_frame(&IMU_AXIS_MAP, p, &s_fifo_buf[i * IMU_FRAME_BYTES], &s);
         if (i == plan.insert_at && fill > 0) {
             imu_fill_gap(s_have_last ? &s_last : &s, &s, fill, &out[o]);
             o += fill;
@@ -374,10 +415,13 @@ static esp_err_t read_fifo_locked(imu_sample_t *out, size_t max, size_t *n_out)
     return ESP_OK;
 }
 
-esp_err_t imu_read_fifo(imu_sample_t *out, size_t max, size_t *n_out)
+esp_err_t imu_read_fifo_ex(imu_sample_t *out, size_t max, size_t *n_out, imu_raw_info_t *raw)
 {
     ESP_RETURN_ON_FALSE(out && n_out, ESP_ERR_INVALID_ARG, TAG, "null argument");
     *n_out = 0;
+    if (raw) {
+        *raw = (imu_raw_info_t){0};
+    }
     if (!s_running) {
         return ESP_ERR_INVALID_STATE;
     }
@@ -385,9 +429,14 @@ esp_err_t imu_read_fifo(imu_sample_t *out, size_t max, size_t *n_out)
         return ESP_OK;
     }
     lock();
-    esp_err_t err = s_running ? read_fifo_locked(out, max, n_out) : ESP_ERR_INVALID_STATE;
+    esp_err_t err = s_running ? read_fifo_locked(out, max, n_out, raw) : ESP_ERR_INVALID_STATE;
     unlock();
     return err;
+}
+
+esp_err_t imu_read_fifo(imu_sample_t *out, size_t max, size_t *n_out)
+{
+    return imu_read_fifo_ex(out, max, n_out, NULL);
 }
 
 // The data registers keep updating in FIFO mode (only DRDY is disabled, 6.2).
@@ -404,7 +453,7 @@ esp_err_t imu_read(imu_sample_t *out)
     esp_err_t err = rd(REG_AX_L, buf, sizeof(buf));
     unlock();
     ESP_RETURN_ON_ERROR(err, TAG, "data read");
-    imu_decode_frame(&IMU_AXIS_MAP, buf, out);
+    imu_decode_frame(&IMU_AXIS_MAP, profile(), buf, out);
     return ESP_OK;
 }
 
