@@ -35,11 +35,11 @@ import dev.drillbalancer.ui.components.ButtonKind
 import dev.drillbalancer.ui.components.DbIcons
 import dev.drillbalancer.ui.components.MessageBanner
 import dev.drillbalancer.ui.components.Panel
+import dev.drillbalancer.ui.components.PanelRow
 import dev.drillbalancer.ui.components.SectionTitle
 import dev.drillbalancer.ui.components.SignalBars
 import dev.drillbalancer.ui.components.TouchHeight
 import dev.drillbalancer.ui.theme.Blue
-import dev.drillbalancer.ui.theme.Dark
 import dev.drillbalancer.ui.theme.Green
 
 /** What the connect screen can ask Android for. */
@@ -225,34 +225,20 @@ private fun DeviceRow(
     enabled: Boolean,
     onClick: () -> Unit,
 ) {
-    Surface(
-        onClick = onClick,
-        enabled = enabled,
-        modifier = Modifier.fillMaxWidth().heightIn(min = 72.dp),
-        shape = RoundedCornerShape(16.dp),
-        color = MaterialTheme.colorScheme.surfaceContainer,
-        contentColor = MaterialTheme.colorScheme.onSurface,
-        border = BorderStroke(1.dp, Dark),
-    ) {
-        Row(
-            Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(12.dp),
-        ) {
-            Column(Modifier.weight(1f)) {
-                Text(name, style = MaterialTheme.typography.titleLarge, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text(
-                        detail, Modifier.weight(1f, fill = false), style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 1, overflow = TextOverflow.Ellipsis,
-                    )
-                    if (paired) PairedBadge()
-                }
+    PanelRow(onClick, enabled = enabled, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+        Column(Modifier.weight(1f)) {
+            Text(name, style = MaterialTheme.typography.titleLarge, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(
+                    detail, Modifier.weight(1f, fill = false), style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1, overflow = TextOverflow.Ellipsis,
+                )
+                if (paired) PairedBadge()
             }
-            if (bars != null) SignalBars(bars)
-            Icon(DbIcons.Chevron, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
         }
+        if (bars != null) SignalBars(bars)
+        Icon(DbIcons.Chevron, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
     }
 }
 

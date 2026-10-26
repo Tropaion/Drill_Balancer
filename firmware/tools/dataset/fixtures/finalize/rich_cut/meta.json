@@ -1,0 +1,187 @@
+{
+  "schema": "drillbalancer.meta/1",
+  "taxonomy_version": 1,
+  "recording_id": "20261027T091500Z_m3xa_1c8y",
+  "session_id": "20261027T0912_m3xa",
+  "start_utc": "2026-10-27T09:15:00.007Z",
+  "device_t0_us": 2000150224,
+  "duration_s": 1.746,
+  "device": {
+    "board": "waveshare-esp32-s3-touch-amoled-1.75",
+    "fw_version": "0.4.1",
+    "fw_git": "1a2b3c4d-dirty",
+    "board_id": "5e11a0c3"
+  },
+  "app": {
+    "version": "1.0.0",
+    "tool": "dbdata.dbrec"
+  },
+  "imu": {
+    "chip": "QMI8658",
+    "profile": "RAW448",
+    "odr_nominal_hz": 448.4,
+    "odr_measured_hz": 448.396,
+    "accel_range_g": 4,
+    "gyro_range_dps": 512,
+    "accel_lsb_per_g": 8192,
+    "gyro_lsb_per_dps": 64,
+    "accel_lpf": "off",
+    "gyro_lpf": "off",
+    "frame": "board: X right, Y up the screen, Z out of the screen; bit along -Z",
+    "axis_map": "x=+cy,y=-cx,z=+cz",
+    "accel_cal": {
+      "valid": true,
+      "bias_g": [
+        0.004,
+        -0.011,
+        0.02
+      ],
+      "scale": [
+        1.002,
+        0.998,
+        1.004
+      ]
+    },
+    "mount": {
+      "valid": false,
+      "drill_axis": [
+        0.012,
+        -0.02,
+        -0.9997
+      ]
+    },
+    "gyro_bias_rad_s": [
+      1e-05,
+      -0.0004,
+      0.1234567890123
+    ],
+    "registers": {
+      "ctrl2": 20,
+      "ctrl3": 84,
+      "ctrl5": 0
+    }
+  },
+  "take": {
+    "take_id": 5,
+    "end_reason": "unknown",
+    "stats": {
+      "ring_high_water_pct": 0.43,
+      "dropped_records": 1,
+      "dropped_bytes": 1044,
+      "audio_overflows": 1,
+      "battery_pct_start": 80,
+      "battery_pct_end": 80
+    }
+  },
+  "audio": {
+    "codec": "flac",
+    "file": "audio.flac",
+    "rate_nominal_hz": 16000,
+    "rate_measured_hz": 16000.327,
+    "bits": 16,
+    "channels": [
+      "mic1",
+      "mic2"
+    ],
+    "adc": "ES7210",
+    "gain_db": 12,
+    "muted_spans_us": [],
+    "clipped_frac": 0.000107,
+    "block_frames": 256
+  },
+  "sync": {
+    "method": "esp_timer@dma_block",
+    "fit": "t_us = a + b*frame",
+    "a_us": 2000150227.1,
+    "b_us_per_frame": 62.498723,
+    "residual_rms_us": 26.6
+  },
+  "gaps": {
+    "imu_filled_samples": 53,
+    "imu_missing_samples": 51,
+    "transport_gaps": [
+      [
+        2000540504,
+        2000544965
+      ],
+      [
+        2001488328,
+        2001512860
+      ]
+    ],
+    "audio_missing_frames": 512,
+    "audio_gap_frames": [
+      [
+        6045,
+        6301
+      ],
+      [
+        15517,
+        15773
+      ]
+    ]
+  },
+  "level": {
+    "mode": "floor",
+    "target_deg": 0.0,
+    "tol_deg": 1.5,
+    "near_deg": 3.0
+  },
+  "session": {
+    "material": "unknown",
+    "mode": "drill",
+    "bit": {
+      "type": "unknown",
+      "diameter_mm": null
+    },
+    "drill": {
+      "type": "unknown",
+      "motor": "unknown",
+      "model": "",
+      "gear": null,
+      "speed_setting": null
+    },
+    "notes": ""
+  },
+  "derived": {
+    "orientation": "unknown",
+    "off_angle_deg": null,
+    "tags": []
+  },
+  "review": {
+    "status": "auto_only",
+    "detector": "none",
+    "revision": 0,
+    "edited_events": 0,
+    "reviewer": null
+  },
+  "quality": {
+    "flags": [
+      "imu_gap",
+      "audio_gap",
+      "truncated"
+    ]
+  },
+  "files": {
+    "audio.flac": {
+      "sha256": "e0343b5dca58675e103300c2d41915b32c3c9157a8cd498b3ba4b60372722cc2",
+      "bytes": 66554
+    },
+    "audio_sync.csv": {
+      "sha256": "b0c94c504bd1fc89e5e685dce48c9e039c79bdde047fdd98364e8a6090fc26df",
+      "bytes": 1788
+    },
+    "device_events.csv": {
+      "sha256": "4069aa24d8a853712d638a68b7d183cb22575d284df9bd7eb6c00f93cb4cb17e",
+      "bytes": 155
+    },
+    "imu.csv.gz": {
+      "sha256": "905bffe0ce039c0a1fa7ffb8cec070f66aac08e05657e081138c3fa96d876746",
+      "bytes": 14161
+    },
+    "level.csv.gz": {
+      "sha256": "4d2934f1664f69ef99e14256e23f9111d509e9612897674391cea53e1844bf7e",
+      "bytes": 372
+    }
+  }
+}

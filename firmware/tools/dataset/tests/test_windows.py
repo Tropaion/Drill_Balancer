@@ -199,6 +199,9 @@ class LabelTest(F.TempDirTest):
         self.assertEqual(ws[4.5]["labels"]["material"], "wood/softwood")
         self.assertIn("wandered_start", ws[4.5]["labels"]["outcome_tags"])
         self.assertEqual(ws[0.0]["labels"]["imu_profile"], "RAW448")
+        # the tool (meta.session.drill), the session's for every hole
+        for w in (ws[0.0], ws[2.0], ws[4.5]):
+            self.assertEqual((w["labels"]["drill_type"], w["labels"]["motor"]), ("drill", "brushless"))
 
     def test_hole_tags_override_the_session_and_off_angle_is_per_hole(self):
         # hole 1 is 2 deg off, hole 2 on target: the recording-level off angle is above the tolerance
@@ -242,12 +245,17 @@ class LabelTest(F.TempDirTest):
                                            "replaced_by": "wood/plywood"})
         tdoc["fields"]["outcome_tag"].append({"id": "stuck", "added": 1, "deprecated": True,
                                               "replaced_by": "bit_stuck"})
+        tdoc["fields"]["drill_type"].append({"id": "hammer_drill", "added": 1, "deprecated": True,
+                                             "replaced_by": "combi_drill"})
+        tdoc["fields"]["motor"].append({"id": "corded", "added": 1, "deprecated": True,
+                                        "replaced_by": "universal_ac"})
         tax = contract.Taxonomy(tdoc)
-        parts = F.build(material="wood/osb")
+        parts = F.build(material="wood/osb", drill_type="hammer_drill", motor="corded")
         parts["meta"]["session"]["outcome_tags"] = ["stuck"]
         rec = dio.read_recording(F.write(self.tmp / "dep", parts))
         w = next(W.iter_windows(rec, 1.0, 0.5, taxonomy=tax))
         self.assertEqual((w["labels"]["material"], w["labels"]["outcome_tags"]), ("wood/plywood", ["bit_stuck"]))
+        self.assertEqual((w["labels"]["drill_type"], w["labels"]["motor"]), ("combi_drill", "universal_ac"))
 
 
 if __name__ == "__main__":

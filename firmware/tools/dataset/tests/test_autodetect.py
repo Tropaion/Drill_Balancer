@@ -191,6 +191,15 @@ class FixtureTest(unittest.TestCase):
                          "features.csv.gz", "spec.json") + (("audio.flac", "audio_sync.csv") if audio else ()):
                 self.assertTrue((p / name).is_file(), p / name)
 
+    def test_the_session_labels_are_the_scenarios(self):
+        # meta.session as synth writes it for the spec in SETS (the tool too: patched in place, not re-simulated)
+        specs = {s.name: s for s in synth.SETS["fixtures"]}
+        for name, p in FX.items():
+            with self.subTest(name):
+                s, spec = json.loads((p / "meta.json").read_text())["session"], specs[name]
+                self.assertEqual((s["mode"], s["material"], s["bit"]["type"], s["drill"]["type"], s["drill"]["motor"]),
+                                 (spec.mode, spec.material, spec.bit_type, spec.drill_type_id, spec.motor))
+
     def test_replay(self):
         for name, p in FX.items():
             with self.subTest(name):

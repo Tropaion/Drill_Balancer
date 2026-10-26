@@ -29,6 +29,24 @@ REPO_COPIES = {
 UNKNOWN = "unknown"
 OTHER = "other"
 
+# The session's taxonomy fields and where each sits in meta.session (index.csv,
+# the windows' labels, the validator).
+SESSION_FIELDS = {
+    "material": ("material",),
+    "mode": ("mode",),
+    "bit_type": ("bit", "type"),
+    "drill_type": ("drill", "type"),
+    "motor": ("drill", "motor"),
+}
+
+
+def session_value(session: dict, fld: str):
+    """meta.session's id of the taxonomy field fld (SESSION_FIELDS); KeyError / TypeError when missing."""
+    v = session
+    for k in SESSION_FIELDS[fld]:
+        v = v[k]
+    return v
+
 # EVENT record codes of the device stream, by name: code 1.. in this order
 # (rec_stream.h REC_EV_*)
 DEVICE_EVENT_CODES = ("MARK", "TOUCH", "BLE_LOST", "BLE_BACK", "IMU_LOST", "IMU_BACK",
@@ -129,6 +147,8 @@ class Taxonomy:
         self.coarse: dict[str, dict[str, str]] = doc.get("coarse", {})
         self.fields = {name: {e["id"]: _entry(e) for e in entries}
                        for name, entries in doc["fields"].items()}
+        self.mode_tool_conflicts: dict[str, frozenset[str]] = {
+            m: frozenset(ids) for m, ids in doc.get("mode_tool_conflicts", {}).get("conflicts", {}).items()}
         lim = doc["derived_rules"]["orientation_limits_deg"]
         self.orientation_wall_deg: float = lim["wall"]
         self.orientation_vertical_deg: float = lim["vertical"]
@@ -172,6 +192,13 @@ class Taxonomy:
             value = e.replaced_by
         return value
 
+    def mode_tool_conflict(self, mode: str, drill_type: str) -> bool:
+        """True when session.mode contradicts session.drill.type (validator W_MODE_TOOL, a warning):
+        hammer with a drill/driver or an impact driver, screw with a rotary hammer. Ids are
+        resolved first; unknown and other never conflict."""
+        mode, drill_type = self.resolve("mode", mode), self.resolve("drill_type", drill_type)
+        return drill_type in self.mode_tool_conflicts.get(mode, ())
+
     def coarse_phase(self, phase: str) -> str:
         return self.coarse.get("phase", {}).get(phase, phase)
 
@@ -196,6 +223,12 @@ class Taxonomy:
                         out.append(f"{name}: {e['id']} is replaced by {r['id']}, which is deprecated too")
                 elif e.get("replaced_by") and not e.get("deprecated"):
                     out.append(f"{name}: {e['id']} has replaced_by but is not deprecated")
+        for mode, ids in self.mode_tool_conflicts.items():
+            if mode not in self.fields.get("mode", {}):
+                out.append(f"mode_tool_conflicts: {mode} is not a mode id")
+            for i in sorted(ids):
+                if i not in self.fields.get("drill_type", {}):
+                    out.append(f"mode_tool_conflicts: {i} is not a drill_type id")
         return out
 
 

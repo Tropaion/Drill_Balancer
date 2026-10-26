@@ -5,10 +5,10 @@ import androidx.lifecycle.viewModelScope
 import dev.drillbalancer.device.ConnectionState
 import dev.drillbalancer.device.DeviceSession
 import dev.drillbalancer.protocol.RecorderStatus
-import dev.drillbalancer.recorder.JournalState
 import dev.drillbalancer.recorder.RecordPhase
 import dev.drillbalancer.recorder.RecordingController
 import dev.drillbalancer.recorder.RecordingEntry
+import dev.drillbalancer.recorder.RecordingStage
 import dev.drillbalancer.recorder.RecordingState
 import dev.drillbalancer.recorder.RecordingStore
 import dev.drillbalancer.recorder.Secure
@@ -59,13 +59,14 @@ fun recordBlocker(connection: ConnectionState?, recorder: RecorderStatus?, phase
 
 // ---- list ----
 
-/** Where a recording is on the phone. NEEDS_REVIEW and SAVED come with milestone 6 (finalize, review). */
-enum class LocalStage(val label: String) {
-    RECORDING("Recording"),
-    INTERRUPTED("Interrupted"),
-    NEEDS_REVIEW("Needs review"),
-    SAVED("Saved"),
-}
+/** The list's label of where a recording is on the phone. */
+val RecordingStage.label: String
+    get() = when (this) {
+        RecordingStage.RECORDING -> "Recording"
+        RecordingStage.INTERRUPTED -> "Interrupted"
+        RecordingStage.NEEDS_REVIEW -> "Needs review"
+        RecordingStage.SAVED -> "Saved"
+    }
 
 /** Where its upload is (milestone 7; until then every recording stays on the phone). */
 enum class UploadStage(val label: String) {
@@ -76,8 +77,9 @@ data class RecordingRow(
     val id: String,
     val title: String,      // "Wood · softwood 38 mm · drill"
     val detail: String,     // "26 Oct 14:30 · 0:42 · 1.9 MB"
-    val stage: LocalStage,
+    val stage: RecordingStage,
     val upload: UploadStage = UploadStage.NONE,
+    val canOpen: Boolean = false,   // not being recorded: the review opens (it waits for the files, or says why there are none, with Try again)
 )
 
 data class TrainingListUiState(
@@ -104,13 +106,9 @@ fun recordingRows(entries: List<RecordingEntry>, zone: ZoneId = ZoneId.systemDef
         RecordingRow(
             id = j.recordingId,
             title = setupTitle(j.setup),
-            detail = "$start · ${formatMinSec(seconds)} · ${formatBytes(e.streamBytes)}",
-            stage = when {
-                e.finalized -> LocalStage.SAVED
-                j.state == JournalState.RECORDING -> LocalStage.RECORDING
-                j.state == JournalState.INTERRUPTED -> LocalStage.INTERRUPTED
-                else -> LocalStage.NEEDS_REVIEW
-            },
+            detail = "$start · ${formatMinSec(seconds)} · ${formatBytes(e.bytes)}",
+            stage = e.stage,
+            canOpen = e.stage != RecordingStage.RECORDING,
         )
     }
 }
@@ -121,6 +119,20 @@ fun setupTitle(s: SessionSetup): String {
     val thickness = s.thicknessMm?.let { " ${formatFixed(it.toFloat(), if (it % 1.0 == 0.0) 0 else 1)} mm" }.orEmpty()
     val mode = Taxonomy.label(Taxonomy.MODES, s.mode).lowercase()
     return "$material$thickness · $mode"
+}
+
+/**
+ * "Drill/driver · Brushless · Bosch GSR 18V-55", the session's tool (meta.session.drill) in one
+ * line as the Finalizer writes it (Taxonomy.stored: "other" without its text is unknown); what is
+ * unknown is left out, empty when nothing is known.
+ */
+fun toolLine(setup: SessionSetup): String {
+    val s = setup.sanitized()
+    return listOfNotNull(
+        Taxonomy.stored(s.drillType, s.drillTypeOther).takeIf { it != Taxonomy.UNKNOWN }?.let { Taxonomy.label(Taxonomy.DRILL_TYPES, it, s.drillTypeOther) },
+        Taxonomy.stored(s.motor, s.motorOther).takeIf { it != Taxonomy.UNKNOWN }?.let { Taxonomy.label(Taxonomy.MOTORS, it, s.motorOther) },
+        s.drillModel.trim().ifEmpty { null },
+    ).joinToString(" · ")
 }
 
 class TrainingListViewModel(
@@ -150,15 +162,17 @@ class TrainingListViewModel(
 
     init {
         reload()
-        // A take that ends adds a row.
+        // A take that ends adds a row; its finalization changes its stage.
         viewModelScope.launch { controller.state.map { it.takes }.distinctUntilChanged().drop(1).collect { reload() } }
+        viewModelScope.launch { store.changes.drop(1).collect { reload() } }
     }
 
     fun reload() {
         viewModelScope.launch {
             loaded.value = withContext(io) {
                 try {
-                    Loaded(recordingRows(store.list(), zone), store.usedBytes(), store.freeBytes(), null)
+                    val entries = store.list()
+                    Loaded(recordingRows(entries, zone), entries.sumOf { it.bytes }, store.freeBytes(), null)
                 } catch (e: IOException) {
                     Loaded(emptyList(), 0, null, "The recordings could not be read (${e.message}).")
                 }

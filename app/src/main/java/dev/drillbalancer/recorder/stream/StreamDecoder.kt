@@ -29,9 +29,10 @@ data class DecodeStats(
  * follows in what it has. Not thread-safe.
  *
  * Not [typed]: only the framing, for who needs no more than [lastEnd]; [feed] returns
- * nothing and the stats count no unknown or malformed records.
+ * nothing and the stats count no unknown or malformed records. Without [audioSamples] AUDIO
+ * records come without their samples (empty), the rest as usual.
  */
-class StreamDecoder(private val typed: Boolean = true) {
+class StreamDecoder(private val typed: Boolean = true, private val audioSamples: Boolean = true) {
     private var buf = ByteArray(64 * 1024)
     private var len = 0
     private var base = 0L           // stream offset of buf[0]
@@ -153,7 +154,7 @@ class StreamDecoder(private val typed: Boolean = true) {
         val size = RecStream.HDR_LEN + length + RecStream.CRC_LEN
         val at = p + RecStream.HDR_LEN
         if (RecStream.VERSIONS[type] != ver) return StreamRecord.Unknown(type, ver, seq, offset, size, buf.copyOfRange(at, at + length))
-        return parsePayload(type, seq, offset, size, buf, at, length)
+        return parsePayload(type, seq, offset, size, buf, at, length, audioSamples)
             ?: StreamRecord.Unknown(type, ver, seq, offset, size, buf.copyOfRange(at, at + length), malformed = true)
     }
 
@@ -161,9 +162,11 @@ class StreamDecoder(private val typed: Boolean = true) {
         /**
          * The typed record of a known type and version, or null if the payload (the [len] bytes
          * of [b] from [at]) does not fit it. Fixed-size types accept a longer payload (fields
-         * appended later are ignored).
+         * appended later are ignored). Without [audioSamples] an AUDIO record has no samples.
          */
-        fun parsePayload(type: Int, seq: Long, offset: Long, size: Int, b: ByteArray, at: Int = 0, len: Int = b.size - at): StreamRecord? =
+        fun parsePayload(
+            type: Int, seq: Long, offset: Long, size: Int, b: ByteArray, at: Int = 0, len: Int = b.size - at, audioSamples: Boolean = true,
+        ): StreamRecord? =
             when (type) {
                 RecStream.T_SESSION -> if (len < RecStream.SESSION_LEN) null else StreamRecord.Session(
                     seq, offset, size,
@@ -218,7 +221,7 @@ class StreamDecoder(private val typed: Boolean = true) {
                             n = n,
                             flags = b.u16(at + 18),
                             channels = channels,
-                            samples = shorts(b, at + RecStream.AUDIO_LEN, n * channels),
+                            samples = if (audioSamples) shorts(b, at + RecStream.AUDIO_LEN, n * channels) else NO_SAMPLES,
                         )
                     }
                 }
@@ -276,6 +279,8 @@ class StreamDecoder(private val typed: Boolean = true) {
                 )
                 else -> null
             }
+
+        private val NO_SAMPLES = ShortArray(0)
 
         private fun shorts(b: ByteArray, at: Int, count: Int) = ShortArray(count) { b.s16(at + 2 * it).toShort() }
 

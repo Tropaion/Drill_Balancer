@@ -27,15 +27,16 @@ import sys
 from pathlib import Path
 
 from . import labels, stats
-from .contract import SPLITS, Taxonomy, load_taxonomy, read_json, split_bucket, split_of  # noqa: F401
+from .contract import (SESSION_FIELDS, SPLITS, Taxonomy, load_taxonomy, read_json,  # noqa: F401
+                       session_value, split_bucket, split_of)
 from .io import EVENTS_FILE, META_FILE
 from .validate import DATA_CODES, find_recordings, fingerprint, validate_recording
 
 INDEX_FILE = "index.csv"
 STATS_FILE = "stats.md"
 COLUMNS = ("recording_id", "path", "start_utc", "duration_s", "session_id", "imu_profile",
-           "odr_hz", "has_audio", "material", "mode", "bit_type", "bit_diameter_mm",
-           "orientation", "n_holes", "phases", "problems", "outcome_tags", "review_status",
+           "odr_hz", "has_audio", "material", "mode", "bit_type", "bit_diameter_mm", "drill_type",
+           "motor", "orientation", "n_holes", "phases", "problems", "outcome_tags", "review_status",
            "min_confidence", "taxonomy_version", "valid", "warnings", "split", "bytes", "checked")
 LIST_COLUMNS = ("phases", "problems", "outcome_tags", "warnings")  # ';'-separated (stats.split_list)
 
@@ -72,8 +73,8 @@ def index_row(folder: Path, root: Path, meta: dict | None, events: dict | None,
             recording_id=meta["recording_id"], start_utc=meta["start_utc"],
             duration_s=_num(meta["duration_s"], 3), session_id=meta["session_id"],
             imu_profile=tax.resolve("imu_profile", im["profile"]), odr_hz=_num(im["odr_measured_hz"], 2),
-            has_audio="1" if meta.get("audio") else "0", material=tax.resolve("material", s["material"]),
-            mode=tax.resolve("mode", s["mode"]), bit_type=tax.resolve("bit_type", s["bit"]["type"]),
+            has_audio="1" if meta.get("audio") else "0",
+            **{f: tax.resolve(f, session_value(s, f)) for f in SESSION_FIELDS},
             bit_diameter_mm=_g(s["bit"]["diameter_mm"]),
             orientation=tax.resolve("orientation", d["orientation"]), review_status=meta["review"]["status"],
             taxonomy_version=str(meta["taxonomy_version"]), split=split_of(meta["session_id"]),
@@ -173,6 +174,9 @@ def read_index(path):
     import pandas as pd
 
     df = pd.read_csv(path, dtype=str, keep_default_na=False)
+    for c in COLUMNS:       # an index.csv written before a column was added: empty until regenerated
+        if c not in df.columns:
+            df[c] = ""
     for c in ("duration_s", "odr_hz", "bit_diameter_mm", "min_confidence"):
         df[c] = pd.to_numeric(df[c], errors="coerce")
     for c in ("has_audio", "n_holes", "taxonomy_version", "valid", "bytes"):

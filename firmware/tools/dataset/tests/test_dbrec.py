@@ -215,6 +215,14 @@ class GoldenExportTest(TempDirTest):
                           "level.csv.gz", "meta.json"])
         self.assertEqual(meta["device"], {"board": dbrec.BOARD, "fw_version": "0.1.0", "fw_git": "0e5105e",
                                           "board_id": "b3c9e1a2"})
+        # no labels given: every session field unknown, drill.type and drill.motor too, in this key order
+        self.assertEqual(meta["session"], dbrec.DEFAULT_SESSION_LABELS)
+        self.assertEqual(list(meta["session"]), ["material", "mode", "bit", "drill", "notes"])
+        self.assertEqual(meta["session"]["drill"], {"type": "unknown", "motor": "unknown", "model": "", "gear": None,
+                                                    "speed_setting": None})
+        self.assertEqual(list(meta["session"]["drill"]), ["type", "motor", "model", "gear", "speed_setting"])
+        self.assertIn('"drill": {\n      "type": "unknown",\n      "motor": "unknown",\n      "model": "",',
+                      (dest / "meta.json").read_text())
         im = meta["imu"]
         self.assertEqual((im["profile"], im["odr_nominal_hz"], im["accel_range_g"], im["gyro_range_dps"]),
                          ("RAW448", 448.4, 4, 512))
@@ -689,6 +697,19 @@ class CliExportTest(TempDirTest):
         dest = dio.recording_dir(self.tmp / "root", RID)
         self.assertEqual(validate_recording(dest).errors, [])
         self.assertEqual(pd.read_csv(dest / "audio_sync.csv").columns.tolist(), ["frame", "t_us"])
+
+
+class FinalizeFixturesTest(unittest.TestCase):
+    """fixtures/finalize (the app finalizer's cross-check) is what dbrec exports today."""
+
+    def test_fixtures_are_current(self):
+        import importlib.util
+
+        path = HERE.parent / "fixtures" / "finalize" / "make_fixtures.py"
+        spec = importlib.util.spec_from_file_location("make_finalize_fixtures", path)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        self.assertEqual(mod.check_all(), [], "regenerate: .venv/bin/python fixtures/finalize/make_fixtures.py")
 
 
 if __name__ == "__main__":

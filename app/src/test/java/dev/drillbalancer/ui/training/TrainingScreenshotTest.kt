@@ -10,6 +10,7 @@ import dev.drillbalancer.recorder.LiveView
 import dev.drillbalancer.recorder.Notice
 import dev.drillbalancer.recorder.RecordError
 import dev.drillbalancer.recorder.RecordPhase
+import dev.drillbalancer.recorder.RecordingStage
 import dev.drillbalancer.recorder.RecordingState
 import dev.drillbalancer.recorder.SessionSetup
 import dev.drillbalancer.recorder.TakeSummary
@@ -44,9 +45,9 @@ class TrainingScreenshotTest {
     // ---- list ----
 
     private val rows = listOf(
-        RecordingRow("1", "Wood · softwood 38 mm · drill", "26 Oct 14:52 · 0:42 · 1.9 MB", LocalStage.NEEDS_REVIEW),
-        RecordingRow("2", "Masonry · concrete 120 mm · hammer", "26 Oct 14:31 · 1:58 · 5.3 MB", LocalStage.INTERRUPTED),
-        RecordingRow("3", "Metal · steel 4 mm · drill", "25 Oct 17:05 · 0:23 · 1.0 MB", LocalStage.SAVED),
+        RecordingRow("1", "Wood · softwood 38 mm · drill", "26 Oct 14:52 · 0:42 · 1.9 MB", RecordingStage.NEEDS_REVIEW, canOpen = true),
+        RecordingRow("2", "Masonry · concrete 120 mm · hammer", "26 Oct 14:31 · 1:58 · 5.3 MB", RecordingStage.INTERRUPTED, canOpen = true),
+        RecordingRow("3", "Metal · steel 4 mm · drill", "25 Oct 17:05 · 0:23 · 1.0 MB", RecordingStage.SAVED, canOpen = true),
     )
 
     @Test
@@ -89,11 +90,26 @@ class TrainingScreenshotTest {
     fun setup() = shot("New recording") { m ->
         TrainingSetupScreen(
             TrainingSetupUiState(
-                SessionSetup(material = "wood/softwood", thicknessMm = 38.0, bitType = "brad_point", bitDiameterMm = 8.0, drillModel = "Bosch GSR 18V-55", gear = 2),
+                SessionSetup(
+                    material = "wood/softwood", thicknessMm = 38.0, bitType = "brad_point", bitDiameterMm = 8.0, drillType = "drill", motor = "brushless",
+                    drillModel = "Bosch GSR 18V-55", gear = 2,
+                ),
                 loaded = true,
             ),
             TrainingSetupActions(), m,
             permissionNote = "Start asks for the Nearby devices permission to join the device's Wi-Fi, and to show the recording's notification.",
+        )
+    }
+
+    // Hammer mode with a drill/driver: the validator's W_MODE_TOOL as a hint, Start still on.
+    @Test
+    fun setupModeContradictsTheTool() = shot("New recording") { m ->
+        TrainingSetupScreen(
+            TrainingSetupUiState(
+                SessionSetup(material = "masonry/concrete", mode = "hammer", bitType = "masonry_cyl", drillType = "drill", motor = "brushed"),
+                loaded = true,
+            ),
+            TrainingSetupActions(), m,
         )
     }
 

@@ -34,6 +34,7 @@ import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -56,6 +57,7 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
+import androidx.navigation.toRoute
 import dev.drillbalancer.ble.BlePermissions
 import dev.drillbalancer.ble.ScannedDevice
 import dev.drillbalancer.device.DeviceSession
@@ -87,8 +89,11 @@ import dev.drillbalancer.ui.training.TrainingDeps
 import dev.drillbalancer.ui.training.TrainingListRoute
 import dev.drillbalancer.ui.training.TrainingListViewModel
 import dev.drillbalancer.ui.training.TrainingRecordRoute
+import dev.drillbalancer.ui.training.ReviewStores
+import dev.drillbalancer.ui.training.TrainingReviewRoute
 import dev.drillbalancer.ui.training.TrainingSetupRoute
 import dev.drillbalancer.ui.training.TrainingSetupViewModel
+import dev.drillbalancer.ui.training.reviewViewModel
 import dev.drillbalancer.ui.theme.Green
 import kotlinx.coroutines.flow.Flow
 import kotlinx.serialization.Serializable
@@ -105,6 +110,7 @@ sealed interface Dest {
     @Serializable data object Training : Dest
     @Serializable data object TrainingSetup : Dest
     @Serializable data object TrainingRecord : Dest
+    @Serializable data class TrainingReview(val id: String) : Dest
 }
 
 /** Screens below the tabs: a back arrow and their title instead of the tab bar. */
@@ -113,6 +119,7 @@ enum class SubScreen(val route: KClass<out Dest>, val title: String) {
     TRAINING(Dest.Training::class, "Training data"),
     TRAINING_SETUP(Dest.TrainingSetup::class, "New recording"),
     TRAINING_RECORD(Dest.TrainingRecord::class, "Recording"),
+    TRAINING_REVIEW(Dest.TrainingReview::class, "Review"),
 }
 
 /**
@@ -147,12 +154,18 @@ fun AppRoot(session: DeviceSession, scan: () -> Flow<List<ScannedDevice>>, lastA
     val phase by training.controller.phase.collectAsStateWithLifecycle()
     val context = LocalContext.current
     var offlineOpen by rememberSaveable { mutableStateOf(false) }
-    val offline = offlineTraining(offlineOpen, shell.showMain, phase)
+    // The review open now, on either side: the link's end (or return) does not close it, the
+    // other side shows it (the same view model, see ReviewStores; it needs no device).
+    var review by rememberSaveable { mutableStateOf<String?>(null) }
+    // Its view model, the same on both sides (and over configuration changes) until it closes.
+    val reviews = viewModel { ReviewStores() }
+    LaunchedEffect(review) { reviews.keepOnly(review) }
+    val offline = offlineTraining(offlineOpen || review != null, shell.showMain, phase)
     if (offline != offlineOpen) SideEffect { offlineOpen = offline }
 
     if (!shell.showMain) {
         if (offline) {
-            OfflineTraining(training, onClose = { offlineOpen = false })
+            OfflineTraining(training, reviews, onClose = { offlineOpen = false }, review = review, onReview = { review = it })
         } else {
             ConnectRoute(viewModel { ConnectViewModel(session, scan, lastAddress) }, openTrainingData = { offlineOpen = true })
         }
@@ -165,7 +178,7 @@ fun AppRoot(session: DeviceSession, scan: () -> Flow<List<ScannedDevice>>, lastA
     }
     Box(Modifier.fillMaxSize()) {
         CompositionLocalProvider(LocalViewModelStoreOwner provides screens) {
-            ConnectedApp(sessionVm, shell, training)
+            ConnectedApp(sessionVm, shell, training, reviews, review, onReview = { review = it })
         }
         prompt?.let { p ->
             BackHandler { sessionVm.gate.cancel() }
@@ -179,13 +192,26 @@ fun AppRoot(session: DeviceSession, scan: () -> Flow<List<ScannedDevice>>, lastA
     }
 }
 
+/**
+ * The tabs and their sub-screens; [review] a review open when the link came (shown again, its
+ * view model in [reviews]), [onReview] hears the one shown.
+ */
 @Composable
-private fun ConnectedApp(sessionVm: SessionViewModel, shell: ShellState, training: TrainingDeps) {
+private fun ConnectedApp(
+    sessionVm: SessionViewModel,
+    shell: ShellState,
+    training: TrainingDeps,
+    reviews: ReviewStores,
+    review: String?,
+    onReview: (String?) -> Unit,
+) {
     val session = sessionVm.session
     val gate = sessionVm.gate
     val nav = rememberNavController()
     val entry by nav.currentBackStackEntryAsState()
     val sub = subScreenOf(entry?.destination)
+    val startReview = remember { review }
+    val reported by rememberUpdatedState(onReview)
     val tab = if (sub != null) null else Tab.entries.firstOrNull { t -> entry?.destination?.hasRoute(t.dest::class) == true } ?: Tab.LIVE
     val backDispatcher = LocalOnBackPressedDispatcherOwner.current?.onBackPressedDispatcher
     // Saves the state of the tab it leaves, so for example unsaved settings edits stay.
@@ -266,7 +292,12 @@ private fun ConnectedApp(sessionVm: SessionViewModel, shell: ShellState, trainin
                     viewModel { TrainingListViewModel(training.store, training.controller, session) },
                     onNew = { nav.navigate(Dest.TrainingSetup) },
                     onOpenSession = { nav.navigate(Dest.TrainingRecord) { launchSingleTop = true } },
+                    onOpenRecording = { nav.navigate(Dest.TrainingReview(it)) },
                 )
+            }
+            composable<Dest.TrainingReview> { entry ->
+                val id = entry.toRoute<Dest.TrainingReview>().id
+                TrainingReviewRoute(reviewViewModel(id, training, reviews), onDone = { nav.popBackStack() })
             }
             composable<Dest.TrainingSetup> {
                 TrainingSetupRoute(viewModel { TrainingSetupViewModel(training.prefs, session, training.controller, gate) }) {
@@ -274,16 +305,26 @@ private fun ConnectedApp(sessionVm: SessionViewModel, shell: ShellState, trainin
                 }
             }
             composable<Dest.TrainingRecord> {
-                TrainingRecordRoute(viewModel { RecordViewModel(training.controller, gate) }, onBack = { nav.popBackStack() })
+                TrainingRecordRoute(
+                    viewModel { RecordViewModel(training.controller, gate) }, onBack = { nav.popBackStack() },
+                    onReview = { nav.navigate(Dest.TrainingReview(it)) },
+                )
             }
         }
     }
-    // Back on the tabs after the link was given up while a session ran: show the session again.
+    // Back on the tabs after the link was given up while a session ran: show the session again,
+    // and a review left open without the link over it.
     var resumed by rememberSaveable { mutableStateOf(false) }
     LaunchedEffect(Unit) {
-        if (resumed) return@LaunchedEffect
-        resumed = true
-        if (training.controller.phase.value.active) nav.navigate(Dest.TrainingRecord) { launchSingleTop = true }
+        if (!resumed) {
+            if (training.controller.phase.value.active) nav.navigate(Dest.TrainingRecord) { launchSingleTop = true }
+            startReview?.let { nav.navigate(Dest.TrainingReview(it)) }
+            resumed = true
+        }
+        // The review shown, from the back stack itself (after the navigation above, never a frame before it).
+        nav.currentBackStackEntryFlow.collect { e ->
+            reported(e.takeIf { it.destination.hasRoute(Dest.TrainingReview::class) }?.toRoute<Dest.TrainingReview>()?.id)
+        }
     }
 }
 

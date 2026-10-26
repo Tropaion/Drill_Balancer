@@ -7,6 +7,7 @@ import shutil
 import subprocess
 import sys
 import unittest
+import unittest.mock
 
 import fixtures as F
 import bootstrap_repo as B  # after fixtures, which puts its folder on sys.path
@@ -87,6 +88,71 @@ class BootstrapTest(F.TempDirTest):
         self.assertEqual(y.count("permissions:"), 1)
         perm = y.split("permissions:", 1)[1].split("\n\n", 1)[0].strip().splitlines()
         self.assertEqual([p.strip() for p in perm], ["contents: write"])
+
+
+@unittest.skipUnless(shutil.which("git"), "needs git")
+class PinTest(F.TempDirTest):
+    """--check-pin: the dbdata the data repo's Action checks out (DBDATA_REF) against this one."""
+
+    def git(self, *args):
+        env = {**os.environ, "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1", "GIT_AUTHOR_NAME": "t",
+               "GIT_AUTHOR_EMAIL": "t@t", "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t"}
+        subprocess.run(["git", *args], cwd=self.repo, env=env, check=True, capture_output=True)
+
+    def setUp(self):
+        super().setUp()
+        self.repo = self.tmp / "main"
+        self.pkg = self.repo / "firmware" / "tools" / "dataset" / "dbdata"
+        (self.pkg / "contract").mkdir(parents=True)
+        (self.pkg / "contract" / "meta.v1.schema.json").write_text("{}\n")
+        (self.pkg / "validate.py").write_text("v = 1\n")
+        (self.repo / "README.md").write_text("outside the package\n")
+        (self.repo / ".gitignore").write_text("__pycache__/\n")
+        self.git("init", "-q", "-b", "main")
+        self.git("add", "-A")
+        self.git("commit", "-qm", "contract")
+        self.git("tag", "dataset-v1")
+
+    def test_the_pinned_ref_is_the_workflows(self):
+        self.assertEqual(B.pinned_ref(), "dataset-v1")
+        self.assertIn(f"DBDATA_REF: {B.pinned_ref()}", WORKFLOW.read_text())
+
+    def test_a_contract_changed_in_place_without_moving_the_tag(self):
+        self.assertEqual(B.pin_differences("dataset-v1", self.pkg), [])
+        (self.repo / "README.md").write_text("changed, not the validator\n")
+        (self.pkg / "__pycache__").mkdir()
+        (self.pkg / "__pycache__" / "validate.cpython-312.pyc").write_bytes(b"x")
+        self.assertEqual(B.pin_differences("dataset-v1", self.pkg), [])
+        # the schema changed in place (uncommitted, then committed) and a new module: the tag is stale
+        (self.pkg / "contract" / "meta.v1.schema.json").write_text('{"required": ["motor"]}\n')
+        (self.pkg / "tool.py").write_text("")
+        want = ["firmware/tools/dataset/dbdata/contract/meta.v1.schema.json", "firmware/tools/dataset/dbdata/tool.py"]
+        self.assertEqual(B.pin_differences("dataset-v1", self.pkg), want)
+        self.git("add", "-A")
+        self.git("commit", "-qm", "drill type and motor")
+        self.assertEqual(B.pin_differences("dataset-v1", self.pkg), want)
+        # the tag moved to the commit: the Action's validator is this one
+        self.git("tag", "-f", "dataset-v1")
+        self.assertEqual(B.pin_differences("dataset-v1", self.pkg), [])
+        with self.assertRaises(RuntimeError):
+            B.pin_differences("dataset-v9", self.pkg)
+        self.assertEqual(B.pin_report("dataset-v9-no-such-ref")[0], 2)
+
+    def test_the_cli(self):
+        for (code, text), want in (((0, "same"), 0), ((1, "stale"), 1), ((2, "no git"), 2)):
+            with unittest.mock.patch.object(B, "pin_report", return_value=(code, text)):
+                self.assertEqual(quiet(B.main, ["--check-pin"]), want)
+        # copying warns about a stale tag (and still copies)
+        repo = self.tmp / "data"
+        repo.mkdir()
+        err = io.StringIO()
+        with unittest.mock.patch.object(B, "pin_report", return_value=(1, "stale")), \
+                contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
+            self.assertEqual(B.main([str(repo)]), 0)
+        self.assertIn("warning: stale", err.getvalue())
+        self.assertTrue((repo / "README.md").is_file())
+        with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
+            B.main([])
 
 
 def step_script(name: str) -> str:

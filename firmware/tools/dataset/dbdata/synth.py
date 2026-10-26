@@ -98,6 +98,9 @@ class Spec:
     client that stops reading for (at_s, duration_s) from the scenario start,
     so the device drops records (a transport gap). inject: signals the
     simulator has no model for, added to the exported files (INJECTIONS).
+    drill_type / motor: meta.session.drill (None: for hammer an SDS rotary
+    hammer with a masonry_sds bit, else a combi drill; a drill/driver
+    otherwise; the simulator models one brushless drill).
     """
 
     name: str
@@ -113,6 +116,8 @@ class Spec:
     material: str = "wood/softwood"
     bit_type: str = "brad_point"
     bit_diameter_mm: float = 8.0
+    drill_type: str | None = None
+    motor: str = "brushless"
     lead_s: float = 0.4
     tail_s: float = 0.4
     mount_offset: tuple = (0.0, 0.0, 0.0)
@@ -123,6 +128,14 @@ class Spec:
     @property
     def mode(self) -> str:
         return self.scenario.get("mode", "drill")
+
+    @property
+    def drill_type_id(self) -> str:
+        if self.drill_type:
+            return self.drill_type
+        if self.mode == "hammer":     # an SDS bit fits only an SDS rotary hammer
+            return "rotary_hammer" if self.bit_type == "masonry_sds" else "combi_drill"
+        return "drill"
 
     @property
     def profile_name(self) -> str:
@@ -477,7 +490,9 @@ def synthesize(spec: Spec, root: str | Path, *, rid: str, session_id: str | None
     events = truth_events(truth, coverage, rid)
     session = {"material": spec.material, "layers": [], "mode": spec.mode,
               "bit": {"type": spec.bit_type, "diameter_mm": spec.bit_diameter_mm},
-              "drill": {"model": "dbsim", "gear": 2, "speed_setting": None}, "outcome_tags": [],
+              "drill": {"type": spec.drill_type_id, "motor": spec.motor, "model": "dbsim", "gear": 2,
+                        "speed_setting": None},
+              "outcome_tags": [],
               "notes": f"synthetic: {spec.name}"}
     dest = Path(folder) if folder is not None else recording_dir(root, rid)
     meta = dbrec.export_take(take, dest, recording_id=rid, session_id=session_id or f"20261026T1428_{INSTALL}",

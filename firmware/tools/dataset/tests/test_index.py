@@ -24,7 +24,8 @@ TRAIN, VAL, TEST = "20261026T1500_k7q2", "20261026T1428_k7q2", "20261026T1430_k7
 def populate(root, order=(0, 1, 2)):
     specs = [dict(rid=F.rid(1), session_id=TRAIN),
              dict(rid=F.rid(2), session_id=VAL, material="masonry/concrete", mode="hammer", audio=False),
-             dict(rid=F.rid(3), session_id=TEST, odr_true=470.0)]  # fails the full check (E_ODR)
+             dict(rid=F.rid(3), session_id=TEST, odr_true=470.0,         # fails the full check (E_ODR)
+                  motor="universal_ac")]
     return [F.make_recording(root, **specs[i]) for i in order]
 
 
@@ -88,6 +89,11 @@ class IndexTest(F.TempDirTest):
         self.assertEqual(int(r["bytes"]), sum(f["bytes"] for f in meta["files"].values()))
         r2 = self.rows()[F.rid(2)]
         self.assertEqual((r2["split"], r2["has_audio"], r2["mode"]), ("val", "0", "hammer"))
+        rows = self.rows()
+        self.assertEqual([(rows[F.rid(i)]["drill_type"], rows[F.rid(i)]["motor"]) for i in (1, 2, 3)],
+                         [("drill", "brushless"), ("combi_drill", "brushless"), ("drill", "universal_ac")])
+        cols = list(X.COLUMNS)
+        self.assertEqual(cols[cols.index("bit_diameter_mm") + 1:cols.index("orientation")], ["drill_type", "motor"])
         # light checks only, no report: the ODR problem is not seen yet
         self.assertEqual(self.rows()[F.rid(3)]["valid"], "1")
         stats = self.text()[1]
@@ -95,6 +101,9 @@ class IndexTest(F.TempDirTest):
         self.assertIn("| masonry/concrete | 0.0 | 0.1 |", stats)   # 7 s of hammer
         self.assertIn("| wood/softwood | 0.2 | 0.0 |", stats)      # 2 x 7 s of drill
         self.assertIn("| 3 | 3 | 0.01 |", stats)
+        self.assertIn("## Drill type x motor (valid, minutes)\n\n"
+                      "| drill type | brushless | universal_ac |\n|---|---|---|\n"
+                      "| combi_drill | 0.1 | 0.0 |\n| drill | 0.1 | 0.1 |\n", stats)
 
     def test_report_and_carry_over(self):
         X.regenerate(self.root, self.full_report())
@@ -190,11 +199,17 @@ class IndexTest(F.TempDirTest):
         tdoc = contract.load_json(contract.TAXONOMY_FILE)
         tdoc["fields"]["material"].append({"id": "wood/osb", "added": 1, "deprecated": True,
                                            "replaced_by": "wood/plywood"})
+        tdoc["fields"]["drill_type"].append({"id": "hammer_drill", "added": 1, "deprecated": True,
+                                             "replaced_by": "combi_drill"})
+        tdoc["fields"]["motor"].append({"id": "corded", "added": 1, "deprecated": True,
+                                        "replaced_by": "universal_ac"})
         tax = contract.Taxonomy(tdoc)
-        F.make_recording(self.root, rid=F.rid(6), session_id=TRAIN, material="wood/osb")
+        F.make_recording(self.root, rid=F.rid(6), session_id=TRAIN, material="wood/osb", drill_type="hammer_drill",
+                         motor="corded")
         X.regenerate(self.root, taxonomy=tax)
         r = self.rows()[F.rid(6)]
-        self.assertEqual((r["material"], r["valid"]), ("wood/plywood", "1"))
+        self.assertEqual((r["material"], r["drill_type"], r["motor"], r["valid"]),
+                         ("wood/plywood", "combi_drill", "universal_ac", "1"))
         self.assertIn("W_DEPRECATED", r["warnings"])
 
     def rel(self, folder):
@@ -318,6 +333,11 @@ class IndexTest(F.TempDirTest):
         empty.mkdir()
         self.assertTrue(X.regenerate(empty))
         self.assertEqual(self.text(empty)[0], ",".join(X.COLUMNS) + "\n")
+        self.assertIn("## Drill type x motor (valid, minutes)\n\nnone\n", self.text(empty)[1])
+        # an index.csv from before the drill_type / motor columns still loads (empty until regenerated)
+        old = self.tmp / "old.csv"
+        old.write_text(",".join(c for c in X.COLUMNS if c not in ("drill_type", "motor")) + "\n")
+        self.assertEqual(list(X.read_index(old).columns)[-2:], ["drill_type", "motor"])
         (self.paths[1] / "meta.json").write_text("{")
         X.regenerate(self.root)
         r = self.rows()[F.rid(2)]

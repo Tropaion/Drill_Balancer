@@ -18,7 +18,11 @@ checks, indexes and loads it for training:
   `autodetect`, the auto-labeller (the reference for the app's Kotlin port),
   and `synth`, synthetic recordings with ground truth from the simulator.
 - `dbdata/contract/autodetect_params.json`: the auto-detector's parameters,
-  versioned; `fixtures/autodetect/`: its golden fixtures for the app.
+  versioned; `fixtures/autodetect/`: its golden fixtures for the app;
+  `fixtures/finalize/`: streams and what `dbrec` exports from them, which the
+  app's finalizer must reproduce; `fixtures/labels/`: label sets and what
+  `labels` derives from them (phases, grammar issues, derived labels), which
+  the app's port must reproduce.
 - `repo_template/`: README, `.github/workflows/validate.yml` and git
   attributes for the data repo; `bootstrap_repo.py` copies them, plus the
   contract, into a clone of it.
@@ -49,6 +53,7 @@ commands below from this folder, or put it on `PYTHONPATH`.
 .venv/bin/python -m dbdata.index REPO --list-unchecked # recordings that need a full check
 .venv/bin/python -m dbdata.stats REPO [REPO...]       # statistics as Markdown
 .venv/bin/python bootstrap_repo.py ~/data/Drill_Balancer_Data [--check] [--force]
+.venv/bin/python bootstrap_repo.py --check-pin        # exit 1 if the Action's pinned dbdata differs
 .venv/bin/python -m dbdata.dbrec --self-check         # decoder vs rec_stream.h
 .venv/bin/python -m dbdata.dbrec info SESSION.dbrec   # records, losses, takes
 .venv/bin/python -m dbdata.dbrec export SESSION.dbrec ROOT --take 0 --recording-id ID --session-id SID
@@ -60,6 +65,8 @@ commands below from this folder, or put it on `PYTHONPATH`.
 .venv/bin/python -m dbdata.synth ROOT [--set eval|fixtures] [--count N]   # synthetic recordings
 .venv/bin/python -m dbdata.synth fixtures fixtures/autodetect             # regenerate the fixtures
 .venv/bin/python -m dbdata.synth --list
+.venv/bin/python fixtures/finalize/make_fixtures.py [--check]       # the app finalizer's cross-check
+.venv/bin/python fixtures/labels/make_fixtures.py [--check]         # the app's phases / derived labels
 ```
 
 `validate` takes recording folders or any folder above them; every folder
@@ -187,10 +194,17 @@ or `soft` (labels blend linearly across the guard). `unknown` and `ignore`
 spans always weigh 0.
 
 Recording-level labels are in `meta.session` (material, layers, mode, bit
-type and diameter, drill model, gear, speed setting, outcome tags, notes)
-and can be overridden per hole in `events.holes[]` (`material: null`
+type and diameter, drill type and motor, drill model, gear, speed setting,
+outcome tags, notes) and can be overridden per hole in `events.holes[]` (`material: null`
 inherits; a hole's `outcome_tags` replace the session's, and its derived
-`off_angle` tag follows the hole's own off angle). Ids are hierarchical (`wood/softwood`); `labels.map_to_level`
+`off_angle` tag follows the hole's own off angle). `drill.type`
+(taxonomy field `drill_type`): `drill` (a drill/driver without hammer),
+`combi_drill` (with a percussion hammer), `rotary_hammer` (SDS),
+`impact_driver`; `drill.motor` (field `motor`): `brushed`, `brushless`,
+`universal_ac` (a corded AC universal motor: corded is said here, not by
+the type). Both keys are required (`unknown` when not known), next to
+`model`, `gear` and `speed_setting`; `other` texts go to
+`other_text.drill_type` / `other_text.motor`. Ids are hierarchical (`wood/softwood`); `labels.map_to_level`
 truncates them, `labels.coarse_phases` maps phases to coarse classes. Every
 field accepts `unknown`, and `other` with `other_text`. Taxonomy entries are
 only ever appended; retired ids get `deprecated` + `replaced_by`, and
@@ -213,6 +227,7 @@ the LEVEL rows with `IMU_OK` only:
 |---|---|
 | `E_JSON`, `E_SCHEMA_META`, `E_SCHEMA_EVENTS` | JSON parses and matches the schemas (notes ≤ 200 chars, ...) |
 | `E_TAXONOMY`, `E_OTHER_TEXT`, `W_DEPRECATED`, `E_TAXONOMY_VERSION`, `W_TAXONOMY_ADDED` | every id is in the taxonomy and not newer than the document's `taxonomy_version` |
+| `W_MODE_TOOL` | `session.mode` contradicts `session.drill.type` (hammer with `drill` or `impact_driver`, screw with `rotary_hammer`: the taxonomy's `mode_tool_conflicts`); a warning only, `unknown` and `other` never warn |
 | `E_ID` | folder, recording ids and `YYYY/YYYY-MM` agree; the id holds a real date |
 | `E_FORBIDDEN_KEY`, `E_PII`, `E_PII_DATA` | no location, name, email, MAC (or similar) keys; no email or MAC addresses in text (the text of `device_events.csv` whenever the file is there, listed in `meta.files` or not) |
 | `E_SHA`, `E_BYTES`, `E_MISSING_FILE`, `W_EXTRA_FILE`, `E_FILES_META` | data files match `meta.files` |
@@ -235,13 +250,21 @@ the LEVEL rows with `IMU_OK` only:
 ### index.csv
 
 `recording_id, path, start_utc, duration_s, session_id, imu_profile, odr_hz,
-has_audio, material, mode, bit_type, bit_diameter_mm, orientation, n_holes,
-phases, problems, outcome_tags, review_status, min_confidence,
-taxonomy_version, valid, warnings, split, bytes, checked`. List columns are
+has_audio, material, mode, bit_type, bit_diameter_mm, drill_type, motor,
+orientation, n_holes, phases, problems, outcome_tags, review_status,
+min_confidence, taxonomy_version, valid, warnings, split, bytes, checked`.
+List columns are
 `;`-separated (`phases` as `phase=seconds`); `warnings` holds every issue
 code, errors included; `checked` is the fingerprint of the recording's files
 at the full check whose result the row holds, empty without one. `split` is `crc32(session_id) % 10`: 0-7 train, 8
 val, 9 test, so all takes of one session (one workpiece) stay in one split.
+An `index.csv` written before a column existed loads with that column empty
+until the Action regenerates it.
+
+`stats.md` (valid recordings, except the totals and the validator issues):
+totals, splits, phase time, the minutes by material x mode and by drill
+type x motor, then counts of review status, IMU profiles, orientation,
+problems, outcome tags and validator issues.
 
 ## Loading data for training
 
@@ -288,6 +311,11 @@ for w in iter_windows(rec, 1.0, 0.5, streams=("imu", "audio"), label="majority")
         ...
 track = phase_track(rec.t_us, rec.events, boundary_policy="soft")   # per-sample codes, weight, soft
 ```
+
+Each window's `labels` (`recording_labels`) are the recording-level labels
+of the hole it lies in: `material`, `mode`, `bit_type`, `bit_diameter_mm`,
+`drill_type`, `motor`, `orientation`, `off_angle_deg`, `imu_profile`,
+`outcome_tags`, `hole` (deprecated ids resolved like index.csv's).
 
 `write_recording(dest, meta, events, imu, level=..., audio=..., audio_sync=...,
 derive=True)` writes a complete folder and fills `meta.files` (and
@@ -417,6 +445,23 @@ fixtures, what each covers, the format and the tolerances are in
 dbdata.autodetect --update-fixtures` rewrites only the expected output, and
 `--check-fixtures` (also a unit test) replays them.
 
+`fixtures/finalize/` holds three takes as the app's journal has them (the
+firmware's golden stream, a rich synthetic take, and that take cut off
+mid-record) and what `dbrec.export_take` writes from each: the app's
+`FinalizerCrossCheckTest` compares its own output with them. After a change
+to the export, `.venv/bin/python fixtures/finalize/make_fixtures.py`
+rewrites them; a unit test (`--check`) fails while they are stale.
+`fixtures/finalize/README.md` says what is compared.
+
+`fixtures/labels/phases.json` holds 279 label sets (the event orders of
+`tests/test_labels.py`, the autodetect fixtures' truth and detector labels,
+and seeded random sequences, valid and not, each with a synthetic LEVEL
+table) and what `labels.phase_segments`, `labels.grammar_state` and
+`labels.compute_derived` give for them. The app's `PhasesCrossCheckTest`
+must reproduce them exactly. After a change to `labels.py`,
+`.venv/bin/python fixtures/labels/make_fixtures.py` rewrites the file; a
+unit test fails while it is stale.
+
 ## Changing the contract
 
 - New labels: append entries, bump `version`, never rename or remove ids.
@@ -429,3 +474,14 @@ dbdata.autodetect --update-fixtures` rewrites only the expected output, and
   new ids. The Action fails while the copies differ from the pinned dbdata,
   and a recording with a newer `taxonomy_version` than the validator knows
   fails with `E_TAXONOMY_VERSION`.
+- A change in place (no `version` bump: the drill type and motor fields,
+  made before the first recording) is not caught by `E_TAXONOMY_VERSION`:
+  until the tag moves, the pinned validator rejects every recording the new
+  app writes (`E_SCHEMA_META`, indexed `valid=0`). `bootstrap_repo.py
+  --check-pin` compares the dbdata at the workflow's `DBDATA_REF` with this
+  checkout (uncommitted changes included) and exits 1 while they differ;
+  copying with `bootstrap_repo.py` warns too. The steps: commit; `git tag
+  -f dataset-v1 && git push --force origin dataset-v1`; `--check-pin`
+  passes; `bootstrap_repo.py <clone> --force`, commit and push the data
+  repo; only then ship the app. A recording that was uploaded before is
+  validated again by a manual run with `all` (workflow_dispatch).

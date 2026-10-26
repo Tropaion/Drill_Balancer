@@ -1,0 +1,42 @@
+{
+  "stream": "golden",
+  "cut": null,
+  "take_id": 42,
+  "recording_id": "20261026T143012Z_k7q2_9f3a",
+  "session_id": "20261026T1428_k7q2",
+  "start_utc": "2026-10-26T14:30:12.418Z",
+  "setup": {
+    "material": "wood/softwood",
+    "thickness_mm": 38.0,
+    "mode": "drill",
+    "bit_type": "brad_point",
+    "bit_diameter_mm": 8.0,
+    "drill_type": "drill",
+    "motor": "brushless",
+    "drill_model": "Bosch GSR 18V-55",
+    "gear": 2,
+    "notes": ""
+  },
+  "session": {
+    "material": "wood/softwood",
+    "layers": [
+      {
+        "material": "wood/softwood",
+        "thickness_mm": 38.0
+      }
+    ],
+    "mode": "drill",
+    "bit": {
+      "type": "brad_point",
+      "diameter_mm": 8.0
+    },
+    "drill": {
+      "type": "drill",
+      "motor": "brushless",
+      "model": "Bosch GSR 18V-55",
+      "gear": 2,
+      "speed_setting": null
+    },
+    "notes": ""
+  }
+}

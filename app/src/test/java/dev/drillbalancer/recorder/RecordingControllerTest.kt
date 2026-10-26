@@ -33,6 +33,7 @@ import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
@@ -78,7 +79,12 @@ class RecordingControllerTest {
         t: RecorderTiming = timing,
         store: RecordingStore = this.store,
         clock: RecorderClock = RecorderClock.SYSTEM,
-    ) = RecordingController(fake, store, links, { "k7q2abcdefghijkl" }, AppInfo("0.1.0", "robolectric", 37), scope, timing = t, clock = clock)
+    ) = RecordingController(
+        fake, store, links, { "k7q2abcdefghijkl" }, AppInfo("0.1.0", "robolectric", 37), scope, timing = t, clock = clock,
+        takeFinished = { finished += it },
+    )
+
+    private val finished = java.util.concurrent.CopyOnWriteArrayList<String>()
 
     @After
     fun tearDown() {
@@ -156,6 +162,13 @@ class RecordingControllerTest {
         assertEquals(listOf("open", "take_start", "stop", "take_start", "stop", "close"), fake.recorderLog.filter { it != "read" })
         assertEquals(1, server.hellos)
         assertEquals(RecState.IDLE, fake.recorderState.state)
+        // Each closed journal is handed on to be finalized, and becomes a recording.
+        assertEquals(listOf(first, second), finished.toList())
+        for (id in finished) {
+            val r = store.finalize(id)!!
+            assertTrue(r.hasAudio)
+            assertEquals(RecordingStage.NEEDS_REVIEW, store.list().single { it.journal.recordingId == id }.stage)
+        }
     }
 
     @Test
@@ -326,6 +339,33 @@ class RecordingControllerTest {
         val j = failing.read(id)!!
         assertEquals(JournalState.INTERRUPTED, j.state)
         assertTrue(j.note!!, j.note!!.startsWith("the phone could not store it"))
+    }
+
+    /**
+     * The journal's last sync fails when the take ends: take.json still says recording, so the
+     * store hears of it (the review offers Try again), with how the take ended: Try again writes
+     * that (complete, the END's reason, the stats), not an interrupted take of unknown end.
+     */
+    @Test
+    fun aJournalThatCannotBeClosedIsReportedToTheStore() {
+        val failNext = AtomicBoolean(false)
+        val failing = RecordingStore(File(tmp.root, "failing"), syncFile = { if (failNext.getAndSet(false)) throw IOException("disk full") else it.fd.sync() })
+        val c = controller(t = timing.copy(syncMs = 600_000), store = failing).ready()
+        val id = c.record(200)
+        failNext.set(true)
+        c.stopTake()
+        c.await(3_000, "ready") { it.phase == RecordPhase.READY && it.takes == 1 }
+        assertEquals(JournalState.RECORDING, failing.read(id)!!.state)
+        assertEquals("disk full", failing.storageError(id))
+        assertFalse("not finished", id in finished)
+        failing.retry(id)
+        val j = failing.read(id)!!
+        assertEquals(JournalState.COMPLETE, j.state)
+        assertEquals("user", j.endReason)
+        assertNull(j.note)
+        assertTrue(j.stats!!.records > 0)
+        assertEquals(File(failing.dir(id), RecordingStore.STREAM).length(), j.bytes)
+        assertNull(failing.storageError(id))
     }
 
     @Test

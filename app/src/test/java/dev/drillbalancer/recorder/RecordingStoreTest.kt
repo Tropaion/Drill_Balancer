@@ -121,6 +121,40 @@ class RecordingStoreTest {
         assertEquals(1, store.list().size)
     }
 
+    /**
+     * list() reads a finished take's folder once (take.json, meta.json, the files' sizes) and
+     * again only after its files changed through the store; a take being recorded every time
+     * (its stream grows).
+     */
+    @Test
+    fun listReadsOnlyTheFoldersThatChanged() {
+        val ids = (0 until 5).map { "20261026T14301${it}Z_k7q2_aaa$it" }
+        for (id in ids) store.open(journal(id, JournalState.COMPLETE)).close()
+        val running = store.open(journal("20261027T090000Z_k7q2_bbbb"))
+        assertEquals(6, store.list().size)
+        val reads = store.folderReads.get()
+        assertEquals(6, store.list().size)
+        assertEquals("the one being recorded only", reads + 1, store.folderReads.get())
+        val b = records()
+        running.append(b, 0, b.size)
+        assertEquals(b.size.toLong(), store.list().first().streamBytes)
+        // a change through the store: that folder alone is read again
+        val changed = ids[2]
+        File(store.dir(changed), RecordingStore.META).writeText("{\"review\":{\"status\":\"reviewed\"}}")
+        store.exclusive(changed) { }
+        val before = store.folderReads.get()
+        val entry = store.list().single { it.journal.recordingId == changed }
+        assertEquals(before + 2, store.folderReads.get())
+        assertEquals(RecordingStage.SAVED, entry.stage)
+        assertTrue(entry.bytes > 0)
+        store.write(store.read(ids[0])!!.copy(finalizeError = "no SESSION"))
+        assertEquals(RecordingStage.INTERRUPTED, store.list().single { it.journal.recordingId == ids[0] }.stage)
+        running.finish(JournalState.COMPLETE, "user", null, null, Instant.EPOCH)
+        assertEquals(JournalState.COMPLETE, store.list().first().journal.state)
+        assertTrue(store.delete(ids[4]))
+        assertEquals(5, store.list().size)
+    }
+
     @Test
     fun journalJsonKeepsTheContractNames() {
         store.open(journal("20261026T143012Z_k7q2_aaaa")).close()

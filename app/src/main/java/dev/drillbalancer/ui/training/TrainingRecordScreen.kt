@@ -43,6 +43,7 @@ class RecordActions(
     val retry: () -> Unit = {},
     val done: () -> Unit = {},            // DONE / FAILED: back to the list
     val openWifiSettings: () -> Unit = {},
+    val review: (id: String) -> Unit = {},  // the last take's review
 )
 
 /** One recording session: joining the device's Wi-Fi, then takes with a live view. */
@@ -96,7 +97,7 @@ fun TrainingRecordScreen(state: RecordUiState, actions: RecordActions, modifier:
             }
         }
         if (r.phase == RecordPhase.READY || r.phase == RecordPhase.DONE || r.phase == RecordPhase.FAILED) {
-            r.lastTake?.let { LastTake(it, r.takes) }
+            r.lastTake?.let { LastTake(it, r.takes) { actions.review(it.recordingId) } }
         }
     }
 }
@@ -164,13 +165,14 @@ private fun Counters(live: LiveView, stalled: Boolean) {
 private fun warnIf(b: Boolean) = if (b) Amber else Color.Unspecified
 
 @Composable
-private fun LastTake(t: TakeSummary, takes: Int) {
+private fun LastTake(t: TakeSummary, takes: Int, onReview: () -> Unit) {
     SectionTitle(if (takes > 1) "Last take ($takes this session)" else "Last take")
     Panel(border = if (t.complete) Dark else Amber) {
         InfoRow("Length", formatMinSec(t.durationS.toLong()))
         InfoRow("Size", formatBytes(t.bytes))
         InfoRow("Ended", t.endText, valueColor = if (t.complete) Color.Unspecified else Amber)
         InfoRow("Lost records", "${t.missingRecords}", valueColor = warnIf(t.missingRecords > 0))
+        ActionButton("Review", onReview, Modifier.fillMaxWidth(), kind = ButtonKind.SECONDARY)
     }
 }
 

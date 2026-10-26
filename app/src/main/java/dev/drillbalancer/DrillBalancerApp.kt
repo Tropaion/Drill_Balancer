@@ -12,6 +12,9 @@ import dev.drillbalancer.recorder.RecorderService
 import dev.drillbalancer.recorder.RecordingController
 import dev.drillbalancer.recorder.RecordingStore
 import dev.drillbalancer.recorder.SetupStore
+import dev.drillbalancer.recorder.label.AutoLabeler
+import dev.drillbalancer.recorder.label.DetectParams
+import dev.drillbalancer.recorder.label.LoadedParams
 import dev.drillbalancer.recorder.net.ApLink
 import dev.drillbalancer.recorder.net.LanLink
 import dev.drillbalancer.recorder.net.StreamEndpoint
@@ -23,6 +26,7 @@ import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
 import java.io.File
 import java.io.IOException
 
@@ -41,23 +45,47 @@ class DrillBalancerApp : Application() {
         SupervisorJob() + Dispatchers.Default + CoroutineExceptionHandler { _, e -> Log.e("DrillBalancerApp", "app scope", e) },
     )
     val setupStore: SetupStore by lazy { SetupStore(this) }
+
+    // The auto-detector's parameters: the dataset contract's autodetect_params.json, shipped as an asset.
+    private val detectParams: LoadedParams by lazy { DetectParams.load(assets.open(DetectParams.ASSET).use { it.readBytes() }) }
+    val labeler: AutoLabeler by lazy {
+        AutoLabeler({ detectParams }) { dir, e -> Log.w("DrillBalancerApp", "labelling ${dir.name} failed", e) }
+    }
     val recordings: RecordingStore by lazy {
-        RecordingStore(File(filesDir, "recordings"), freeSpace = { dir ->
-            val sm = getSystemService(StorageManager::class.java)
-            try {
-                sm.getAllocatableBytes(sm.getUuidForPath(dir))
-            } catch (_: IOException) {
-                0L
-            }
-        })
+        RecordingStore(
+            File(filesDir, "recordings"),
+            freeSpace = { dir ->
+                val sm = getSystemService(StorageManager::class.java)
+                try {
+                    sm.getAllocatableBytes(sm.getUuidForPath(dir))
+                } catch (_: IOException) {
+                    0L
+                }
+            },
+            labeler = labeler,
+        )
     }
     val recorder: RecordingController by lazy {
-        RecordingController(session, recordings, StreamLinkFactory(::streamLink), setupStore::installId, appInfo(), appScope).also {
+        RecordingController(
+            session, recordings, StreamLinkFactory(::streamLink), setupStore::installId, appInfo(), appScope,
+            takeFinished = ::finalizeLater,
+        ).also {
             it.recover()
             RecorderService.follow(this, it, appScope)
         }
     }
-    val training: TrainingDeps by lazy { TrainingDeps(recorder, recordings, setupStore) }
+    val training: TrainingDeps by lazy { TrainingDeps(recorder, recordings, setupStore, labeler) }
+
+    // A take that ended gets its dataset files (a storage error leaves it to the next start's recovery).
+    private fun finalizeLater(id: String) {
+        appScope.launch(Dispatchers.IO) {
+            try {
+                recordings.finalize(id)
+            } catch (e: IOException) {
+                Log.w("DrillBalancerApp", "finalizing $id failed", e)
+            }
+        }
+    }
 
     // The simulator on the LAN; the device's soft-AP joined for the app (API 29+), or joined by
     // the user in the system settings before.

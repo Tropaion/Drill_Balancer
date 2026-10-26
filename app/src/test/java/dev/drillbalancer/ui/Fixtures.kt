@@ -13,6 +13,7 @@ import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.test.junit4.ComposeTestRule
 import androidx.compose.ui.unit.Density
 import dev.drillbalancer.protocol.FirmwareImage
 import dev.drillbalancer.protocol.FirmwareParseResult
@@ -21,6 +22,21 @@ import dev.drillbalancer.protocol.put32
 import dev.drillbalancer.ui.theme.DrillBalancerTheme
 
 // Shared test data and wrappers for the screenshot and ViewModel tests.
+
+/**
+ * Waits up to [timeoutMs] of real time for [condition], letting the UI settle between looks:
+ * for work on real background threads (Dispatchers.IO), which waitUntil (timed on the test
+ * clock) can give up on too early.
+ */
+fun ComposeTestRule.awaitReal(timeoutMs: Long = 10_000, what: String = "", condition: () -> Boolean) {
+    val end = System.nanoTime() + timeoutMs * 1_000_000
+    while (true) {
+        waitForIdle()
+        if (condition()) return
+        if (System.nanoTime() > end) throw AssertionError("still not: $what")
+        Thread.sleep(10)
+    }
+}
 
 /** The narrowest common phone: everything must fit 360 dp. */
 const val PHONE = "w360dp-h780dp-xhdpi"

@@ -200,8 +200,10 @@
                                             {"type": "number", "exclusiveMinimum": 0, "maximum": 200}]}
                 }},
         "drill": {"type": "object", "additionalProperties": false,
-                  "required": ["model", "gear", "speed_setting"],
+                  "required": ["type", "motor", "model", "gear", "speed_setting"],
                   "properties": {
+                    "type": {"$ref": "#/$defs/tax_id", "description": "taxonomy field drill_type"},
+                    "motor": {"$ref": "#/$defs/tax_id", "description": "taxonomy field motor"},
                     "model": {"type": "string", "maxLength": 64},
                     "gear": {"enum": [1, 2, 3, null]},
                     "speed_setting": {"oneOf": [{"type": "null"}, {"type": "number"}]}

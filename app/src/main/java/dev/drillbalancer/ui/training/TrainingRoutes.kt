@@ -14,13 +14,20 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.saveable.listSaver
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.ViewModelStore
+import androidx.lifecycle.ViewModelStoreOwner
 import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -29,6 +36,8 @@ import dev.drillbalancer.recorder.RecordPhase
 import dev.drillbalancer.recorder.RecordingController
 import dev.drillbalancer.recorder.RecordingStore
 import dev.drillbalancer.recorder.SetupPrefs
+import dev.drillbalancer.recorder.label.AutoLabeler
+import dev.drillbalancer.recorder.label.ReviewRepository
 import dev.drillbalancer.recorder.net.WifiBlock
 import dev.drillbalancer.recorder.net.WifiPermissions
 import dev.drillbalancer.ui.components.ConfirmDialog
@@ -37,18 +46,142 @@ import dev.drillbalancer.ui.components.KeepScreenOn
 import dev.drillbalancer.ui.components.TouchHeight
 import dev.drillbalancer.ui.components.startActivitySafely
 import dev.drillbalancer.ui.theme.Red
+import dev.drillbalancer.ui.training.review.ReviewActions
+import dev.drillbalancer.ui.training.review.ReviewScreen
+import dev.drillbalancer.ui.training.review.ReviewViewModel
 
 /** The process-wide recorder parts the training screens use (DrillBalancerApp). */
-class TrainingDeps(val controller: RecordingController, val store: RecordingStore, val prefs: SetupPrefs)
+class TrainingDeps(
+    val controller: RecordingController,
+    val store: RecordingStore,
+    val prefs: SetupPrefs,
+    labeler: AutoLabeler? = null,
+) {
+    val review = ReviewRepository(store, labeler)
+}
 
 @Composable
-fun TrainingListRoute(vm: TrainingListViewModel, onOpenSession: () -> Unit, modifier: Modifier = Modifier, onNew: () -> Unit = {}) {
+fun TrainingListRoute(
+    vm: TrainingListViewModel,
+    onOpenSession: () -> Unit,
+    modifier: Modifier = Modifier,
+    onNew: () -> Unit = {},
+    onOpenRecording: (id: String) -> Unit = {},
+) {
     val state by vm.state.collectAsStateWithLifecycle()
     LifecycleResumeEffect(vm) {
         vm.reload()
         onPauseOrDispose {}
     }
-    TrainingListScreen(state, TrainingListActions(newRecording = onNew, openSession = onOpenSession, reload = vm::reload), modifier)
+    TrainingListScreen(
+        state,
+        TrainingListActions(newRecording = onNew, openSession = onOpenSession, reload = vm::reload, openRecording = onOpenRecording),
+        modifier,
+    )
+}
+
+/**
+ * The review of a recording's labels (Dest.TrainingReview). Back leaves it with the draft kept
+ * (it opens there again); Discard asks first when something was changed, Reset all to auto
+ * when it would drop edits (changed, or reviewed before); Save and Accept all close it once the
+ * labels are written.
+ */
+@Composable
+fun TrainingReviewRoute(vm: ReviewViewModel, onDone: () -> Unit, modifier: Modifier = Modifier) {
+    val state by vm.state.collectAsStateWithLifecycle()
+    var confirm by rememberSaveable { mutableStateOf(false) }
+    var confirmReset by rememberSaveable { mutableStateOf(false) }
+    val done by rememberUpdatedState(onDone)
+    LaunchedEffect(state.done) { if (state.done) done() }
+    ReviewScreen(
+        state,
+        ReviewActions(
+            tapMarker = vm::tapMarker, drag = vm::drag, nudge = vm::nudge, setCursor = vm::setCursor, add = vm::add,
+            delete = vm::delete, resetMarker = vm::resetMarker,
+            resetAll = { if (state.dirty || state.reviewed) confirmReset = true else vm.resetAll() },
+            selectHole = vm::selectHole,
+            toggleTag = vm::toggleTag, toggleSuggestion = vm::toggleSuggestion, zoomIn = vm::zoomIn, zoomOut = vm::zoomOut,
+            panBack = vm::panBack, panForward = vm::panForward, showAll = vm::showAll, acceptAll = vm::acceptAll,
+            save = vm::save, discard = { if (state.dirty) confirm = true else vm.discard() }, dismissMessage = vm::dismissMessage,
+            retry = vm::retry,
+        ),
+        modifier,
+    )
+    if (confirm) {
+        ConfirmDialog(
+            title = "Discard your changes?",
+            text = "The labels go back to how they were saved last.",
+            confirmLabel = "Discard",
+            confirmColor = Red,
+            onConfirm = vm::discard,
+            onDismiss = { confirm = false },
+        )
+    }
+    if (confirmReset) {
+        ConfirmDialog(
+            title = "Reset all labels to auto?",
+            text = "Every marker, tag and suggestion goes back to what the detector found. Discard still brings back the labels saved last.",
+            confirmLabel = "Reset all",
+            confirmColor = Red,
+            onConfirm = vm::resetAll,
+            onDismiss = { confirmReset = false },
+        )
+    }
+}
+
+/**
+ * The open review's view model (AppRoot keeps this in the activity's store): one store per
+ * recording, so the tabs and the training screens without the device show the same
+ * ReviewViewModel while the review is open on either side, across the link's end or return
+ * (an edit, a Save in flight and the view stay) and configuration changes. [keepOnly] clears
+ * the others when the review closes, each once no screen shows it any more (the tabs' review
+ * stays composed while its exit transition runs: it would make a new view model). Main thread.
+ */
+class ReviewStores : ViewModel() {
+    private val stores = HashMap<String, ViewModelStore>()
+    private val shown = HashMap<String, Int>()      // the review screens composed per id ([shows])
+    private var kept: String? = null
+
+    /** [id]'s store, made again when it was cleared. */
+    fun owner(id: String): ViewModelStoreOwner = object : ViewModelStoreOwner {
+        override val viewModelStore: ViewModelStore get() = stores.getOrPut(id) { ViewModelStore() }
+    }
+
+    /** A review screen shows [id] until the returned function is called. */
+    fun shows(id: String): () -> Unit {
+        shown.merge(id, 1, Int::plus)
+        return {
+            if (shown.merge(id, -1, Int::plus) == 0) shown.remove(id)
+            keepOnly(kept)
+        }
+    }
+
+    /** Clears every review's store but [id]'s (null: all) that no screen shows. */
+    fun keepOnly(id: String?) {
+        kept = id
+        for (k in stores.keys.filter { it != id && it !in shown }) stores.remove(k)?.clear()
+    }
+
+    /** The reviews with a view model store (tests). */
+    internal val open: Set<String> get() = stores.keys.toSet()
+
+    override fun onCleared() {
+        shown.clear()
+        keepOnly(null)
+    }
+}
+
+/** The review of [id] in [stores]. */
+@Composable
+fun reviewViewModel(id: String, deps: TrainingDeps, stores: ReviewStores): ReviewViewModel {
+    DisposableEffect(id, stores) { onDispose(stores.shows(id)) }
+    return viewModel(viewModelStoreOwner = remember(id, stores) { stores.owner(id) }) { ReviewViewModel(id, deps.review, deps.store) }
+}
+
+/** The review of [id] (its view model in [stores], kept while the review is open). */
+@Composable
+fun ScopedReview(id: String, deps: TrainingDeps, stores: ReviewStores, onDone: () -> Unit, modifier: Modifier = Modifier) {
+    TrainingReviewRoute(reviewViewModel(id, deps, stores), onDone, modifier)
 }
 
 /**
@@ -111,7 +244,7 @@ fun TrainingSetupRoute(vm: TrainingSetupViewModel, onStarted: () -> Unit) {
  * The screen stays on while a session runs.
  */
 @Composable
-fun TrainingRecordRoute(vm: RecordViewModel, onBack: () -> Unit, modifier: Modifier = Modifier) {
+fun TrainingRecordRoute(vm: RecordViewModel, onBack: () -> Unit, modifier: Modifier = Modifier, onReview: (id: String) -> Unit = {}) {
     val context = LocalContext.current
     val state by vm.state.collectAsStateWithLifecycle()
     val phase = state.rec.phase
@@ -135,6 +268,7 @@ fun TrainingRecordRoute(vm: RecordViewModel, onBack: () -> Unit, modifier: Modif
                 onBack()
             },
             openWifiSettings = { context.startActivitySafely(Intent(Settings.ACTION_WIFI_SETTINGS)) },
+            review = onReview,
         ),
         modifier,
     )
@@ -159,22 +293,62 @@ fun TrainingRecordRoute(vm: RecordViewModel, onBack: () -> Unit, modifier: Modif
 }
 
 /**
+ * Which training screen shows without the device: a review over the session over the list.
+ * Closing a review shows what is under it, the session it was opened from or the list.
+ */
+data class OfflineScreens(val session: Boolean = false, val review: String? = null) {
+    fun openReview(id: String) = copy(review = id)
+
+    fun closeReview() = copy(review = null)
+
+    companion object {
+        val Saver = listSaver<OfflineScreens, Any?>({ listOf(it.session, it.review) }, { OfflineScreens(it[0] as Boolean, it[1] as String?) })
+    }
+}
+
+/**
  * The training data opened from the connect screen (no device): the list, or the session
  * that still runs after the Bluetooth link was given up (the take goes on over Wi-Fi), until
- * the user leaves its end (DONE, FAILED).
+ * the user leaves its end (DONE, FAILED). [review]: a review left open when the link ended,
+ * shown first (its view model in [stores]); [onReview] hears which review is open (AppRoot
+ * hands it over when the link is back, and clears the others' view models).
  */
 @Composable
-fun OfflineTraining(deps: TrainingDeps, onClose: () -> Unit) {
+fun OfflineTraining(
+    deps: TrainingDeps,
+    stores: ReviewStores,
+    onClose: () -> Unit,
+    review: String? = null,
+    onReview: (String?) -> Unit = {},
+) {
     val phase by deps.controller.phase.collectAsStateWithLifecycle()
-    var showSession by rememberSaveable { mutableStateOf(phase.active) }
-    LaunchedEffect(phase.active) { if (phase.active) showSession = true }
+    var screens by rememberSaveable(stateSaver = OfflineScreens.Saver) { mutableStateOf(OfflineScreens(phase.active, review)) }
+    LaunchedEffect(phase.active) { if (phase.active) screens = screens.copy(session = true) }
+    val reported by rememberUpdatedState(onReview)
+    LaunchedEffect(screens.review) { reported(screens.review) }
+    val closeReview = { screens = screens.closeReview() }
     // The record screen's own Back handling (finish?) runs through the dispatcher: no arrow there.
-    OfflineFrame(if (showSession) "Recording" else "Training data", onBack = if (showSession) null else onClose) { m ->
-        if (showSession) {
-            TrainingRecordRoute(viewModel { RecordViewModel(deps.controller, null) }, onBack = { showSession = false }, m)
+    val title = when {
+        screens.review != null -> "Review"
+        screens.session -> "Recording"
+        else -> "Training data"
+    }
+    OfflineFrame(title, onBack = if (screens.review != null) closeReview else if (screens.session) null else onClose) { m ->
+        val id = screens.review
+        if (id != null) {
+            BackHandler(onBack = closeReview)
+            ScopedReview(id, deps, stores, onDone = closeReview, m)
+        } else if (screens.session) {
+            TrainingRecordRoute(
+                viewModel { RecordViewModel(deps.controller, null) }, onBack = { screens = screens.copy(session = false) }, m,
+                onReview = { screens = screens.openReview(it) },
+            )
         } else {
             BackHandler(onBack = onClose)
-            TrainingListRoute(viewModel { TrainingListViewModel(deps.store, deps.controller, null) }, onOpenSession = { showSession = true }, m)
+            TrainingListRoute(
+                viewModel { TrainingListViewModel(deps.store, deps.controller, null) },
+                onOpenSession = { screens = screens.copy(session = true) }, m, onOpenRecording = { screens = screens.openReview(it) },
+            )
         }
     }
 }

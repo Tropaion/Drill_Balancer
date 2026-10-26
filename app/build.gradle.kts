@@ -64,7 +64,9 @@ roborazzi {
 // back old images instead of rendering, so the unit tests always run for real.
 // The conformance tests read the firmware sources (and the stream's golden vector and the
 // dataset contract) at run time, so a change there alone must also make the tests run again.
-// DB_SIM_URL (the opt-in simulator check, README) is an input too.
+// DB_SIM_URL (the opt-in simulator check, README) is an input too, as are DB_FINALIZE_OUT and
+// DB_REVIEW_OUT (where FinalizerCrossCheckTest and ReviewValidatorExportTest leave recordings for
+// dbdata.validate, opt-in).
 tasks.withType<Test>().configureEach {
     outputs.cacheIf { false }
     inputs.files(
@@ -72,11 +74,15 @@ tasks.withType<Test>().configureEach {
             include(
                 "components/**/*.h", "components/**/*.c", "partitions.csv", "CMakeLists.txt", "test_host/**/*.c",
                 "test_host/**/vectors/*.bin", "tools/dataset/dbdata/contract/*.json",
+                "tools/dataset/fixtures/**",
             )
         },
     ).withPathSensitivity(PathSensitivity.RELATIVE).withPropertyName("firmwareSources")
-    inputs.property("simUrl", providers.environmentVariable("DB_SIM_URL").orElse(""))
-    providers.environmentVariable("DB_SIM_URL").orNull?.let { environment("DB_SIM_URL", it) }
+    for (name in listOf("DB_SIM_URL", "DB_FINALIZE_OUT", "DB_REVIEW_OUT")) {
+        val v = providers.environmentVariable(name)
+        inputs.property(name, v.orElse(""))
+        v.orNull?.let { environment(name, it) }
+    }
 }
 
 dependencies {

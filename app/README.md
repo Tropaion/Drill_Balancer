@@ -170,9 +170,17 @@ app, and run the tests.
 *Device → Recordings* (under Training data; or *Training data* on the connect screen, where the
 list works without a device) lists the recordings on the phone. *New
 recording* asks for the session's labels (material, thickness, mode, bit,
-drill; the taxonomy of the dataset contract, remembered for the next
-session) and the recording settings (hammer mode records ±16 g, the
-microphones, their gain, the longest take), then opens a session:
+drill type, motor, drill model; the taxonomy of the dataset contract,
+remembered for the next session; a setup kept by an older app loads the
+drill type and motor as unknown) and the recording settings (hammer mode records ±16 g, the
+microphones, their gain, the longest take), then opens a session. The
+drill type is *Drill/driver*, *Combi drill (hammer)*, *SDS rotary
+hammer* or *Impact driver*; the motor *Brushed*, *Brushless* or *Corded
+(AC)* (a corded drill is said by its motor); both also *Unknown* or
+*Other…* with a text. Hammer mode with a drill/driver or an impact
+driver, and screw mode with an SDS rotary hammer, show the hint the
+dataset validator gives as its warning `W_MODE_TOOL`; Start still records.
+A session opens in three steps:
 
 1. **OPEN** over BLE (the first time this pairs, as any protected action).
    The device starts its Wi-Fi soft-AP; `rec_state` (an authenticated read,
@@ -194,10 +202,99 @@ microphones, their gain, the longest take), then opens a session:
 Each take is one folder `files/recordings/<recording id>/` with
 `stream.dbr`, the stream's bytes exactly as received (synced to storage
 once a second), and `take.json` (ids, labels, the phone's clock, how the
-take ended). Milestone 6 turns them into the dataset files; a take whose
-END never came is kept as *Interrupted*. After a crash the journals the
-app was writing are cut to their last complete record and marked
-interrupted at the next start.
+take ended). A take whose END never came is kept as *Interrupted*. After
+a crash the journals the app was writing are cut to their last complete
+record and marked interrupted at the next start.
+
+### Finalize and auto-labels
+
+When a take ends (and at the next start for any take left without them)
+the app writes the take's **dataset files** next to its journal
+(`recorder/export/Finalizer`): `imu.csv.gz`, `level.csv.gz`, `audio.flac`,
+`audio_sync.csv`, `device_events.csv`, `meta.json` and `events.json`, as
+the dataset contract has them and as `dbdata.dbrec export` writes them
+from the same bytes (`FinalizerCrossCheckTest`). It then **labels** the
+take (`recorder/label`): a Kotlin port of `dbdata.autodetect` (detector
+`dbauto/1.1.0`; its parameters are the contract's `autodetect_params.json`,
+shipped as an asset) finds the motor runs, contacts, breakthroughs and
+retracts, stalls and kickbacks, and suggests wobble, wander and speech.
+events.json gets its labels (source auto, `detector` with the parameters'
+sha256), `meta.review` says `auto_only`, and `meta.derived` holds the
+orientation and off angle from the device's LEVEL during drilling. The
+row then reads *Needs review*. A 20-minute take labels in about 6 s on a
+desktop JVM. Phone-only files sit next to them and are never uploaded:
+`events.auto.json` (the detector's labels, for *Reset all to auto*),
+`events.draft.json` (an unsaved review) and `lanes.bin` (the review's
+signals).
+
+The heavy part of labelling (the recording read whole, the detector, the
+review's signal lanes) runs one at a time for the whole app, whether the
+background labeller or a review asks for it, so no two detector or lane
+computations hold a long take at once (the finalize of another take is
+not part of it and can run meanwhile); opening a labelled recording does
+not wait for it. When the phone runs out of memory finalizing or labelling a take, the
+take is not tried again at the next start (it would fail again, every
+time); its review says so and offers *Try again*.
+
+### Review
+
+A row, or *Review* under the last take on the record screen, opens the
+review (it waits there if the labels are not ready yet): the session's
+labels and tool under the title, four signal
+lanes (IMU energy, sound, motor pitch, cutting noise; min/max per column
+of the visible range) with the phases the labels give as coloured bands,
+and one 56 dp handle per marker above them (in a second row where two
+would overlap).
+
+- **Move** a marker by dragging its handle (it snaps to the 10 ms frames)
+  or with the -100 / -10 / +10 / +100 ms buttons; *Reset* puts a moved
+  auto marker back. **Zoom** (- / +, down to 0.2 s) and **pan** (‹ ›)
+  with the buttons; *All* shows the whole take.
+- **Add** a marker of any type at the cursor (a tap on the lanes sets it);
+  **Delete** the selected one. Holes are numbered again by contact after
+  every change and keep their tags.
+- **Uncertain** auto markers (confidence below 0.6) are drawn dashed amber
+  and need a tap to confirm before Save; *Accept all* confirms every one
+  and saves.
+- **Tags** per hole: the outcome tags (*clean* and the problem tags exclude
+  each other; an *auto* badge where the detector set one), the off-angle
+  tag, set automatically from the device's level, and the detector's
+  suggestions (stuck, wobble, wander, speech) to keep or drop.
+- **Save** checks the event order first (the grammar `dbdata.validate`
+  enforces; the message names the marker and the fix, for example
+  "Contact at 2.14 s: the motor is off there. Add Motor on before it, or
+  move it."). It then writes events.json (revision + 1; moved markers
+  `edited` with `auto_t_us`, added ones source user), `meta.review`
+  (reviewed, by the install id, with the number of changed labels) and
+  `meta.derived` recomputed for the new labels. The row reads *Saved*.
+  Every change is kept as a draft at once, so Back (or the app dying)
+  loses nothing; *Discard* drops the draft. *Discard* asks first when
+  something changed, and *Reset all to auto* when it would drop edits.
+- The review needs no device: when the Bluetooth link ends it stays open
+  (on the connect screen's side), and the link coming back shows it on the
+  tabs again. It is the same review on both sides, and across a rotation
+  too: the edits, the view and a Save under way go on.
+- With TalkBack or Switch Access a handle is a button (select, or confirm
+  an uncertain marker), and the lanes have *Cursor back* / *Cursor
+  forward* actions.
+- A recording whose files could not be written (the phone full) reads
+  *Interrupted* in the list and its review says so with *Try again*; the
+  app also tries again at its next start. Every row but the take being
+  recorded opens the review.
+
+Checks against the Python reference: `AutoDetectVectorsTest` replays the
+eight golden fixtures of `firmware/tools/dataset/fixtures/autodetect`
+(features within 1e-6, the same events, spans and holes, times within a
+frame, confidences within 0.01; also the app's FLAC reader against the
+tests' full decoder). `PhasesCrossCheckTest` replays `fixtures/labels`:
+the phases, grammar issues and derived labels `dbdata.labels` gives for
+279 label sets, which must match exactly. Opt-in, reviewed recordings for
+the validator:
+
+```sh
+DB_REVIEW_OUT=/tmp/review_out ./gradlew testDebugUnitTest --tests "*ReviewValidatorExportTest"
+cd ../firmware/tools/dataset && .venv/bin/python -m dbdata.validate /tmp/review_out
+```
 
 What survives what: a **BLE drop** does not stop a take (the device keeps it
 120 s; *Stop* then closes the stream, which stops it too). A **dropped

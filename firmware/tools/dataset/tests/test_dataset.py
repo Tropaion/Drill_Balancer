@@ -65,6 +65,9 @@ class DatasetTest(F.TempDirTest):
         self.assertEqual(self.ids(self.ds(filters={"material": "wood/hardwood"}, **kw)), ["0004"])
         self.assertEqual(self.ids(self.ds(filters={"material": "woo"}, **kw)), [])
         self.assertEqual(self.ids(self.ds(filters={"mode": ["hammer", "screw"]}, **kw)), ["0002", "0005"])
+        self.assertEqual(self.ids(self.ds(filters={"drill_type": "combi_drill"}, **kw)), ["0002"])
+        self.assertEqual(self.ids(self.ds(filters={"drill_type": "drill", "motor": "brushless"}, **kw)),
+                         ["0001", "0004", "0005"])
         self.assertEqual(self.ids(self.ds(filters={"problems": "wobble"}, **kw)), ["0005"])
         self.assertEqual(self.ids(self.ds(filters={"phases": "breakthrough", "has_audio": 0}, **kw)), ["0002"])
         self.assertEqual(self.ids(self.ds(filters={"recording_id": lambda s: s.str.endswith("4")}, **kw)),

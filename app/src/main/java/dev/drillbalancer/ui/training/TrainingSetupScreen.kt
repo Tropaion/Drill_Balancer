@@ -1,6 +1,5 @@
 package dev.drillbalancer.ui.training
 
-import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -42,13 +41,13 @@ import dev.drillbalancer.ui.components.ActionButton
 import dev.drillbalancer.ui.components.ButtonKind
 import dev.drillbalancer.ui.components.DbIcons
 import dev.drillbalancer.ui.components.Panel
+import dev.drillbalancer.ui.components.PanelRow
 import dev.drillbalancer.ui.components.SectionTitle
 import dev.drillbalancer.ui.components.SegmentedSelector
 import dev.drillbalancer.ui.components.StepButton
 import dev.drillbalancer.ui.components.TouchHeight
 import dev.drillbalancer.ui.formatDuration
 import dev.drillbalancer.ui.theme.Amber
-import dev.drillbalancer.ui.theme.Dark
 import dev.drillbalancer.ui.theme.Green
 import dev.drillbalancer.ui.theme.Grey
 
@@ -98,6 +97,15 @@ fun TrainingSetupScreen(
         SectionTitle("Drill")
         Labeled("Mode") {
             SegmentedSelector(Taxonomy.MODES.map { it.id to it.label }, s.mode) { set(s.copy(mode = it)) }
+        }
+        PickerField("Drill type", Taxonomy.label(Taxonomy.DRILL_TYPES, s.drillType, s.drillTypeOther)) { picker = "drill_type" }
+        if (s.drillType == Taxonomy.OTHER) {
+            TextEntry("Which drill type", s.drillTypeOther, Taxonomy.OTHER_TEXT_MAX) { set(s.copy(drillTypeOther = it)) }
+        }
+        modeToolHint(s)?.let { Text(it, style = MaterialTheme.typography.bodyMedium, color = Amber) }
+        PickerField("Motor", Taxonomy.label(Taxonomy.MOTORS, s.motor, s.motorOther)) { picker = "motor" }
+        if (s.motor == Taxonomy.OTHER) {
+            TextEntry("Which motor", s.motorOther, Taxonomy.OTHER_TEXT_MAX) { set(s.copy(motorOther = it)) }
         }
         PickerField("Bit", Taxonomy.label(Taxonomy.BIT_TYPES, s.bitType, s.bitOther)) { picker = "bit" }
         if (s.bitType == Taxonomy.OTHER) {
@@ -155,6 +163,14 @@ fun TrainingSetupScreen(
             set(s.copy(bitType = it))
             picker = null
         }
+        "drill_type" -> OptionDialog("Drill type", Taxonomy.choices(Taxonomy.DRILL_TYPES), s.drillType, onDismiss = { picker = null }) {
+            set(s.copy(drillType = it))
+            picker = null
+        }
+        "motor" -> OptionDialog("Motor", Taxonomy.choices(Taxonomy.MOTORS), s.motor, onDismiss = { picker = null }) {
+            set(s.copy(motor = it))
+            picker = null
+        }
     }
 }
 
@@ -185,21 +201,12 @@ private fun Labeled(label: String, content: @Composable () -> Unit) {
 
 @Composable
 private fun PickerField(label: String, value: String, onClick: () -> Unit) {
-    Surface(
-        onClick = onClick,
-        modifier = Modifier.fillMaxWidth().heightIn(min = 72.dp),
-        shape = RoundedCornerShape(16.dp),
-        color = MaterialTheme.colorScheme.surfaceContainer,
-        contentColor = MaterialTheme.colorScheme.onSurface,
-        border = BorderStroke(1.dp, Dark),
-    ) {
-        Row(Modifier.padding(horizontal = 16.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
-            Column(Modifier.weight(1f)) {
-                Text(label, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                Text(value, style = MaterialTheme.typography.titleMedium)
-            }
-            Icon(DbIcons.Chevron, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
+    PanelRow(onClick) {
+        Column(Modifier.weight(1f)) {
+            Text(label, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text(value, style = MaterialTheme.typography.titleMedium)
         }
+        Icon(DbIcons.Chevron, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
     }
 }
 
@@ -289,6 +296,23 @@ private fun NumberEntry(label: String, text: String, unit: String, max: Double =
         modifier = Modifier.fillMaxWidth(),
         colors = OutlinedTextFieldDefaults.colors(unfocusedBorderColor = Grey),
     )
+}
+
+/**
+ * The validator's W_MODE_TOOL in plain words (Taxonomy.modeToolConflict: hammer mode with a
+ * drill/driver or an impact driver, screw mode with an SDS rotary hammer), else null. Only a
+ * hint: Start still records.
+ */
+internal fun modeToolHint(s: SessionSetup): String? {
+    if (!Taxonomy.modeToolConflict(s.mode, s.drillType)) return null
+    val mode = Taxonomy.label(Taxonomy.MODES, s.mode)
+    val tool = when (s.drillType) {
+        "drill" -> "a drill/driver (it has no hammer)"
+        "impact_driver" -> "an impact driver"
+        "rotary_hammer" -> "an SDS rotary hammer"
+        else -> "a ${Taxonomy.label(Taxonomy.DRILL_TYPES, s.drillType).lowercase()}"
+    }
+    return "$mode mode does not fit $tool: check the mode or the drill type. The dataset check will warn about it."
 }
 
 private fun plain(v: Double): String = if (v % 1.0 == 0.0) v.toLong().toString() else v.toString()

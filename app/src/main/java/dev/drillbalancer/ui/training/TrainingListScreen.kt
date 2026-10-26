@@ -4,16 +4,15 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -24,10 +23,13 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import dev.drillbalancer.recorder.RecordPhase
+import dev.drillbalancer.recorder.RecordingStage
 import dev.drillbalancer.ui.components.ActionButton
 import dev.drillbalancer.ui.components.ButtonKind
+import dev.drillbalancer.ui.components.DbIcons
 import dev.drillbalancer.ui.components.MessageBanner
 import dev.drillbalancer.ui.components.Panel
+import dev.drillbalancer.ui.components.PanelRow
 import dev.drillbalancer.ui.components.SectionTitle
 import dev.drillbalancer.ui.components.UiMessage
 import dev.drillbalancer.ui.formatBytes
@@ -41,6 +43,7 @@ class TrainingListActions(
     val newRecording: () -> Unit = {},
     val openSession: () -> Unit = {},
     val reload: () -> Unit = {},
+    val openRecording: (id: String) -> Unit = {},
 )
 
 /** The recordings on the phone, and the way to a new one. Works without a device. */
@@ -89,31 +92,35 @@ fun TrainingListScreen(state: TrainingListUiState, actions: TrainingListActions,
                         "you set before. Takes stay on the phone until they are reviewed and uploaded.",
                 )
             }
-            else -> for (row in state.rows) RecordingRowItem(row)
+            else -> for (row in state.rows) RecordingRowItem(row) { actions.openRecording(row.id) }
         }
     }
 }
 
+/** A recording; one with its dataset files opens its review. */
 @Composable
-private fun RecordingRowItem(row: RecordingRow) {
-    Panel(Modifier.heightIn(min = 72.dp), padding = PaddingValues(horizontal = 16.dp, vertical = 12.dp), spacing = 6.dp) {
-        Text(row.title, style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
-        Text(
-            row.detail, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant,
-            maxLines = 1, overflow = TextOverflow.Ellipsis,
-        )
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Badge(row.stage.label, stageColor(row.stage))
-            Badge(row.upload.label, Grey)
+private fun RecordingRowItem(row: RecordingRow, onOpen: () -> Unit) {
+    PanelRow(onOpen, enabled = row.canOpen) {
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Text(row.title, style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text(
+                row.detail, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1, overflow = TextOverflow.Ellipsis,
+            )
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Badge(row.stage.label, stageColor(row.stage))
+                Badge(row.upload.label, Grey)
+            }
         }
+        if (row.canOpen) Icon(DbIcons.Chevron, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
     }
 }
 
-private fun stageColor(s: LocalStage): Color = when (s) {
-    LocalStage.RECORDING -> Red
-    LocalStage.INTERRUPTED -> Amber
-    LocalStage.NEEDS_REVIEW -> Blue
-    LocalStage.SAVED -> Green
+private fun stageColor(s: RecordingStage): Color = when (s) {
+    RecordingStage.RECORDING -> Red
+    RecordingStage.INTERRUPTED -> Amber
+    RecordingStage.NEEDS_REVIEW -> Blue
+    RecordingStage.SAVED -> Green
 }
 
 @Composable

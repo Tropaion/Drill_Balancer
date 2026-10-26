@@ -206,6 +206,70 @@ class ValidateTest(F.TempDirTest):
             {"id": "e99", "type": "sneeze", "t_us": F.us(2.0), "source": "user", "confidence": 1.0}))
         self.assertFails(p, "E_TAXONOMY")
 
+    def test_drill_type_and_motor(self):
+        tax = contract.load_taxonomy()
+        n = iter(range(100, 200))
+
+        def rec(**kw):
+            return self.write(F.build(**kw), F.RID.replace("9f3a", f"{next(n):04d}"))
+
+        # every id of both fields, and unknown / other (with its text), validates cleanly
+        for dt in [*tax.fields["drill_type"], "unknown"]:
+            for motor in [*tax.fields["motor"], "unknown"]:
+                with self.subTest(drill_type=dt, motor=motor):
+                    self.assertEqual(self.codes(rec(mode="drill", drill_type=dt, motor=motor)), set())
+        p = rec(drill_type="other", motor="other")
+        F.edit_json(p / "meta.json", lambda m: m["session"].update(
+            other_text={"drill_type": "Magnetic drill", "motor": "Pneumatic"}))
+        self.assertEqual(self.codes(p), set())
+        # other without its text, an unknown id, a missing key
+        cases = {
+            "drill_type other": (dict(drill_type="other"), None, "E_OTHER_TEXT", "other_text.drill_type"),
+            "motor other": (dict(motor="other"), None, "E_OTHER_TEXT", "other_text.motor"),
+            "drill_type id": (dict(drill_type="hammer_drill"), None, "E_TAXONOMY", "not a drill_type id"),
+            "motor id": (dict(motor="corded"), None, "E_TAXONOMY", "not a motor id"),
+            "no type": ({}, lambda m: m["session"]["drill"].pop("type"), "E_SCHEMA_META", "'type' is a required"),
+            "no motor": ({}, lambda m: m["session"]["drill"].pop("motor"), "E_SCHEMA_META",
+                         "'motor' is a required"),
+            "null type": ({}, lambda m: m["session"]["drill"].update(type=None), "E_SCHEMA_META", "drill/type"),
+        }
+        for name, (kw, fn, code, text) in cases.items():
+            with self.subTest(name):
+                p = rec(**kw)
+                if fn:
+                    F.edit_json(p / "meta.json", fn)
+                rep = self.assertFails(p, code)
+                self.assertIn(text, " ".join(i.message for i in rep.issues))
+
+    def test_mode_and_drill_type_contradictions_warn(self):
+        n = iter(range(200, 300))
+        warn = {("hammer", "drill"), ("hammer", "impact_driver"), ("screw", "rotary_hammer")}
+        tax = contract.load_taxonomy()
+        for mode in [*tax.fields["mode"], "unknown", "other"]:
+            for dt in [*tax.fields["drill_type"], "unknown", "other"]:
+                with self.subTest(mode=mode, drill_type=dt):
+                    p = self.write(F.build(mode=mode, drill_type=dt), F.RID.replace("9f3a", f"{next(n):04d}"))
+                    if "other" in (mode, dt):
+                        F.edit_json(p / "meta.json", lambda m: m["session"].update(
+                            other_text={"mode": "Chisel", "drill_type": "Magnetic drill"}))
+                    rep = V.validate_recording(p)
+                    self.assertTrue(rep.ok, rep.codes())       # a warning, never an error
+                    self.assertEqual(rep.codes(), {"W_MODE_TOOL"} if (mode, dt) in warn else set())
+                    if (mode, dt) in warn:
+                        self.assertEqual([i.message for i in rep.issues],
+                                         [f"session.mode '{mode}' contradicts session.drill.type '{dt}'"])
+        self.assertTrue(tax.mode_tool_conflict("hammer", "drill"))
+        self.assertFalse(tax.mode_tool_conflict("drill", "rotary_hammer"))
+        self.assertEqual(tax.problems(), [])
+        tdoc = copy.deepcopy(tax.doc)       # ids are resolved through replaced_by first
+        tdoc["fields"]["drill_type"].append({"id": "driver_old", "added": 1, "deprecated": True, "replaced_by": "drill"})
+        self.assertTrue(contract.Taxonomy(tdoc).mode_tool_conflict("hammer", "driver_old"))
+        tdoc = copy.deepcopy(tax.doc)
+        tdoc["mode_tool_conflicts"]["conflicts"]["chisel"] = ["sds_max"]
+        self.assertEqual(contract.Taxonomy(tdoc).problems(),
+                         ["mode_tool_conflicts: chisel is not a mode id",
+                          "mode_tool_conflicts: sds_max is not a drill_type id"])
+
     def test_ids_and_files(self):
         p = self.write(F.build(), "20261026T143012Z_k7q2_zzzz", keep_id=True)
         self.assertFails(p, "E_ID")

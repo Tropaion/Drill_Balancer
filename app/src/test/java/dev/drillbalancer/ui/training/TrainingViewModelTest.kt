@@ -9,6 +9,7 @@ import dev.drillbalancer.recorder.JournalStats
 import dev.drillbalancer.recorder.RecordPhase
 import dev.drillbalancer.recorder.RecordingController
 import dev.drillbalancer.recorder.RecordingEntry
+import dev.drillbalancer.recorder.RecordingStage
 import dev.drillbalancer.recorder.RecordingStore
 import dev.drillbalancer.recorder.Secure
 import dev.drillbalancer.recorder.SessionSetup
@@ -81,9 +82,10 @@ class TrainingViewModelTest {
         val c = controller(fake)
         val vm = TrainingSetupViewModel(prefs, fake, c, PairingGate(fake, backgroundScope))
         assertEquals("metal/steel", vm.state.value.setup.material)
-        vm.change(vm.state.value.setup.copy(mode = "hammer", notes = "n".repeat(300)))
-        assertTrue(vm.start())
+        vm.change(vm.state.value.setup.copy(mode = "hammer", notes = "n".repeat(300), drillType = "drill", motor = "other", motorOther = "m".repeat(50)))
+        assertTrue("a mode contradicting the tool does not stop Start", vm.start())
         assertEquals("hammer", prefs.setup.value.mode)
+        assertEquals(listOf("drill", "other", "m".repeat(40)), prefs.setup.value.let { listOf(it.drillType, it.motor, it.motorOther) })
         assertEquals(200, prefs.setup.value.notes.length)
         // OPEN went out; the stream link fails here (no network in this test).
         assertEquals(listOf("read", "open"), fake.recorderLog.take(2))
@@ -107,22 +109,65 @@ class TrainingViewModelTest {
         assertEquals("Metal · steel · hammer", vm.state.value.title)
     }
 
+    /** A recording changed by the finalizer or a saved review (store.changes) reloads the list. */
+    @Test
+    fun theListReloadsWhenARecordingChanges() = runTest(main.dispatcher) {
+        val store = RecordingStore(File(tmp.root, "rec"))
+        val c = RecordingController(
+            FakeDeviceSession(), store, StreamLinkFactory { throw LinkException("no network in this test", LinkException.Kind.CONNECT) },
+            { "k7q2abcdefghijkl" }, AppInfo("0.1.0", "t", 37), backgroundScope, io = main.dispatcher,
+        )
+        val vm = TrainingListViewModel(store, c, null, io = main.dispatcher)
+        advanceUntilIdle()
+        assertEquals(listOf<String>(), vm.state.value.rows.map { it.id })
+        val j = TakeJournal(
+            recordingId = "20261026T143012Z_k7q2_9f3a", sessionId = "20261026T1430_k7q2", takeId = 7, reviewer = "k7q2",
+            state = JournalState.COMPLETE, startedUtc = "2026-10-26T14:30:12.418Z", setup = SessionSetup(),
+            take = TakeSettings("RAW448", 3, 6, 300), app = AppInfo("0.1.0", "t", 37), link = "lan",
+        )
+        store.create(j, 1_000) { 0L }.close()
+        advanceUntilIdle()
+        assertEquals("not reloaded by itself", 0, vm.state.value.rows.size)
+        store.changed(j.recordingId)
+        advanceUntilIdle()
+        assertEquals(listOf(j.recordingId), vm.state.value.rows.map { it.id })
+    }
+
+    @Test
+    fun theToolInOneLine() {
+        assertEquals("", toolLine(SessionSetup()))
+        assertEquals(
+            "Drill/driver · Brushless · Bosch GSR 18V-55",
+            toolLine(SessionSetup(drillType = "drill", motor = "brushless", drillModel = " Bosch GSR 18V-55 ")),
+        )
+        assertEquals("Corded (AC)", toolLine(SessionSetup(motor = "universal_ac")))
+        // "other" without its text is unknown in meta.session (Finalizer.sessionLabels): left out too
+        assertEquals("Magnetic drill · Makita", toolLine(SessionSetup(drillType = "other", drillTypeOther = "Magnetic drill", motor = "other", drillModel = "Makita")))
+        assertEquals("Air", toolLine(SessionSetup(drillType = "other", drillTypeOther = "  ", motor = "other", motorOther = "Air")))
+    }
+
     @Test
     fun listRows() {
-        fun entry(id: String, state: JournalState, bytes: Long, finalized: Boolean = false, s: SessionSetup = SessionSetup()) = RecordingEntry(
+        fun entry(
+            id: String, state: JournalState, bytes: Long, review: String? = null, s: SessionSetup = SessionSetup(), storageError: String? = null,
+        ) = RecordingEntry(
             TakeJournal(
                 recordingId = id, sessionId = "s", takeId = 1, reviewer = "k7q2", state = state, startedUtc = "2026-10-26T14:30:12.418Z",
                 setup = s, take = TakeSettings("RAW448", 3, 6, 300), app = AppInfo("0.1.0", "t", 37), link = "ap",
                 stats = JournalStats(deviceUs = 42_300_000),
             ),
-            bytes, finalized,
+            bytes, bytes, review, storageError,
         )
         val rows = recordingRows(
             listOf(
                 entry("a", JournalState.COMPLETE, 1_950_000, s = SessionSetup(material = "wood/softwood", thicknessMm = 38.0)),
                 entry("b", JournalState.INTERRUPTED, 512, s = SessionSetup(material = "other", materialOther = "Cork", mode = "hammer", thicknessMm = 12.5)),
                 entry("c", JournalState.RECORDING, 0),
-                entry("d", JournalState.COMPLETE, 0, finalized = true),
+                entry("d", JournalState.COMPLETE, 0, review = "reviewed"),
+                entry("e", JournalState.INTERRUPTED, 0, review = "auto_only"),
+                // the phone full: its dataset files could not be written, or its journal not closed
+                entry("f", JournalState.COMPLETE, 0, storageError = "No space left on device"),
+                entry("g", JournalState.RECORDING, 0, storageError = "No space left on device"),
             ),
             ZoneOffset.UTC,
         )
@@ -131,9 +176,15 @@ class TrainingViewModelTest {
         assertEquals("Cork 12.5 mm · hammer", rows[1].title)
         assertEquals("Unknown · drill", rows[2].title)
         assertEquals(
-            listOf(LocalStage.NEEDS_REVIEW, LocalStage.INTERRUPTED, LocalStage.RECORDING, LocalStage.SAVED),
+            listOf(
+                RecordingStage.NEEDS_REVIEW, RecordingStage.INTERRUPTED, RecordingStage.RECORDING, RecordingStage.SAVED, RecordingStage.NEEDS_REVIEW,
+                RecordingStage.INTERRUPTED, RecordingStage.INTERRUPTED,
+            ),
             rows.map { it.stage },
         )
+        // every recording not being recorded opens: the review waits for its files, or says why
+        // there are none (with Try again after a storage error)
+        assertEquals(listOf(true, true, false, true, true, true, true), rows.map { it.canOpen })
         assertTrue(rows.all { it.upload == UploadStage.NONE })
     }
 }

@@ -68,12 +68,14 @@ def build(*, rid=RID, session_id=SESSION, duration_s=7.0, odr_true=448.0, odr_no
           audio=True, audio_rate_true=16000.9, audio_offset_us=-1500, filled=(), gap=None,
           impulse_s=None, events=EVENTS, spans=(), elevation_deg=0.4, level_mode="wall",
           target_deg=0.0, tol_deg=0.5, material="wood/softwood", mode="drill",
-          bit_type="brad_point", review="reviewed", seed=1, start_utc=None) -> dict:
+          bit_type="brad_point", drill_type=None, motor="brushless", review="reviewed", seed=1,
+          start_utc=None) -> dict:
     """The parts of one recording: meta, events, imu, level, audio, audio_sync.
 
     filled: [(t0_s, t1_s, fraction)] marks samples as interpolated; gap:
     (t0_s, t1_s) drops samples (a transport gap); impulse_s puts a spike in
-    IMU az and both audio channels at that device time.
+    IMU az and both audio channels at that device time. drill_type None: a
+    combi drill for mode hammer, else a drill/driver (no W_MODE_TOOL).
     """
     rng = np.random.default_rng(seed)
     n = int(duration_s * odr_true)
@@ -161,7 +163,9 @@ def build(*, rid=RID, session_id=SESSION, duration_s=7.0, odr_true=448.0, odr_no
         "level": {"mode": level_mode, "target_deg": target_deg, "tol_deg": tol_deg, "near_deg": 2.0},
         "session": {"material": material, "layers": [{"material": material, "thickness_mm": 38}],
                     "mode": mode, "bit": {"type": bit_type, "diameter_mm": 8},
-                    "drill": {"model": "Bosch GSR 18V-55", "gear": 2, "speed_setting": None}, "notes": ""},
+                    "drill": {"type": drill_type or ("combi_drill" if mode == "hammer" else "drill"),
+                              "motor": motor, "model": "Bosch GSR 18V-55", "gear": 2, "speed_setting": None},
+                    "notes": ""},
         "derived": {"orientation": "unknown", "off_angle_deg": None, "tags": []},
         "review": {"status": review, "detector": "dbauto/1.0.0", "revision": 1, "edited_events": 0,
                    "reviewer": "k7q2"},

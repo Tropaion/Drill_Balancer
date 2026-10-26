@@ -1,0 +1,25 @@
+{
+  "stream": "rich",
+  "cut": 0.62,
+  "take_id": 5,
+  "recording_id": "20261027T091500Z_m3xa_1c8y",
+  "session_id": "20261027T0912_m3xa",
+  "start_utc": "2026-10-27T09:15:00.007Z",
+  "setup": {},
+  "session": {
+    "material": "unknown",
+    "mode": "drill",
+    "bit": {
+      "type": "unknown",
+      "diameter_mm": null
+    },
+    "drill": {
+      "type": "unknown",
+      "motor": "unknown",
+      "model": "",
+      "gear": null,
+      "speed_setting": null
+    },
+    "notes": ""
+  }
+}

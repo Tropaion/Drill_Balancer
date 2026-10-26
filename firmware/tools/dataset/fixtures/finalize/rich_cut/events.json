@@ -1,0 +1,13 @@
+{
+  "schema": "drillbalancer.events/1",
+  "taxonomy_version": 1,
+  "recording_id": "20261027T091500Z_m3xa_1c8y",
+  "revision": 0,
+  "coverage_us": [
+    2000150224,
+    2001896450
+  ],
+  "events": [],
+  "spans": [],
+  "holes": []
+}

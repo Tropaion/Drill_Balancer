@@ -32,6 +32,39 @@ class DatasetContractTest {
         assertEquals(ids("material"), Taxonomy.MATERIALS.map { it.id })
         assertEquals(ids("mode"), Taxonomy.MODES.map { it.id })
         assertEquals(ids("bit_type"), Taxonomy.BIT_TYPES.map { it.id })
+        assertEquals(ids("drill_type"), Taxonomy.DRILL_TYPES.map { it.id })
+        assertEquals(ids("motor"), Taxonomy.MOTORS.map { it.id })
+    }
+
+    /** The setup's hint uses the validator's table (W_MODE_TOOL): the same pairs, unknown and other never. */
+    @Test
+    fun modeToolConflictsAreTheContracts() {
+        val table = json("taxonomy.v1.json")["mode_tool_conflicts"]!!.jsonObject["conflicts"]!!.jsonObject
+            .mapValues { (_, v) -> v.jsonArray.map { it.jsonPrimitive.content }.toSet() }
+        assertEquals(table, Taxonomy.MODE_TOOL_CONFLICTS)
+        val types = Taxonomy.choices(Taxonomy.DRILL_TYPES).map { it.id }
+        val pairs = Taxonomy.MODES.flatMap { m -> types.filter { Taxonomy.modeToolConflict(m.id, it) }.map { m.id to it } }
+        assertEquals(listOf("hammer" to "drill", "hammer" to "impact_driver", "screw" to "rotary_hammer"), pairs)
+        for (special in listOf(Taxonomy.UNKNOWN, Taxonomy.OTHER)) {
+            for (m in Taxonomy.MODES) assertEquals(false, Taxonomy.modeToolConflict(m.id, special))
+        }
+    }
+
+    /** A setup kept by an app from before drill_type and motor loads them as unknown; a new one keeps them. */
+    @Test
+    fun anOlderKeptSetupLoadsTheToolAsUnknown() {
+        val old = "{\"material\":\"metal/steel\",\"material_other\":\"\",\"thickness_mm\":4.0,\"mode\":\"drill\",\"bit_type\":\"twist_hss\"," +
+            "\"bit_other\":\"\",\"bit_diameter_mm\":6.0,\"drill_model\":\"Bosch\",\"gear\":2,\"speed_setting\":null,\"notes\":\"\"," +
+            "\"mic_mask\":3,\"gain_db\":6,\"max_s\":300}"
+        val s = SetupStore.decode(old)
+        assertEquals(SessionSetup(material = "metal/steel", thicknessMm = 4.0, bitType = "twist_hss", bitDiameterMm = 6.0, drillModel = "Bosch", gear = 2, maxS = 300), s)
+        assertEquals(listOf(Taxonomy.UNKNOWN, "", Taxonomy.UNKNOWN, ""), listOf(s.drillType, s.drillTypeOther, s.motor, s.motorOther))
+        val tool = SessionSetup(drillType = "other", drillTypeOther = "Magnetic drill", motor = "universal_ac")
+        val text = SetupStore.encode(tool)
+        assertTrue(text, "\"drill_type\":\"other\",\"drill_type_other\":\"Magnetic drill\",\"motor\":\"universal_ac\",\"motor_other\":\"\"" in text)
+        assertEquals(tool, SetupStore.decode(text))
+        assertEquals(SessionSetup(), SetupStore.decode("not json"))
+        assertEquals(SessionSetup(), SetupStore.decode(null))
     }
 
     @Test
@@ -59,12 +92,17 @@ class DatasetContractTest {
         assertEquals(SessionSetup.NOTES_MAX, session["notes"]!!.jsonObject["maxLength"]!!.jsonPrimitive.int)
         val drill = session["drill"]!!.jsonObject["properties"]!!.jsonObject
         assertEquals(SessionSetup.DRILL_MODEL_MAX, drill["model"]!!.jsonObject["maxLength"]!!.jsonPrimitive.int)
+        // the tool: taxonomy ids, required (unknown when not known)
+        val required = session["drill"]!!.jsonObject["required"]!!.jsonArray.map { it.jsonPrimitive.content }
+        assertEquals(listOf("type", "motor", "model", "gear", "speed_setting"), required)
+        assertEquals(listOf(Taxonomy.UNKNOWN, Taxonomy.UNKNOWN), SessionSetup().let { listOf(it.drillType, it.motor) })
 
         val s = SessionSetup(
             materialOther = "x".repeat(50), thicknessMm = -1.0, bitDiameterMm = 250.0, drillModel = "m".repeat(80), gear = 4,
-            notes = "n".repeat(300), micMask = 7, gainDb = 50, maxS = 5000,
+            notes = "n".repeat(300), micMask = 7, gainDb = 50, maxS = 5000, drillTypeOther = "t".repeat(41), motorOther = "m".repeat(60),
         ).sanitized()
         assertEquals(40, s.materialOther.length)
+        assertEquals(listOf(40, 40), listOf(s.drillTypeOther.length, s.motorOther.length))
         assertEquals(null, s.thicknessMm)
         assertEquals(null, s.bitDiameterMm)
         assertEquals(64, s.drillModel.length)

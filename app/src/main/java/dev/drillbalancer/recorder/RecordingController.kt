@@ -80,6 +80,8 @@ class RecordingController(
     private val timing: RecorderTiming = RecorderTiming(),
     private val clock: RecorderClock = RecorderClock.SYSTEM,
     private val random: Random = Random.Default,
+    // A take's journal was closed (complete or interrupted): the app finalizes it, off this thread.
+    private val takeFinished: (recordingId: String) -> Unit = {},
 ) {
     private val _state = MutableStateFlow(RecordingState(bleLinked = session.connection.value is ConnectionState.Connected))
     val state: StateFlow<RecordingState> = _state.asStateFlow()
@@ -654,8 +656,10 @@ class RecordingController(
         )
         try {
             s.writer.finish(state, reason, note, stats, clock.now())
+            takeFinished(s.writer.journal.recordingId)
         } catch (e: IOException) {
             Log.w(TAG, "closing the journal failed", e)
+            store.storageFailed(s.writer.journal.recordingId, e, ended = s.writer.journal)     // the review offers to try again
         }
         val endText = when {
             end != null -> RecReason.fromWire(end.reason)?.text ?: "ended"

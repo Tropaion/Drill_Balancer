@@ -34,6 +34,7 @@ class SubScreenTest {
                 composable<Dest.Training> {}
                 composable<Dest.TrainingSetup> {}
                 composable<Dest.TrainingRecord> {}
+                composable<Dest.TrainingReview> {}
             }
         }
         compose.runOnIdle { assertNull(subScreenOf(nav.currentDestination)) }
@@ -43,13 +44,14 @@ class SubScreenTest {
             Dest.Training to SubScreen.TRAINING,
             Dest.TrainingSetup to SubScreen.TRAINING_SETUP,
             Dest.TrainingRecord to SubScreen.TRAINING_RECORD,
+            Dest.TrainingReview("20261026T143012Z_k7q2_9f3a") to SubScreen.TRAINING_REVIEW,
         )) {
             compose.runOnIdle { nav.navigate(dest) }
             compose.runOnIdle { assertEquals("$dest", sub, subScreenOf(nav.currentDestination)) }
         }
         assertNull(subScreenOf(null))
         assertEquals(
-            listOf("Firmware update", "Training data", "New recording", "Recording"),
+            listOf("Firmware update", "Training data", "New recording", "Recording", "Review"),
             SubScreen.entries.map { it.title },
         )
         // No tab is a sub-screen.

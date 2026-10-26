@@ -20,6 +20,11 @@ data class SessionSetup(
     @SerialName("bit_type") val bitType: String = Taxonomy.UNKNOWN,
     @SerialName("bit_other") val bitOther: String = "",
     @SerialName("bit_diameter_mm") val bitDiameterMm: Double? = null,
+    // The tool (meta.session.drill.type / .motor); a setup saved before they existed loads them as unknown.
+    @SerialName("drill_type") val drillType: String = Taxonomy.UNKNOWN,
+    @SerialName("drill_type_other") val drillTypeOther: String = "",
+    val motor: String = Taxonomy.UNKNOWN,
+    @SerialName("motor_other") val motorOther: String = "",
     @SerialName("drill_model") val drillModel: String = "",
     val gear: Int? = null,
     @SerialName("speed_setting") val speedSetting: Double? = null,
@@ -35,6 +40,8 @@ data class SessionSetup(
     fun sanitized(): SessionSetup = copy(
         materialOther = materialOther.take(Taxonomy.OTHER_TEXT_MAX),
         bitOther = bitOther.take(Taxonomy.OTHER_TEXT_MAX),
+        drillTypeOther = drillTypeOther.take(Taxonomy.OTHER_TEXT_MAX),
+        motorOther = motorOther.take(Taxonomy.OTHER_TEXT_MAX),
         thicknessMm = thicknessMm?.takeIf { it > 0 && it.isFinite() },
         bitDiameterMm = bitDiameterMm?.takeIf { it > 0 && it <= BIT_DIAMETER_MAX_MM },
         drillModel = drillModel.take(DRILL_MODEL_MAX),
@@ -112,7 +119,35 @@ object Taxonomy {
         TaxonomyItem("auger", "Auger"),
     )
 
+    val DRILL_TYPES = listOf(
+        TaxonomyItem("drill", "Drill/driver"),
+        TaxonomyItem("combi_drill", "Combi drill (hammer)"),
+        TaxonomyItem("rotary_hammer", "SDS rotary hammer"),
+        TaxonomyItem("impact_driver", "Impact driver"),
+    )
+
+    val MOTORS = listOf(
+        TaxonomyItem("brushed", "Brushed"),
+        TaxonomyItem("brushless", "Brushless"),
+        TaxonomyItem("universal_ac", "Corded (AC)"),
+    )
+
+    /**
+     * taxonomy.v1.json's mode_tool_conflicts: the drill types each mode contradicts (the
+     * validator's W_MODE_TOOL, a warning only). unknown and other are in no list.
+     */
+    val MODE_TOOL_CONFLICTS: Map<String, Set<String>> = mapOf(
+        "hammer" to setOf("drill", "impact_driver"),
+        "screw" to setOf("rotary_hammer"),
+    )
+
+    /** [mode] contradicts [drillType] (Taxonomy.mode_tool_conflict of dbdata). */
+    fun modeToolConflict(mode: String, drillType: String): Boolean = drillType in MODE_TOOL_CONFLICTS[mode].orEmpty()
+
     private val SPECIAL = listOf(TaxonomyItem(UNKNOWN, "Unknown"), TaxonomyItem(OTHER, "Other…"))
+
+    /** The id meta.session gets for [id] with its "other" text [other]: other without a text is unknown. */
+    fun stored(id: String, other: String): String = if (id == OTHER && other.isBlank()) UNKNOWN else id
 
     /** What a picker offers: the field's ids, then unknown and other. */
     fun choices(items: List<TaxonomyItem>): List<TaxonomyItem> = items + SPECIAL

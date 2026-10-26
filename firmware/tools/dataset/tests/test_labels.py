@@ -317,5 +317,19 @@ class DerivedTest(unittest.TestCase):
         self.assertEqual(holes, {})
 
 
+class LabelFixturesTest(unittest.TestCase):
+    """fixtures/labels (the app's Phases/Derived cross-check) is what dbdata.labels computes today."""
+
+    def test_fixtures_are_current(self):
+        import importlib.util
+        from pathlib import Path
+
+        path = Path(__file__).resolve().parents[1] / "fixtures" / "labels" / "make_fixtures.py"
+        spec = importlib.util.spec_from_file_location("make_label_fixtures", path)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        self.assertEqual(mod.check_all(), [], "regenerate: .venv/bin/python fixtures/labels/make_fixtures.py")
+
+
 if __name__ == "__main__":
     unittest.main()

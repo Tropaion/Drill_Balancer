@@ -789,7 +789,9 @@ def axis_map_text(axis) -> str:
 
 DEFAULT_SESSION_LABELS = {"material": "unknown", "mode": "unknown",
                           "bit": {"type": "unknown", "diameter_mm": None},
-                          "drill": {"model": "", "gear": None, "speed_setting": None}, "notes": ""}
+                          "drill": {"type": "unknown", "motor": "unknown", "model": "", "gear": None,
+                                    "speed_setting": None},
+                          "notes": ""}
 
 
 def _cal(tail: dict | None):

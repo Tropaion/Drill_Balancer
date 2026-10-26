@@ -17,7 +17,7 @@ from typing import Iterator
 import numpy as np
 
 from . import labels
-from .contract import Taxonomy, load_taxonomy
+from .contract import SESSION_FIELDS, Taxonomy, load_taxonomy, session_value
 from .io import FLAG_GAP_BEFORE, IMU_AXES, Recording
 
 STREAMS = ("imu", "audio")
@@ -55,6 +55,10 @@ def window_shapes(rec: Recording, win_s: float) -> dict[str, tuple[int, ...]]:
 def recording_labels(rec: Recording, hole: int = 0, taxonomy: Taxonomy | None = None) -> dict:
     """Recording-level labels, or a hole's: its holes[] entry overrides the session.
 
+    Keys: the session's taxonomy fields (contract.SESSION_FIELDS: material,
+    mode, bit_type, drill_type, motor), bit_diameter_mm, orientation,
+    off_angle_deg, imu_profile, outcome_tags, hole.
+
     A hole's material (null inherits), outcome_tags, off angle and
     orientation replace the session's and meta.derived's; the derived tag
     off_angle follows the off angle that applies (labels.off_angle_tags).
@@ -64,9 +68,7 @@ def recording_labels(rec: Recording, hole: int = 0, taxonomy: Taxonomy | None = 
     s = rec.meta["session"]
     d = rec.meta["derived"]
     out = {
-        "material": s["material"],
-        "mode": s["mode"],
-        "bit_type": s["bit"]["type"],
+        **{f: session_value(s, f) for f in SESSION_FIELDS},
         "bit_diameter_mm": s["bit"]["diameter_mm"],
         "orientation": d["orientation"],
         "off_angle_deg": d["off_angle_deg"],
@@ -84,7 +86,7 @@ def recording_labels(rec: Recording, hole: int = 0, taxonomy: Taxonomy | None = 
                 out["orientation"] = h["orientation"]
             out["outcome_tags"] = set(h.get("outcome_tags", [])) | set(
                 labels.off_angle_tags(out["off_angle_deg"], rec.meta))
-    for fld in ("material", "mode", "bit_type", "orientation", "imu_profile"):
+    for fld in (*SESSION_FIELDS, "orientation", "imu_profile"):
         out[fld] = tax.resolve(fld, out[fld])
     out["outcome_tags"] = sorted({tax.resolve("outcome_tag", x) for x in out["outcome_tags"]})
     return out

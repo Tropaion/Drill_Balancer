@@ -1,4 +1,4 @@
-"""Dataset statistics from index.csv: phase time, material x mode, review status.
+"""Dataset statistics from index.csv: phase time, material x mode, drill type x motor, review status.
 
     python -m dbdata.stats ROOT...    # one or more data repo roots (or index.csv files)
 
@@ -51,6 +51,7 @@ def compute(df, taxonomy: Taxonomy | None = None) -> dict:
                    for s in SPLITS for m in [v["split"] == s]},
         "phase_minutes": {p: ph.get(p, 0.0) / 60.0 for p in tax.phases},
         "material_mode_minutes": v.groupby(["material", "mode"])["duration_s"].sum().div(60.0).to_dict(),
+        "drill_motor_minutes": v.groupby(["drill_type", "motor"])["duration_s"].sum().div(60.0).to_dict(),
         "review": _tally(v["review_status"]),
         "profiles": _tally(v["imu_profile"]),
         "orientation": _tally(v["orientation"]),
@@ -73,6 +74,17 @@ def _counts(title: str, d: dict) -> list[str]:
     return lines + _table(["id", "recordings"], [[k or "(empty)", str(n)] for k, n in d.items()])
 
 
+def _cross(title: str, head: str, d: dict) -> list[str]:
+    """Minutes by (row, column) key pairs as a table: rows and columns sorted, 0.0 where none."""
+    lines = ["", f"## {title}", ""]
+    if not d:
+        return lines + ["none"]
+    rows = sorted({k[0] for k in d})
+    cols = sorted({k[1] for k in d})
+    return lines + _table([head] + [c or "(empty)" for c in cols],
+                          [[r or "(empty)"] + [f"{d.get((r, c), 0.0):.1f}" for c in cols] for r in rows])
+
+
 def render_markdown(df, taxonomy: Taxonomy | None = None) -> str:
     s = compute(df, taxonomy)
     lines = ["# Dataset statistics", "",
@@ -85,15 +97,8 @@ def render_markdown(df, taxonomy: Taxonomy | None = None) -> str:
                     [[k, str(n), f"{m:.1f}"] for k, (n, m) in s["splits"].items()])
     lines += ["", "## Phase time (valid, minutes)", ""]
     lines += _table(["phase", "minutes"], [[p, f"{m:.2f}"] for p, m in s["phase_minutes"].items()])
-    lines += ["", "## Material x mode (valid, minutes)", ""]
-    mm = s["material_mode_minutes"]
-    if mm:
-        mats = sorted({k[0] for k in mm})
-        modes = sorted({k[1] for k in mm})
-        lines += _table(["material"] + modes,
-                        [[m] + [f"{mm.get((m, mo), 0.0):.1f}" for mo in modes] for m in mats])
-    else:
-        lines.append("none")
+    lines += _cross("Material x mode (valid, minutes)", "material", s["material_mode_minutes"])
+    lines += _cross("Drill type x motor (valid, minutes)", "drill type", s["drill_motor_minutes"])
     lines += _counts("Review status (valid)", s["review"])
     lines += _counts("IMU profiles (valid)", s["profiles"])
     lines += _counts("Orientation (valid)", s["orientation"])

@@ -107,6 +107,15 @@ class SynthTest(F.TempDirTest):
         self.assertEqual((m["app"]["tool"], m["review"]["status"], m["imu"]["profile"]),
                          ("dbdata.synth", "reviewed", "RAW448_16G"))
         self.assertEqual((m["session"]["material"], m["session"]["mode"]), ("masonry/concrete", "hammer"))
+        self.assertEqual((m["session"]["drill"]["type"], m["session"]["drill"]["motor"]), ("combi_drill", "brushless"))
+        self.assertNotIn("W_MODE_TOOL", rep.codes())
+        self.assertEqual(synth.Spec("d").drill_type_id, "drill")
+        self.assertEqual(synth.Spec("r", {"mode": "hammer"}, drill_type="rotary_hammer").drill_type_id, "rotary_hammer")
+        # an SDS bit fits only an SDS rotary hammer: no scenario labels a combi drill with one
+        self.assertEqual(synth.Spec("s", {"mode": "hammer"}, bit_type="masonry_sds").drill_type_id, "rotary_hammer")
+        for spec in (x for xs in synth.SETS.values() for x in xs):
+            if spec.bit_type == "masonry_sds":
+                self.assertEqual(spec.drill_type_id, "rotary_hammer", spec.name)
         self.assertEqual(m["audio"]["channels"], ["mic1"])
         self.assertEqual(rec.audio.shape[1], 1)
         # the labels are the device-time truth of the scenario, inside the data

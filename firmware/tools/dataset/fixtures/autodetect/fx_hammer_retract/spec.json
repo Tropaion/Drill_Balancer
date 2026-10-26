@@ -20,6 +20,8 @@
   "material": "masonry/concrete",
   "bit_type": "masonry_sds",
   "bit_diameter_mm": 8.0,
+  "drill_type": null,
+  "motor": "brushless",
   "lead_s": 0.6,
   "tail_s": 0.4,
   "mount_offset": [

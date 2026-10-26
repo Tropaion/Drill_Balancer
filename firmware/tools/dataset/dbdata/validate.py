@@ -245,11 +245,14 @@ def _check_meta_events(meta: dict, events: dict, folder: Path, tax: Taxonomy, re
     s = meta["session"]
     ot = s.get("other_text", {})
     v = meta["taxonomy_version"]
-    _tax(tax, "material", s["material"], "session.material", rep, v, ot)
-    for i, layer in enumerate(s.get("layers", [])):
-        _tax(tax, "material", layer["material"], f"session.layers[{i}]", rep, v, ot, f"layers[{i}]")
-    _tax(tax, "mode", s["mode"], "session.mode", rep, v, ot)
-    _tax(tax, "bit_type", s["bit"]["type"], "session.bit.type", rep, v, ot)
+    for fld, path in contract.SESSION_FIELDS.items():
+        _tax(tax, fld, contract.session_value(s, fld), "session." + ".".join(path), rep, v, ot)
+        if fld == "material":       # each layer's material right after the session's
+            for i, layer in enumerate(s.get("layers", [])):
+                _tax(tax, "material", layer["material"], f"session.layers[{i}]", rep, v, ot, f"layers[{i}]")
+    dr = s["drill"]
+    if tax.mode_tool_conflict(s["mode"], dr["type"]):
+        rep.add("W_MODE_TOOL", f"session.mode {s['mode']!r} contradicts session.drill.type {dr['type']!r}")
     for tag in s.get("outcome_tags", []):
         _tax(tax, "outcome_tag", tag, "session.outcome_tags", rep, v, ot, "outcome_tags")
     _tax(tax, "orientation", meta["derived"]["orientation"], "derived.orientation", rep, v)

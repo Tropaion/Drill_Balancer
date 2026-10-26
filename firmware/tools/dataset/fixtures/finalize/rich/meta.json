@@ -1,0 +1,197 @@
+{
+  "schema": "drillbalancer.meta/1",
+  "taxonomy_version": 1,
+  "recording_id": "20261027T091500Z_m3xa_0b7z",
+  "session_id": "20261027T0912_m3xa",
+  "start_utc": "2026-10-27T09:15:00.007Z",
+  "device_t0_us": 2000150211,
+  "duration_s": 3.049,
+  "device": {
+    "board": "waveshare-esp32-s3-touch-amoled-1.75",
+    "fw_version": "0.4.1",
+    "fw_git": "1a2b3c4d-dirty",
+    "board_id": "5e11a0c3"
+  },
+  "app": {
+    "version": "1.0.0",
+    "tool": "dbdata.dbrec"
+  },
+  "imu": {
+    "chip": "QMI8658",
+    "profile": "RAW448",
+    "odr_nominal_hz": 448.4,
+    "odr_measured_hz": 448.379,
+    "accel_range_g": 4,
+    "gyro_range_dps": 512,
+    "accel_lsb_per_g": 8192,
+    "gyro_lsb_per_dps": 64,
+    "accel_lpf": "off",
+    "gyro_lpf": "off",
+    "frame": "board: X right, Y up the screen, Z out of the screen; bit along -Z",
+    "axis_map": "x=+cy,y=-cx,z=+cz",
+    "accel_cal": {
+      "valid": true,
+      "bias_g": [
+        0.004,
+        -0.011,
+        0.02
+      ],
+      "scale": [
+        1.002,
+        0.998,
+        1.004
+      ]
+    },
+    "mount": {
+      "valid": false,
+      "drill_axis": [
+        0.012,
+        -0.02,
+        -0.9997
+      ]
+    },
+    "gyro_bias_rad_s": [
+      1e-05,
+      -0.0004,
+      0.1234567890123
+    ],
+    "registers": {
+      "ctrl2": 20,
+      "ctrl3": 84,
+      "ctrl5": 0
+    }
+  },
+  "take": {
+    "take_id": 5,
+    "end_reason": "max_s",
+    "stats": {
+      "ring_high_water_pct": 0.64,
+      "dropped_records": 2,
+      "dropped_bytes": 2088,
+      "audio_overflows": 1,
+      "battery_pct_start": 80,
+      "battery_pct_end": 78
+    }
+  },
+  "audio": {
+    "codec": "flac",
+    "file": "audio.flac",
+    "rate_nominal_hz": 16000,
+    "rate_measured_hz": 16000.383,
+    "bits": 16,
+    "channels": [
+      "mic1",
+      "mic2"
+    ],
+    "adc": "ES7210",
+    "gain_db": 12,
+    "muted_spans_us": [],
+    "clipped_frac": 6.2e-05,
+    "block_frames": 256
+  },
+  "sync": {
+    "method": "esp_timer@dma_block",
+    "fit": "t_us = a + b*frame",
+    "a_us": 2000150229.8,
+    "b_us_per_frame": 62.498503,
+    "residual_rms_us": 25.8
+  },
+  "gaps": {
+    "imu_filled_samples": 84,
+    "imu_missing_samples": 231,
+    "transport_gaps": [
+      [
+        2000540497,
+        2000544957
+      ],
+      [
+        2001488334,
+        2001512866
+      ]
+    ],
+    "audio_missing_frames": 512,
+    "audio_gap_frames": [
+      [
+        6045,
+        6301
+      ],
+      [
+        15517,
+        15773
+      ]
+    ]
+  },
+  "level": {
+    "mode": "floor",
+    "target_deg": 0.0,
+    "tol_deg": 1.5,
+    "near_deg": 3.0
+  },
+  "session": {
+    "material": "other",
+    "layers": [
+      {
+        "material": "other",
+        "thickness_mm": 12.5
+      }
+    ],
+    "mode": "hammer",
+    "bit": {
+      "type": "masonry_sds",
+      "diameter_mm": 6.5
+    },
+    "drill": {
+      "type": "rotary_hammer",
+      "motor": "other",
+      "model": "Makita",
+      "gear": null,
+      "speed_setting": 3.5
+    },
+    "notes": "near the window – ä",
+    "other_text": {
+      "material": "Bamboo, \"laminated\"",
+      "layers[0]": "Bamboo, \"laminated\"",
+      "motor": "Brushless – \"2-speed\""
+    }
+  },
+  "derived": {
+    "orientation": "unknown",
+    "off_angle_deg": null,
+    "tags": []
+  },
+  "review": {
+    "status": "auto_only",
+    "detector": "none",
+    "revision": 0,
+    "edited_events": 0,
+    "reviewer": null
+  },
+  "quality": {
+    "flags": [
+      "imu_gap",
+      "audio_gap"
+    ]
+  },
+  "files": {
+    "audio.flac": {
+      "sha256": "e440316583a737ba402d9efa3af0e256ee8b591a5ab8248f0f840d3dc55dfdd0",
+      "bytes": 115666
+    },
+    "audio_sync.csv": {
+      "sha256": "ebfed36905487208579cea124a1ec2041961bf3faf230c73376546fe07b38f65",
+      "bytes": 3165
+    },
+    "device_events.csv": {
+      "sha256": "646b08d3d955d52a9385bb37542d7c8e0cc8b1ecad76ac4afdd38308b49a969e",
+      "bytes": 178
+    },
+    "imu.csv.gz": {
+      "sha256": "2327e20f957b59e1b0832effacd02e65743e35d06b5fab42357fc4f0e9b40ad3",
+      "bytes": 21878
+    },
+    "level.csv.gz": {
+      "sha256": "f49afeda6561f844e5c12f5361cf76bfe2136f14506b61ef3d1afbc478a55585",
+      "bytes": 524
+    }
+  }
+}

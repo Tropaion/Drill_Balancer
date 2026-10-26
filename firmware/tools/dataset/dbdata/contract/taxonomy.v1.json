@@ -98,6 +98,17 @@
       {"id": "hole_saw", "added": 1},
       {"id": "auger", "added": 1}
     ],
+    "drill_type": [
+      {"id": "drill", "added": 1, "note": "drill/driver, no hammer"},
+      {"id": "combi_drill", "added": 1, "note": "drill/driver with a percussion hammer"},
+      {"id": "rotary_hammer", "added": 1, "note": "SDS rotary hammer"},
+      {"id": "impact_driver", "added": 1}
+    ],
+    "motor": [
+      {"id": "brushed", "added": 1},
+      {"id": "brushless", "added": 1},
+      {"id": "universal_ac", "added": 1, "note": "corded AC universal motor (corded is said here, not by drill_type)"}
+    ],
     "outcome_tag": [
       {"id": "clean", "added": 1},
       {"id": "off_angle", "added": 1, "derived": true},
@@ -129,6 +140,10 @@
       {"id": "low_odr", "added": 1},
       {"id": "truncated", "added": 1}
     ]
+  },
+  "mode_tool_conflicts": {
+    "note": "session.mode -> the drill_type ids it contradicts: W_MODE_TOOL, a warning only; unknown/other never warn",
+    "conflicts": {"hammer": ["drill", "impact_driver"], "screw": ["rotary_hammer"]}
   },
   "derived_rules": {
     "orientation": "median signed bit elevation over drilling (LEVEL rows with IMU_OK; elevation_cdeg plus zero_elevation_cdeg on ZERO_SET rows): wall if |e| < 30, floor if e < -60, ceiling if e > 60, else angled",

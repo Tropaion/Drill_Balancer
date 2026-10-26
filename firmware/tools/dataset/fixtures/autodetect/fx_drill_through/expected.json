@@ -27,6 +27,8 @@
     "material": "wood/softwood",
     "bit_type": "brad_point",
     "bit_diameter_mm": 8.0,
+    "drill_type": null,
+    "motor": "brushless",
     "lead_s": 0.6,
     "tail_s": 0.4,
     "mount_offset": [
