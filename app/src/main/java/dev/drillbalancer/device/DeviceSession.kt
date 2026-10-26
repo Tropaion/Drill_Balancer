@@ -57,19 +57,20 @@ interface DeviceSession {
     suspend fun readSettings(): DeviceSettings
 
     /**
-     * Writes only the changed keys, then reads the settings back (they also update
-     * [settings]); if only that read fails, the result is the update applied to the last
-     * known settings. ATT 0x82 if the result breaks a rule with the device's current values.
+     * Writes only the changed keys, then reads the settings back; the result also updates
+     * [settings]. Throws only if the write failed (ATT 0x82 if the result breaks a rule with
+     * the device's current values): once the device stored it, a failed read-back leaves the
+     * update applied to the last known settings, see [SettingsWrite].
      */
-    suspend fun writeSettings(update: SettingsUpdate): DeviceSettings
+    suspend fun writeSettings(update: SettingsUpdate): SettingsWrite
 
     /** Returns once the device has queued the command (ATT 0x86: busy, try again). */
     suspend fun sendCommand(command: Command)
 
     /**
      * Cold: collecting it runs the update (OtaClient) and emits progress; it completes
-     * after FINISH succeeded, then the device reboots and the link drops. Cancelling the
-     * collection aborts the transfer on the device.
+     * after FINISH succeeded, then the device reboots and the phone sees the link drop
+     * within OtaClient.REBOOT_WINDOW. Cancelling the collection aborts the transfer on the device.
      */
     fun startOta(image: FirmwareImage): Flow<OtaProgress>
 }
@@ -86,6 +87,14 @@ sealed interface ConnectionState {
 
     data class Connected(val address: String, val name: String?, val bonded: Boolean) : ConnectionState
 }
+
+/**
+ * A settings write the device stored, with the [settings] read back after it.
+ * [readBackError]: the device answered that read with something unusable (unreadable
+ * settings, an ATT error), so [settings] are the update applied to the last known ones. Also
+ * null when the read's answer was lost: the real values come with the next read or reconnect.
+ */
+data class SettingsWrite(val settings: DeviceSettings, val readBackError: DeviceError? = null)
 
 /** Device Information service 0x180A. */
 data class DeviceInfo(
@@ -109,8 +118,9 @@ sealed class DeviceError(message: String) : Exception(message) {
     /**
      * The phone still has a bond the device no longer knows (it was factory-reset):
      * encryption fails. Remove the device in the phone's Bluetooth settings, then pair again.
+     * [dropped]: seen as the reason the link dropped during a request, not as its answer.
      */
-    class StaleBond : DeviceError(
+    class StaleBond(val dropped: Boolean = false) : DeviceError(
         "The device no longer knows this phone. Remove it in the phone's Bluetooth settings, then pair again.",
     )
 
@@ -119,8 +129,12 @@ sealed class DeviceError(message: String) : Exception(message) {
 
     class Timeout(what: String) : DeviceError("The device did not answer ($what).")
 
-    /** The link failed or dropped (GATT error, out of range, device asleep); [reason] says how. */
-    class Link(message: String, val reason: DisconnectReason = DisconnectReason.OTHER) : DeviceError(message) {
+    /**
+     * The link failed or dropped (GATT error, out of range, device asleep); [reason] says how.
+     * [sent] is false when the phone's stack refused the request: it never went on air.
+     */
+    class Link(message: String, val reason: DisconnectReason = DisconnectReason.OTHER, val sent: Boolean = true) :
+        DeviceError(message) {
         constructor(reason: DisconnectReason) : this(reason.message, reason)
     }
 

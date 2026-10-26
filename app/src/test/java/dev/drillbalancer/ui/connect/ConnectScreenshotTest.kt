@@ -32,10 +32,10 @@ class ConnectScreenshotTest {
     private fun shot(
         state: ConnectUiState,
         readiness: BleReadiness = BleReadiness.READY,
-        denied: Boolean = false,
+        prompt: PermissionPrompt = PermissionPrompt.ASK,
         legacy: Boolean = false,
     ) {
-        compose.setContent { Themed { ConnectScreen(state, readiness, denied, legacy, ConnectActions()) } }
+        compose.setContent { Themed { ConnectScreen(state, readiness, prompt, legacy, ConnectActions()) } }
         compose.onRoot().captureRoboImage()
     }
 
@@ -72,7 +72,10 @@ class ConnectScreenshotTest {
     fun noPermission() = shot(ConnectUiState(), BleReadiness.MISSING_PERMISSIONS)
 
     @Test
-    fun noPermissionDeniedForGood() = shot(ConnectUiState(), BleReadiness.MISSING_PERMISSIONS, denied = true)
+    fun noPermissionDeniedForGood() = shot(ConnectUiState(), BleReadiness.MISSING_PERMISSIONS, PermissionPrompt.SETTINGS)
+
+    @Test
+    fun noPermissionAskOrSettings() = shot(ConnectUiState(), BleReadiness.MISSING_PERMISSIONS, PermissionPrompt.ASK_OR_SETTINGS)
 
     @Test
     fun noPermissionAndroid11() = shot(ConnectUiState(), BleReadiness.MISSING_PERMISSIONS, legacy = true)

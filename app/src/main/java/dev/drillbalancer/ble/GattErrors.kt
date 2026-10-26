@@ -54,20 +54,23 @@ object GattErrors {
 
     fun requestError(status: Int, op: GattOp, linkUp: Boolean, phoneBonded: Boolean): DeviceError = when {
         status == FailCallback.REASON_BLUETOOTH_DISABLED -> DeviceError.Link(DisconnectReason.BLUETOOTH_OFF)
-        status == FailCallback.REASON_NULL_ATTRIBUTE || status == FailCallback.REASON_DEVICE_NOT_SUPPORTED ->
-            DeviceError.Link(DisconnectReason.NOT_SUPPORTED)
+        status == FailCallback.REASON_DEVICE_NOT_SUPPORTED -> DeviceError.Link(DisconnectReason.NOT_SUPPORTED)
+        // Nordic's code for writeCharacteristic() and friends returning false on a live link
+        // (the stack is busy), and for requests still queued when the device's services
+        // changed. The session checks optional characteristics first: never sent.
+        status == FailCallback.REASON_NULL_ATTRIBUTE ->
+            DeviceError.Link("The phone's Bluetooth stack refused the ${op.label}. Try again.", sent = false)
         // 133 and friends, or the 15 s timeout: the device was not there.
         op == GattOp.CONNECT ->
             DeviceError.Link("Could not connect. Is the device switched on and in range?", DisconnectReason.LINK_LOSS)
         status == FailCallback.REASON_TIMEOUT -> DeviceError.Timeout(op.label)
-        // The bond broadcast failed the request: pairing was cancelled or the code was wrong.
-        status == FailCallback.REASON_REQUEST_FAILED && op.secure && !phoneBonded -> DeviceError.PairingFailed()
+        // The bond broadcast failed the request (Nordic's only -4 here; no reliable writes):
+        // pairing was cancelled or the code was wrong.
+        status == FailCallback.REASON_REQUEST_FAILED -> DeviceError.PairingFailed()
         // Stored keys rejected, either answered on the link or as the reason it dropped. An
         // ATT answer needs a live link; 0x08 as a drop reason is a plain connection timeout.
         op.secure && phoneBonded && (if (linkUp) status in AUTH_CODES else status in KEY_FAILURES) ->
-            DeviceError.StaleBond()
-        status == FailCallback.REASON_REQUEST_FAILED && linkUp ->
-            DeviceError.Link("The phone's Bluetooth stack refused the ${op.label}. Try again.")
+            DeviceError.StaleBond(dropped = !linkUp)
         status < 0 || !linkUp -> DeviceError.Link("The connection was lost during the ${op.label}.", DisconnectReason.LINK_LOSS)
         status == GATT_AUTH_FAIL -> DeviceError.PairingFailed()
         status in AUTH_CODES -> DeviceError.Att(
@@ -85,21 +88,38 @@ object GattErrors {
         else -> DeviceError.Link("Bluetooth error ${hexByte(status)} during the ${op.label}.")
     }
 
-    /**
-     * Whether a write that failed with [error] (from [requestError] or the session's own
-     * checks) may still have reached the device. Certainly not only when it was never sent
-     * (NotConnected, a missing characteristic) or the device answered it with an error (an
-     * ATT error, a stale bond or failed pairing). A Link error may have: besides a drop or
-     * Bluetooth going off, Android can end a write in flight with 133 (GATT_ERROR) as the
-     * link drops, before the session sees the drop, and other stack codes are no surer.
-     * Timeouts and unknown exceptions count as delivered too.
-     */
-    fun mayHaveArrived(error: Throwable): Boolean = when (error) {
-        is DeviceError.Link -> error.reason != DisconnectReason.NOT_SUPPORTED
-        is DeviceError.Timeout -> true
-        is DeviceError -> false
-        else -> true
+    /** How far a request got that failed with an error from [requestError] or the session. */
+    enum class Delivery {
+        /** Never went on air: no link, the phone's stack refused it, no permission, no such characteristic. */
+        NOT_SENT,
+
+        /** The device answered it with an error (ATT error, stale bond, failed pairing) or with unreadable data. */
+        ANSWERED,
+
+        /** Went on air and its answer was lost: the link dropped (whatever reason it gave) or no answer in time. */
+        LOST,
     }
+
+    /**
+     * Besides a drop or Bluetooth going off, Android can end a request in flight with 133
+     * (GATT_ERROR) as the link drops, before the session sees the drop, and other stack codes
+     * are no surer: a Link error that went out is LOST, and so are unknown exceptions.
+     */
+    fun delivery(error: Throwable): Delivery = when (error) {
+        is DeviceError.Link ->
+            if (!error.sent || error.reason == DisconnectReason.NOT_SUPPORTED) Delivery.NOT_SENT else Delivery.LOST
+        is DeviceError.Timeout -> Delivery.LOST
+        is DeviceError.StaleBond -> if (error.dropped) Delivery.LOST else Delivery.ANSWERED
+        is DeviceError.NotConnected, is DeviceError.MissingPermission -> Delivery.NOT_SENT
+        is DeviceError.Att, is DeviceError.PairingFailed, is DeviceError.InvalidData -> Delivery.ANSWERED
+        else -> Delivery.LOST
+    }
+
+    /** Whether a write that failed with [error] may still have reached the device and done its work. */
+    fun mayHaveArrived(error: Throwable): Boolean = delivery(error) == Delivery.LOST
+
+    /** Whether the device answered the request that failed with [error], so its answer is worth showing. */
+    fun answered(error: Throwable): Boolean = delivery(error) == Delivery.ANSWERED
 
     /**
      * A failed connect. [keysLost]: the device asked to pair although the phone holds a bond

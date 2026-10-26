@@ -101,7 +101,7 @@ class FakeDeviceSessionTest {
         val base = s.readSettings()
         // Meanwhile the device changed the mode.
         s.sendCommand(Command.SetMode(LevelMode.FLOOR))
-        val stored = s.writeSettings(SettingsUpdate.diff(base, base.copy(brightnessPct = 50)))
+        val stored = s.writeSettings(SettingsUpdate.diff(base, base.copy(brightnessPct = 50))).settings
         assertEquals(50, stored.brightnessPct)
         assertEquals(LevelMode.FLOOR, stored.mode)
         assertEquals(stored, s.settings.value)
@@ -193,7 +193,7 @@ class FakeDeviceSessionTest {
     fun disablingBleStoresThenDropsTheLink() = runTest {
         val s = FakeDeviceSession()
         val base = s.readSettings()
-        val written = s.writeSettings(SettingsUpdate.diff(base, base.copy(bleEnabled = false)))
+        val written = s.writeSettings(SettingsUpdate.diff(base, base.copy(bleEnabled = false))).settings
         assertEquals(false, written.bleEnabled)
         val c = s.connection.value as ConnectionState.Disconnected
         assertEquals(DisconnectReason.BLE_DISABLED, (c.error as DeviceError.Link).reason)

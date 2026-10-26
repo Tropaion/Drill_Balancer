@@ -1,57 +1,47 @@
 package dev.drillbalancer.ui.connect
 
-import org.junit.Assert.assertFalse
-import org.junit.Assert.assertTrue
+import org.junit.Assert.assertEquals
 import org.junit.Test
 
 class PermissionOutcomeTest {
     private val p = setOf("android.permission.BLUETOOTH_SCAN", "android.permission.BLUETOOTH_CONNECT")
     private val none = emptySet<String>()
     private val dismissed = 2_000L   // a dialog was shown and dismissed
+    private val slow = 900L          // Android answered without a dialog, on a slow phone
     private val instant = 120L       // Android answered without a dialog
 
-    @Test
-    fun dismissedFirstDialogCanBeShownAgain() {
-        // Tapped outside the dialog on first launch: no rationale before or after.
-        assertFalse(PermissionOutcome.deniedForGood(p, before = none, after = none, dismissed, silentBefore = 0))
-        assertTrue(PermissionOutcome.silent(p, none, none))
-    }
+    private fun after(before: Set<String>, after: Set<String>, elapsedMs: Long, refused: Set<String> = p) =
+        PermissionOutcome.after(refused, before, after, elapsedMs)
 
     @Test
-    fun dismissedTwiceCanBeShownAgain() {
-        // Dismissed, Allow tapped again, dismissed again: Android still shows the dialog.
-        assertFalse(PermissionOutcome.deniedForGood(p, before = none, after = none, dismissed, silentBefore = 1))
+    fun silentRefusalOffersBoth() {
+        // Tapped outside the first dialog, or denied for good on a phone too slow for the
+        // timing: no rationale either side. Allow shows the dialog again in the first case,
+        // the app settings work in both.
+        assertEquals(PermissionPrompt.ASK_OR_SETTINGS, after(none, none, dismissed))
+        assertEquals(PermissionPrompt.ASK_OR_SETTINGS, after(none, none, slow))
     }
 
     @Test
     fun secondDenialIsForGood() {
         // Android 11+: the first "Don't allow" brings a rationale, the second takes it away
         // (Android 8 to 10: "Don't ask again").
-        assertFalse(PermissionOutcome.deniedForGood(p, before = none, after = p, dismissed, silentBefore = 0))
-        assertFalse(PermissionOutcome.silent(p, none, p))
-        assertTrue(PermissionOutcome.deniedForGood(p, before = p, after = none, dismissed, silentBefore = 0))
+        assertEquals(PermissionPrompt.ASK, after(none, p, dismissed))
+        assertEquals(PermissionPrompt.SETTINGS, after(p, none, dismissed))
         // Dismissed instead: the rationale stays.
-        assertFalse(PermissionOutcome.deniedForGood(p, before = p, after = p, dismissed, silentBefore = 0))
+        assertEquals(PermissionPrompt.ASK, after(p, p, dismissed))
     }
 
     @Test
     fun answeredWithoutAskingIsForGood() {
         // Denied for good before this screen: the system refuses at once, without a dialog.
-        assertTrue(PermissionOutcome.deniedForGood(p, before = none, after = none, instant, silentBefore = 0))
+        assertEquals(PermissionPrompt.SETTINGS, after(none, none, instant))
         // A rationale after the request means a dialog was shown, however fast.
-        assertFalse(PermissionOutcome.deniedForGood(p, before = none, after = p, instant, silentBefore = 0))
+        assertEquals(PermissionPrompt.ASK, after(none, p, instant))
     }
 
     @Test
-    fun slowSilentRefusalsEndUpForGood() {
-        // A phone too slow for the timing: the third silent refusal in a row is for good.
-        assertFalse(PermissionOutcome.deniedForGood(p, before = none, after = none, dismissed, silentBefore = 1))
-        assertTrue(PermissionOutcome.deniedForGood(p, before = none, after = none, dismissed, silentBefore = 2))
-    }
-
-    @Test
-    fun grantedIsNeverDenied() {
-        assertFalse(PermissionOutcome.deniedForGood(none, before = p, after = none, instant, silentBefore = 5))
-        assertFalse(PermissionOutcome.silent(none, none, none))
+    fun grantedAsksNothing() {
+        assertEquals(PermissionPrompt.ASK, after(p, none, instant, refused = none))
     }
 }

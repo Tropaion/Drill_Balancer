@@ -58,8 +58,8 @@ class ConnectActions(
 fun ConnectScreen(
     state: ConnectUiState,
     readiness: BleReadiness,
-    permissionsDenied: Boolean,     // asked and refused for good: only the app settings help
-    legacyLocation: Boolean,        // API <= 30: the permission is "Location"
+    permissionPrompt: PermissionPrompt,   // what the permission panel offers
+    legacyLocation: Boolean,              // API <= 30: the permission is "Location"
     actions: ConnectActions,
     modifier: Modifier = Modifier,
 ) {
@@ -88,18 +88,25 @@ fun ConnectScreen(
                     "No Bluetooth LE",
                     "This phone has no Bluetooth Low Energy, which the app needs to talk to the DrillBalancer.",
                 )
-                BleReadiness.MISSING_PERMISSIONS -> Blocker(
-                    if (legacyLocation) "Allow location access" else "Allow Nearby devices",
-                    if (legacyLocation) {
+                BleReadiness.MISSING_PERMISSIONS -> {
+                    val settingsOnly = permissionPrompt == PermissionPrompt.SETTINGS
+                    val both = permissionPrompt == PermissionPrompt.ASK_OR_SETTINGS
+                    val why = if (legacyLocation) {
                         "Android 11 and older only let apps scan for Bluetooth devices with the Location " +
                             "permission. The app uses it to find your DrillBalancer, never to locate you."
                     } else {
                         "The app needs the Nearby devices permission to find your DrillBalancer and connect " +
                             "to it over Bluetooth. It does not use your location."
-                    },
-                    if (permissionsDenied) "Open app settings" else "Allow",
-                    if (permissionsDenied) actions.openAppSettings else actions.requestPermissions,
-                )
+                    }
+                    Blocker(
+                        if (legacyLocation) "Allow location access" else "Allow Nearby devices",
+                        if (both) "$why\n\nNo dialog when you tap Allow? Then allow it in the app's settings." else why,
+                        if (settingsOnly) "Open app settings" else "Allow",
+                        if (settingsOnly) actions.openAppSettings else actions.requestPermissions,
+                        secondary = if (both) "Open app settings" else null,
+                        onSecondary = actions.openAppSettings,
+                    )
+                }
                 BleReadiness.BLUETOOTH_OFF -> Blocker(
                     "Bluetooth is off",
                     "Turn on Bluetooth to find and connect to your DrillBalancer.",
@@ -120,7 +127,14 @@ fun ConnectScreen(
 }
 
 @Composable
-private fun Blocker(title: String, text: String, button: String? = null, onClick: () -> Unit = {}) {
+private fun Blocker(
+    title: String,
+    text: String,
+    button: String? = null,
+    onClick: () -> Unit = {},
+    secondary: String? = null,
+    onSecondary: () -> Unit = {},
+) {
     Panel {
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             Icon(DbIcons.Bluetooth, contentDescription = null, tint = Blue, modifier = Modifier.size(32.dp))
@@ -128,6 +142,7 @@ private fun Blocker(title: String, text: String, button: String? = null, onClick
         }
         Text(text, style = MaterialTheme.typography.bodyLarge)
         if (button != null) ActionButton(button, onClick, Modifier.fillMaxWidth().padding(top = 8.dp))
+        if (secondary != null) ActionButton(secondary, onSecondary, Modifier.fillMaxWidth(), kind = ButtonKind.SECONDARY)
     }
 }
 

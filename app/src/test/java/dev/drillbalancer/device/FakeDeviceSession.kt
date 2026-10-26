@@ -141,7 +141,7 @@ class FakeDeviceSession(
         return stored.also { _settings.value = it }
     }
 
-    override suspend fun writeSettings(update: SettingsUpdate): DeviceSettings {
+    override suspend fun writeSettings(update: SettingsUpdate): SettingsWrite {
         requireLink(secure = true)
         val next = update.applyTo(stored)
         if (!next.isValid) throw DeviceError.Att(AttError.JSON_RANGE.code)
@@ -153,7 +153,7 @@ class FakeDeviceSession(
         _settings.value = stored
         // ble=false: the device stores it, answers, then closes the link.
         if (bleOff) dropLink(DeviceError.Link(DisconnectReason.BLE_DISABLED))
-        return stored
+        return SettingsWrite(stored)
     }
 
     override suspend fun sendCommand(command: Command) {

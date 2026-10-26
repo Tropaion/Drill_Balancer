@@ -10,13 +10,13 @@ import dev.drillbalancer.device.DeviceError
 import dev.drillbalancer.device.DeviceInfo
 import dev.drillbalancer.device.DeviceSession
 import dev.drillbalancer.device.DisconnectReason
+import dev.drillbalancer.device.SettingsWrite
 import dev.drillbalancer.protocol.AnglePacket
 import dev.drillbalancer.protocol.CalState
 import dev.drillbalancer.protocol.Command
 import dev.drillbalancer.protocol.Decoded
 import dev.drillbalancer.protocol.DeviceSettings
 import dev.drillbalancer.protocol.FirmwareImage
-import dev.drillbalancer.protocol.OtaClient
 import dev.drillbalancer.protocol.OtaException
 import dev.drillbalancer.protocol.OtaProgress
 import dev.drillbalancer.protocol.OtaTransport
@@ -39,7 +39,6 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.filter
-import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
@@ -55,6 +54,7 @@ import no.nordicsemi.android.ble.ktx.suspend
 import no.nordicsemi.android.ble.observer.ConnectionObserver
 import java.io.IOException
 import java.util.concurrent.atomic.AtomicReference
+import kotlin.time.Duration
 
 /**
  * The real device over BLE (Nordic Android-BLE-Library). One per process: create it in
@@ -77,8 +77,7 @@ class BleDeviceSession(
     private val thread = HandlerThread("DrillBalancer-BLE").apply { start() }
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private val linkLock = Mutex()   // connect and pairing, one at a time
-    private val otaLock = Mutex()    // one firmware update at a time, clean-up included
-    private var rebootWatch: Job? = null   // OtaReboot.linkOutlived() for the last update (otaLock)
+    private val drops = ExpectedDrops()
 
     private val _connection = MutableStateFlow<ConnectionState>(ConnectionState.Disconnected())
     private val _angle = MutableStateFlow<AnglePacket?>(null)
@@ -94,8 +93,6 @@ class BleDeviceSession(
     override val batteryPct: StateFlow<Int?> = _battery.asStateFlow()
     override val info: StateFlow<DeviceInfo?> = _info.asStateFlow()
     override val settings: StateFlow<DeviceSettings?> = _settings.asStateFlow()
-
-    @Volatile private var expectedDrop: DisconnectReason? = null
 
     // The connect in progress got a pairing request although the phone held a bond when
     // it started. Checked against the start: Android marks the device BONDING before it
@@ -135,6 +132,8 @@ class BleDeviceSession(
                 otaIndications.tryEmit(value)
             }
 
+            override fun clearCacheOnClose() = drops.clearsCache
+
             override fun onPairingRequest() {
                 if (_connection.value is ConnectionState.Connecting && bondedAtConnect) keysLost = true
             }
@@ -144,13 +143,34 @@ class BleDeviceSession(
     private val transport = object : OtaTransport {
         override val mtu: Int get() = manager.currentMtu
         override val ctrlIndications: Flow<ByteArray> = otaIndications
-        override suspend fun writeCtrl(value: ByteArray) = gatt(GattOp.OTA) { writeOtaCtrl(value) }
+        override suspend fun writeCtrl(value: ByteArray, timeout: Duration) =
+            gatt(GattOp.OTA) { writeOtaCtrl(value, timeout.inWholeMilliseconds) }
         override suspend fun writeData(value: ByteArray) = gatt(GattOp.OTA) { writeOtaData(value) }
         override fun mayHaveArrived(error: Exception) = GattErrors.mayHaveArrived(error)
 
         // Any state but Connected: the transfer's link is gone (a reconnect is a new link).
         override val linkLost: Flow<Unit> = _connection.filter { it !is ConnectionState.Connected }.map { }
     }
+
+    private val ota = OtaLink(
+        drops,
+        transport,
+        object : OtaLink.Gatt {
+            override val connected: Boolean get() = manager.isConnected
+
+            // Indications only while updating; subscribed before START is written.
+            override suspend fun prepare() {
+                gatt(GattOp.OTA) { setOtaIndications(true) }
+                quietly { gatt(GattOp.OTA) { setHighPriority(true) } }
+            }
+
+            override suspend fun restore() {
+                quietly { gatt(GattOp.OTA) { setOtaIndications(false) } }
+                quietly { gatt(GattOp.OTA) { setHighPriority(false) } }
+            }
+        },
+        scope,
+    )
 
     init {
         manager.setConnectionObserver(object : ConnectionObserver {
@@ -204,15 +224,15 @@ class BleDeviceSession(
         return fetchSettings()
     }
 
-    override suspend fun writeSettings(update: SettingsUpdate): DeviceSettings {
+    override suspend fun writeSettings(update: SettingsUpdate): SettingsWrite {
         requireReady()
-        if (update.isEmpty) return fetchSettings()
+        if (update.isEmpty) return SettingsWrite(fetchSettings())
         val drop = expectedDrop(update)
         withExpectedDrop(drop) { gatt(GattOp.CONFIG_WRITE) { writeConfig(update.toBytes()) } }
         val known = _settings.value
         // The link is closing: no read-back, the device stored exactly this.
-        val stored = if (drop != null) merged(update, known) else storedSettings(update, known) { fetchSettings() }
-        _settings.value = stored
+        val stored = if (drop != null) SettingsWrite(merged(update, known)) else storedSettings(update, known) { fetchSettings() }
+        _settings.value = stored.settings
         return stored
     }
 
@@ -223,45 +243,12 @@ class BleDeviceSession(
         if (command is Command.SetMode) _settings.update { it?.copy(mode = command.mode) }
     }
 
-    // A stopped transfer may still be sending ABORT: its clean-up (indications off) must not
-    // land after the next one subscribed, whichever screen started that one.
-    override fun startOta(image: FirmwareImage): Flow<OtaProgress> = flow {
-        otaLock.withLock {
-            rebootWatch?.cancel()
-            requireReady()
-            if (!manager.hasOta) throw OtaException("The device's firmware does not offer updates over Bluetooth.")
-            // Indications only while updating; subscribed before START is written.
-            gatt(GattOp.OTA) { setOtaIndications(true) }
-            quietly { gatt(GattOp.OTA) { setHighPriority(true) } }
-            val reboot = OtaReboot { armed ->
-                expectedDrop = if (armed) DisconnectReason.FIRMWARE_UPDATED else null
-                manager.clearCacheOnDisconnect = armed
-            }
-            try {
-                OtaClient(transport).upload(image.bytes, image.sha256).collect { progress ->
-                    reboot.onProgress(progress)
-                    emit(progress)
-                }
-            } catch (e: Throwable) {
-                reboot.onFailure(e)
-                throw e
-            } finally {
-                if (!reboot.mayInstall && manager.isConnected) {
-                    withContext(NonCancellable) {
-                        quietly { gatt(GattOp.OTA) { setOtaIndications(false) } }
-                        quietly { gatt(GattOp.OTA) { setHighPriority(false) } }
-                    }
-                }
-                // Still armed with the link up (an unanswered FINISH, or a cancel after it):
-                // a drop after the reboot window is not the update's.
-                if (reboot.armed && manager.isConnected) {
-                    rebootWatch = scope.launch {
-                        delay(REBOOT_WINDOW_MS)
-                        if (manager.isConnected) reboot.linkOutlived()
-                    }
-                }
-            }
-        }
+    // One at a time: a stopped transfer may still be sending ABORT, and its clean-up
+    // (indications off) must not land after the next one subscribed, whichever screen
+    // started that one.
+    override fun startOta(image: FirmwareImage): Flow<OtaProgress> = ota.update(image.bytes, image.sha256) {
+        requireReady()
+        if (!manager.hasOta) throw OtaException("The device's firmware does not offer updates over Bluetooth.")
     }
 
     /**
@@ -296,7 +283,7 @@ class BleDeviceSession(
             throw DeviceError.InvalidData("\"$address\" is not a Bluetooth address.")
         }
         scanner?.stop()
-        expectedDrop = null
+        drops.open()
         keysLost = false
         this.device = device
         bondedAtConnect = phoneBonded()
@@ -366,13 +353,14 @@ class BleDeviceSession(
      */
     private fun onLinkClosed(reason: Int) {
         clearLive()
+        // What this link was expected to close for; nothing of it applies to the next one.
+        val expected = drops.closed()
         while (true) {
             val was = _connection.value as? ConnectionState.Connected ?: return
-            val error = GattErrors.disconnectError(reason, expectedDrop, BlePermissions.isBluetoothEnabled(context))
+            val error = GattErrors.disconnectError(reason, expected, BlePermissions.isBluetoothEnabled(context))
             val retry = ReconnectPolicy.retries(error.reason)
             // Retried if setBonded() changed the state meanwhile.
             if (!_connection.compareAndSet(was, ConnectionState.Disconnected(error, retry))) continue
-            expectedDrop = null
             Log.i(TAG, "link closed, reason $reason: ${error.message}")
             if (retry) startReconnect(was.address, error)
             return
@@ -456,15 +444,18 @@ class BleDeviceSession(
 
     /**
      * Runs a write after which the device closes the link on purpose ([drop] non-null).
-     * The close can overtake the write's answer, so a lost link then counts as success.
+     * The close can overtake the write's answer, so a lost link then counts as success,
+     * unless the phone's stack refused the write (it never went out).
      */
     private suspend fun withExpectedDrop(drop: DisconnectReason?, write: suspend () -> Unit) {
-        if (drop != null) expectedDrop = drop
+        if (drop == null) return write()
+        val link = drops.link
+        drops.expect(link, drop)
         try {
             write()
         } catch (e: DeviceError) {
-            if (drop != null && e is DeviceError.Link && !manager.isConnected) return
-            if (drop != null) expectedDrop = null
+            if (e is DeviceError.Link && e.sent && !manager.isConnected) return
+            drops.withdraw(link, drop)
             throw e
         }
     }
@@ -503,76 +494,24 @@ class BleDeviceSession(
         const val CONNECT_RETRIES = 3
         const val CONNECT_RETRY_DELAY_MS = 300
         const val CONNECT_TIMEOUT_MS = 15_000L
-        // The device reboots about 0.5 s after FINISH, at most 3 s (ble_service.c); the
-        // same wait as FirmwareViewModel's for the drop.
-        const val REBOOT_WINDOW_MS = 10_000L
         val PROBE = "{}".encodeToByteArray()
     }
 }
 
 /**
- * The link's side of a firmware update. Once FINISH goes out the device may install the
- * image and reboot into it about 0.5 s later, even when its answer is lost (an unconfirmed
- * OtaException), so from then on the drop is announced (FIRMWARE_UPDATED) and the GATT
- * cache cleared ([arm]). Not later: Nordic asks whether to clear the cache when the link
- * closes, before it fails the FINISH write in flight. A FINISH the device answered with a
- * failure, or certainly did not get, disarms both again.
- */
-internal class OtaReboot(private val arm: (Boolean) -> Unit) {
-    var armed = false
-        private set
-
-    /** The device may be installing the image: no more GATT clean-up on this link. */
-    var mayInstall = false
-        private set
-
-    fun onProgress(p: OtaProgress) {
-        when (p.phase) {
-            // The client writes FINISH right after reporting VERIFYING.
-            OtaProgress.Phase.VERIFYING -> if (!armed) {
-                armed = true
-                arm(true)
-            }
-            OtaProgress.Phase.DONE -> mayInstall = true
-            else -> Unit
-        }
-    }
-
-    /** The link is still up well after the update ended: the device did not reboot. */
-    fun linkOutlived() {
-        if (armed) {
-            armed = false
-            arm(false)
-        }
-    }
-
-    /** A cancelled transfer stays armed: FINISH may be in flight. */
-    fun onFailure(e: Throwable) {
-        if (e !is OtaException) return
-        if (e.unconfirmed) {
-            mayInstall = true
-        } else if (armed) {
-            armed = false
-            arm(false)
-        }
-    }
-}
-
-/**
- * The settings after a write the device stored: [read] back, or, if that read is lost with
- * the link or not answered, [update] applied to the [known] ones (the device stored
- * exactly the merged keys). The real values come with the next read or reconnect.
+ * After a write the device stored: the settings [read] back, or, if that read fails,
+ * [update] applied to the [known] ones (the device stored exactly the merged keys). A read
+ * the device answered with something unusable is a firmware bug: shown with the result,
+ * not hidden behind the merged values; a lost or unsent read is not worth a word.
  */
 internal suspend fun storedSettings(
     update: SettingsUpdate,
     known: DeviceSettings?,
     read: suspend () -> DeviceSettings,
-): DeviceSettings = try {
-    read()
+): SettingsWrite = try {
+    SettingsWrite(read())
 } catch (e: DeviceError) {
-    // Unreadable settings are a firmware bug: shown, not hidden behind the merged values.
-    if (e !is DeviceError.Link && e !is DeviceError.Timeout && e !is DeviceError.NotConnected) throw e
-    merged(update, known)
+    SettingsWrite(merged(update, known), e.takeIf { GattErrors.answered(it) })
 }
 
 /** [update] applied to the [known] settings, or to the defaults before any were read. */

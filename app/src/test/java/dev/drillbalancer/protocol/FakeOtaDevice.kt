@@ -8,6 +8,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.yield
 import java.io.ByteArrayOutputStream
 import java.security.MessageDigest
+import kotlin.time.Duration
 
 /**
  * The device side for OtaClient tests: a port of firmware/components/ota/src/ota_proto.c
@@ -74,7 +75,7 @@ class FakeOtaDevice(
     var peakAheadOfAck = 0; private set
     private var lastAckSeq = 0
 
-    override suspend fun writeCtrl(value: ByteArray) {
+    override suspend fun writeCtrl(value: ByteArray, timeout: Duration) {
         tick(clock())
         ctrlWrites += value.copyOf()
         onCtrl(value)

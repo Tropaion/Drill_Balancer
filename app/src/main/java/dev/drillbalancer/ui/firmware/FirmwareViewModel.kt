@@ -7,6 +7,7 @@ import dev.drillbalancer.device.DeviceError
 import dev.drillbalancer.device.DeviceSession
 import dev.drillbalancer.protocol.FirmwareImage
 import dev.drillbalancer.protocol.FirmwareParseResult
+import dev.drillbalancer.protocol.OtaClient
 import dev.drillbalancer.protocol.OtaException
 import dev.drillbalancer.protocol.OtaProgress
 import dev.drillbalancer.ui.PairingCancelled
@@ -166,20 +167,17 @@ class FirmwareViewModel(
     private fun fail(error: FirmwareUiState.OtaError) =
         _state.update { it.copy(phase = FirmwareUiState.Phase.FAILED, error = error) }
 
-    // The device reboots about 0.5 s after FINISH; the session then reconnects by itself.
+    // The phone sees the reboot's drop within OtaClient.REBOOT_WINDOW of the end of the
+    // update; the session then reconnects by itself.
     // No time limit here: the session's reconnecting is bounded (ReconnectPolicy, up to
     // about 110 s) and ends Connected or Disconnected without reconnecting.
     private suspend fun awaitNewVersion(): String? {
-        withTimeoutOrNull(DROP_TIMEOUT_MS) { session.connection.first { it !is ConnectionState.Connected } }
+        withTimeoutOrNull(OtaClient.REBOOT_WINDOW) { session.connection.first { it !is ConnectionState.Connected } }
         val back = session.connection.first {
             it is ConnectionState.Connected || it is ConnectionState.Disconnected && !it.reconnecting
         }
         if (back !is ConnectionState.Connected) return null
         return session.info.value?.firmwareRevision
-    }
-
-    private companion object {
-        const val DROP_TIMEOUT_MS = 10_000L
     }
 }
 

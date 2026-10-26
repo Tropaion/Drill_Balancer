@@ -75,11 +75,12 @@ class SettingsViewModel(private val session: DeviceSession, private val gate: Pa
         viewModelScope.launch {
             _state.update { it.copy(saving = true, message = null) }
             var conflict = false
-            val stored = try {
+            val written = try {
                 gate.attempt({ m -> _state.update { it.copy(message = m) } }) {
                     try {
                         session.writeSettings(update)
                     } catch (e: DeviceError.Att) {
+                        // The write's own answer: a read-back problem comes with a stored write.
                         if (e.code == AttError.JSON_RANGE.code) conflict = true
                         throw e
                     }
@@ -87,11 +88,15 @@ class SettingsViewModel(private val session: DeviceSession, private val gate: Pa
             } finally {
                 _state.update { it.copy(saving = false) }
             }
-            if (stored != null) {
+            if (written != null) {
+                val stored = written.settings
+                val message = written.readBackError?.let {
+                    UiMessage("Saved, but reading the settings back failed: ${it.message}", UiMessage.Kind.WARNING)
+                } ?: UiMessage("Saved.", UiMessage.Kind.SUCCESS)
                 // Edits made while saving stay.
                 _state.update { s ->
                     val edited = SettingsUpdate.diff(sent, s.edited ?: sent).applyTo(stored).fixup()
-                    s.copy(base = stored, edited = edited, message = UiMessage("Saved.", UiMessage.Kind.SUCCESS))
+                    s.copy(base = stored, edited = edited, message = message)
                 }
             } else if (conflict) {
                 // Most likely changed on the device since the last read: read what it has now.

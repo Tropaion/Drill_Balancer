@@ -27,8 +27,11 @@ interface OtaTransport {
      */
     val ctrlIndications: Flow<ByteArray>
 
-    /** Write with response to ota_ctrl. Throws if the write fails (e.g. ATT 0x05, 0x87). */
-    suspend fun writeCtrl(value: ByteArray)
+    /**
+     * Write with response to ota_ctrl. Throws if the write fails (e.g. ATT 0x05, 0x87) or the
+     * device has not answered it within [timeout].
+     */
+    suspend fun writeCtrl(value: ByteArray, timeout: Duration = OtaClient.WRITE_TIMEOUT)
 
     /**
      * Whether a [writeCtrl] that threw [error] may still have reached the device: the link
@@ -36,6 +39,12 @@ interface OtaTransport {
      * answered by the device with an error. Unknown errors count as delivered.
      */
     fun mayHaveArrived(error: Exception): Boolean = true
+
+    /**
+     * Called right before FINISH is written, with nothing in between that can be cancelled:
+     * from here on the device may install the image and reboot into it.
+     */
+    fun beforeFinish() = Unit
 
     /** Write without response to ota_data; returns once the stack took it. */
     suspend fun writeData(value: ByteArray)
@@ -81,13 +90,17 @@ class OtaException(
  * ([OtaTransport.mayHaveArrived]). A lost link, a FINISH write that may have arrived or a
  * missing reply ends in an unconfirmed OtaException, without ABORT. After a successful
  * FINISH the device reboots into the new image.
+ *
+ * The device checks the image inside the FINISH write's callback and indicates its reply
+ * before it answers the write (ota_proto.c on_finish), so the write itself gets
+ * [verifyTimeout], and after it only [LOST_REPLY_GRACE] for the reply already on its way.
  */
 class OtaClient(
     private val transport: OtaTransport,
     private val stallTimeout: Duration = 3.seconds,
     private val maxStalls: Int = 5,
     private val replyTimeout: Duration = 10.seconds,
-    private val finishTimeout: Duration = 30.seconds,   // image verification takes a while
+    private val verifyTimeout: Duration = 30.seconds,   // the ATT transaction limit
     private val timeSource: TimeSource = TimeSource.Monotonic,
 ) {
     /** Cold: each collection runs one transfer; cancelling the collection aborts it. */
@@ -117,12 +130,15 @@ class OtaClient(
                 }
             }
             try {
-                transfer(image, sha256, inbox, onProgress, beforeFinish = { finishing = true })
+                transfer(image, sha256, inbox, onProgress) {
+                    finishing = true
+                    transport.beforeFinish()
+                }
             } catch (e: Throwable) {
                 // Not when unconfirmed: the device may be installing, and the link is gone.
                 if (!(e is OtaException && e.unconfirmed)) {
                     withContext(NonCancellable) {
-                        runCatching { withTimeoutOrNull(ABORT_TIMEOUT) { transport.writeCtrl(OtaMessage.encodeAbort()) } }
+                        runCatching { transport.writeCtrl(OtaMessage.encodeAbort(), ABORT_TIMEOUT) }
                     }
                 }
                 throw e
@@ -224,7 +240,7 @@ class OtaClient(
         onProgress(OtaProgress(OtaProgress.Phase.VERIFYING, size, size, rate))
         beforeFinish()
         val failed = try {
-            transport.writeCtrl(OtaMessage.encodeFinish())
+            transport.writeCtrl(OtaMessage.encodeFinish(), verifyTimeout)
             null
         } catch (e: CancellationException) {
             throw e
@@ -234,10 +250,9 @@ class OtaClient(
         if (failed != null && !transport.mayHaveArrived(failed)) {
             throw OtaException("The device did not get the request to install the image: ${failed.message}", cause = failed)
         }
-        // The device verifies the image before it answers the write and indicates its reply
-        // before that answer: after a failed write that may have arrived, the reply may be
-        // here already.
-        val fin = withTimeoutOrNull(if (failed == null) finishTimeout else LOST_REPLY_GRACE) { nextReply(inbox, OtaOp.FINISH) }
+        // The reply was indicated before the write's answer: after the write, failed or not,
+        // it is here or on its way.
+        val fin = withTimeoutOrNull(LOST_REPLY_GRACE) { nextReply(inbox, OtaOp.FINISH) }
             ?: throw OtaException(UNCONFIRMED, unconfirmed = true, cause = failed)
         if (fin.status != OtaStatus.OK.code) {
             throw OtaException("FINISH failed: ${OtaStatus.messageFor(fin.status)}", OtaStatus.fromCode(fin.status))
@@ -261,7 +276,22 @@ class OtaClient(
             "Start it again once the app has reconnected."
         const val UNCONFIRMED = "The device's answer was lost while it checked the image, so the app could not " +
             "confirm the update."
-        private val ABORT_TIMEOUT = 2.seconds
+        /** A ctrl write the device answers at once (START, ABORT). */
+        val WRITE_TIMEOUT = 10.seconds
+
+        /**
+         * After an update ends (done, or unconfirmed), the phone sees a device that installs
+         * the image drop the link within this long. The device restarts 0.5 s after its FINISH
+         * reply is confirmed, at most 3 s after FINISH, plus 0.2 s or, if the control task is
+         * busy, up to 5 s (ble_service.c reboot_after, REBOOT_BACKSTOP_US; control.c
+         * APP_CMD_REBOOT). It does not end the link first, so the phone notices only after
+         * the 5 s supervision timeout (CONN_SUPERVISION_TIMEOUT): 13 s at worst. A link that
+         * outlives the window did not reboot.
+         */
+        val REBOOT_WINDOW = 15.seconds
+
+        /** ABORT, best effort on the way out: the device answers it at once. */
+        val ABORT_TIMEOUT = 2.seconds
         private val LOST_REPLY_GRACE = 1.seconds
     }
 }

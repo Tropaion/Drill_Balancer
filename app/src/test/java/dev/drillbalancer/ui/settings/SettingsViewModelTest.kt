@@ -5,6 +5,7 @@ import dev.drillbalancer.device.DeviceError
 import dev.drillbalancer.device.DeviceSession
 import dev.drillbalancer.device.DisconnectReason
 import dev.drillbalancer.device.FakeDeviceSession
+import dev.drillbalancer.device.SettingsWrite
 import dev.drillbalancer.protocol.AttError
 import dev.drillbalancer.protocol.Command
 import dev.drillbalancer.protocol.DeviceSettings
@@ -237,7 +238,7 @@ class SettingsViewModelTest {
         val fake = FakeDeviceSession()
         val write = CompletableDeferred<Unit>()
         val session = object : DeviceSession by fake {
-            override suspend fun writeSettings(update: SettingsUpdate): DeviceSettings {
+            override suspend fun writeSettings(update: SettingsUpdate): SettingsWrite {
                 write.await()
                 return fake.writeSettings(update)
             }
@@ -252,6 +253,32 @@ class SettingsViewModelTest {
         assertEquals(0.45f, s.base!!.toleranceDeg)
         assertEquals(LevelMode.ANGLE, s.edited!!.mode)
         assertEquals(setOf(SettingsField.MODE), s.changed)
+    }
+
+    @Test
+    fun aFailedReadBackStillCountsAsSaved() = runTest(main.dispatcher) {
+        // The device stored the write, then answered the read after it with an error, even
+        // one that looks like the write's 0x82: saved with a warning, and no conflict re-read.
+        val fake = FakeDeviceSession()
+        var reads = 0
+        val session = object : DeviceSession by fake {
+            override suspend fun readSettings(): DeviceSettings {
+                reads++
+                return fake.readSettings()
+            }
+            override suspend fun writeSettings(update: SettingsUpdate) =
+                SettingsWrite(fake.writeSettings(update).settings, DeviceError.Att(AttError.JSON_RANGE.code))
+        }
+        val vm = SettingsViewModel(session, PairingGate(session, backgroundScope))
+        val readsBefore = reads
+        vm.step(SettingsField.TOL, -1)
+        vm.save()
+        val s = vm.state.value
+        assertEquals(0.45f, s.base!!.toleranceDeg)
+        assertTrue(s.changed.isEmpty())
+        assertEquals(UiMessage.Kind.WARNING, s.message?.kind)
+        assertTrue(s.message!!.text, s.message!!.text.startsWith("Saved, but reading the settings back failed"))
+        assertEquals(readsBefore, reads)
     }
 
     @Test

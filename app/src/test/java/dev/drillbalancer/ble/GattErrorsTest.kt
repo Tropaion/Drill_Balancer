@@ -86,8 +86,19 @@ class GattErrorsTest {
 
     @Test
     fun cancelledPairingDialog() {
+        // Nordic fails the current request with -4 when the bonding it started fails.
         assertTrue(err(FailCallback.REASON_REQUEST_FAILED, GattOp.PAIRING) is DeviceError.PairingFailed)
-        assertTrue(err(FailCallback.REASON_REQUEST_FAILED, GattOp.READ) is DeviceError.Link)
+        assertTrue(err(FailCallback.REASON_REQUEST_FAILED, GattOp.OTA) is DeviceError.PairingFailed)
+        assertTrue(err(FailCallback.REASON_REQUEST_FAILED, GattOp.READ) is DeviceError.PairingFailed)
+    }
+
+    @Test
+    fun stackRefusalIsNotAnUnsupportedDevice() {
+        // writeCharacteristic() returned false on a live link (e.g. the stack is busy).
+        val e = err(FailCallback.REASON_NULL_ATTRIBUTE, GattOp.OTA) as DeviceError.Link
+        assertEquals("The phone's Bluetooth stack refused the firmware update. Try again.", e.message)
+        assertFalse(e.sent)
+        assertEquals(GattErrors.Delivery.NOT_SENT, GattErrors.delivery(e))
     }
 
     @Test
@@ -122,13 +133,36 @@ class GattErrorsTest {
         // sees the drop; other stack codes are no surer.
         assertTrue(may(GattErrors.GATT_ERROR))
         assertTrue(may(0x99))
-        assertTrue(may(FailCallback.REASON_REQUEST_FAILED))
+        // The link dropped with a key failure (e.g. a MIC failure mid-update): a stale bond,
+        // but the write may have gone out before.
+        for (code in listOf(GattErrors.HCI_AUTH_FAILURE, GattErrors.HCI_PIN_OR_KEY_MISSING, GattErrors.HCI_MIC_FAILURE)) {
+            val e = err(code, GattOp.OTA, linkUp = false, bonded = true)
+            assertTrue(e.toString(), e is DeviceError.StaleBond && GattErrors.mayHaveArrived(e))
+        }
 
-        // Never sent, or answered by the device with an error.
+        // Never sent: no link, the phone's stack refused it (writeCharacteristic() returned
+        // false), no permission, no such characteristic.
         assertFalse(GattErrors.mayHaveArrived(DeviceError.NotConnected()))
-        assertFalse(may(AttError.UNAVAILABLE.code))
-        assertFalse(may(AttError.INSUFFICIENT_ENCRYPTION.code))   // stale bond
         assertFalse(may(FailCallback.REASON_NULL_ATTRIBUTE))
+        assertFalse(GattErrors.mayHaveArrived(DeviceError.MissingPermission()))
+        assertFalse(GattErrors.mayHaveArrived(DeviceError.Link(DisconnectReason.NOT_SUPPORTED)))
+        // Answered by the device with an error.
+        assertFalse(may(FailCallback.REASON_REQUEST_FAILED))   // encryption required, pairing failed
+        assertFalse(may(AttError.UNAVAILABLE.code))
+        assertFalse(may(AttError.INSUFFICIENT_ENCRYPTION.code))   // stale bond, answered on the live link
+    }
+
+    @Test
+    fun deliveryOfFailedRequests() {
+        fun of(e: Throwable) = GattErrors.delivery(e)
+        assertEquals(GattErrors.Delivery.NOT_SENT, of(err(FailCallback.REASON_NULL_ATTRIBUTE, GattOp.READ)))
+        assertEquals(GattErrors.Delivery.NOT_SENT, of(DeviceError.Link(DisconnectReason.NOT_SUPPORTED)))
+        assertEquals(GattErrors.Delivery.ANSWERED, of(DeviceError.InvalidData("unreadable")))
+        assertEquals(GattErrors.Delivery.ANSWERED, of(DeviceError.PairingFailed()))
+        assertEquals(GattErrors.Delivery.LOST, of(err(FailCallback.REASON_TIMEOUT, GattOp.READ)))
+        assertEquals(GattErrors.Delivery.LOST, of(DeviceError.Link(DisconnectReason.BLUETOOTH_OFF)))
+        assertTrue(GattErrors.answered(DeviceError.Att(0x0E)))
+        assertFalse(GattErrors.answered(DeviceError.Timeout("read")))
     }
 
     @Test
@@ -152,7 +186,11 @@ class GattErrorsTest {
         assertTrue(GattErrors.connectError(setUp, keysLost = true) is DeviceError.StaleBond)
         assertTrue(GattErrors.connectError(DeviceError.NotConnected(), keysLost = true) is DeviceError.StaleBond)
         assertTrue(GattErrors.connectError(setUp, keysLost = false) === setUp)
+        val dropped = err(FailCallback.REASON_DEVICE_DISCONNECTED, GattOp.READ, linkUp = false)
+        assertTrue(GattErrors.connectError(dropped, keysLost = true) is DeviceError.StaleBond)
         // Nothing to do with the keys.
+        val refused = err(FailCallback.REASON_NULL_ATTRIBUTE, GattOp.READ)
+        assertTrue(GattErrors.connectError(refused, keysLost = true) === refused)
         val off = DeviceError.Link(DisconnectReason.BLUETOOTH_OFF)
         assertTrue(GattErrors.connectError(off, keysLost = true) === off)
         val permission = DeviceError.MissingPermission()

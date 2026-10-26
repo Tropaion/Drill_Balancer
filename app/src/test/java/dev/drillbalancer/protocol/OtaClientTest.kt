@@ -2,6 +2,7 @@ package dev.drillbalancer.protocol
 
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.emptyFlow
@@ -17,6 +18,7 @@ import org.junit.Assert.fail
 import org.junit.Test
 import java.io.IOException
 import kotlin.random.Random
+import kotlin.time.Duration
 import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
 
@@ -26,6 +28,8 @@ import kotlin.time.Duration.Companion.seconds
 @OptIn(ExperimentalCoroutinesApi::class) // TestCoroutineScheduler time
 class OtaClientTest {
     private fun image(n: Int, seed: Int = n) = Random(seed).nextBytes(n)
+
+    private val verifyTime = 15.seconds   // longer than an ordinary write may take
 
     private fun TestScope.device(
         maxChunk: Int = 20,
@@ -269,9 +273,9 @@ class OtaClientTest {
         val lost = MutableSharedFlow<Unit>(replay = 1)
         val link = object : OtaTransport by dev {
             override val linkLost: Flow<Unit> = lost
-            override suspend fun writeCtrl(value: ByteArray) {
+            override suspend fun writeCtrl(value: ByteArray, timeout: Duration) {
                 if (value[0].toInt() == OtaOp.FINISH) lost.emit(Unit)
-                dev.writeCtrl(value)
+                dev.writeCtrl(value, timeout)
             }
         }
         val img = image(1000)
@@ -289,12 +293,12 @@ class OtaClientTest {
         val link = object : OtaTransport by dev {
             override val ctrlIndications: Flow<ByteArray> = dev.ctrlIndications.filter { !gone }
             override val linkLost: Flow<Unit> = lost
-            override suspend fun writeCtrl(value: ByteArray) {
+            override suspend fun writeCtrl(value: ByteArray, timeout: Duration) {
                 if (value[0].toInt() == OtaOp.FINISH) {
                     gone = true
                     lost.emit(Unit)
                 }
-                dev.writeCtrl(value)
+                dev.writeCtrl(value, timeout)
             }
         }
         val e = expectUnconfirmed(link, image(1000))
@@ -309,10 +313,10 @@ class OtaClientTest {
     private fun lostAfterFinish(dev: FakeOtaDevice, replyLost: Boolean) = object : OtaTransport by dev {
         var gone = false
         override val ctrlIndications: Flow<ByteArray> = dev.ctrlIndications.filter { !gone }
-        override suspend fun writeCtrl(value: ByteArray) {
-            if (value[0].toInt() != OtaOp.FINISH) return dev.writeCtrl(value)
+        override suspend fun writeCtrl(value: ByteArray, timeout: Duration) {
+            if (value[0].toInt() != OtaOp.FINISH) return dev.writeCtrl(value, timeout)
             gone = replyLost
-            dev.writeCtrl(value)
+            dev.writeCtrl(value, timeout)
             dev.loseLink()
             throw IOException("The connection was lost during the firmware update.")
         }
@@ -348,9 +352,9 @@ class OtaClientTest {
         // plain failure, at once, and ABORT, instead of waiting for a reboot that cannot come.
         val dev = device()
         val link = object : OtaTransport by dev {
-            override suspend fun writeCtrl(value: ByteArray) {
+            override suspend fun writeCtrl(value: ByteArray, timeout: Duration) {
                 if (value[0].toInt() == OtaOp.FINISH) throw IOException("The firmware update was refused.")
-                dev.writeCtrl(value)
+                dev.writeCtrl(value, timeout)
             }
             override fun mayHaveArrived(error: Exception) = false
         }
@@ -364,20 +368,48 @@ class OtaClientTest {
     @Test
     fun finishWithoutReplyIsUnconfirmed() = runTest {
         // The device took the FINISH write but its reply never came: it may install the
-        // image, so no ABORT and no "failed".
+        // image, so no ABORT and no "failed". The reply goes out before the write's answer,
+        // so a missing one is clear after a moment, not after the verification timeout.
         val dev = device()
         var finished = false
         val link = object : OtaTransport by dev {
             override val ctrlIndications: Flow<ByteArray> = dev.ctrlIndications.filter { !finished }
-            override suspend fun writeCtrl(value: ByteArray) {
+            override suspend fun writeCtrl(value: ByteArray, timeout: Duration) {
                 finished = finished || value[0].toInt() == OtaOp.FINISH
-                dev.writeCtrl(value)
+                dev.writeCtrl(value, timeout)
             }
         }
         expectUnconfirmed(link, image(1000))
-        assertEquals(30_000, testScheduler.currentTime)
+        assertEquals(1_000, testScheduler.currentTime)
         assertEquals(OtaOp.FINISH, dev.ctrlWrites.last()[0].toInt())
         assertEquals(FakeOtaDevice.State.DONE, dev.state)
+    }
+
+    @Test
+    fun slowVerificationIsWaitedForByTheFinishWrite() = runTest {
+        // The device checks the image inside the FINISH write's callback: the write, bounded
+        // by the BLE layer's per-request timeout, must outlast a slow check, and the definite
+        // answer then counts (here a rejected image: a failure, not "unconfirmed").
+        val dev = device(timeoutMs = 0)   // the fake would count the check as a data timeout
+        dev.failFinish = true
+        val timeouts = mutableListOf<Duration>()
+        val link = object : OtaTransport by dev {
+            override suspend fun writeCtrl(value: ByteArray, timeout: Duration) {
+                timeouts += timeout
+                if (value[0].toInt() == OtaOp.FINISH) {
+                    // Like Nordic's .timeout(): the write fails once the device took too long.
+                    if (timeout < verifyTime) {
+                        delay(timeout)
+                        throw IOException("timed out")
+                    }
+                    delay(verifyTime)
+                }
+                dev.writeCtrl(value, timeout)
+            }
+        }
+        val e = expectFailure(link, image(1000))
+        assertEquals(OtaStatus.FLASH_ERROR, e.status)
+        assertEquals(listOf(OtaClient.WRITE_TIMEOUT, 30.seconds, OtaClient.ABORT_TIMEOUT), timeouts)   // START, FINISH, ABORT
     }
 
     private suspend fun TestScope.expectUnconfirmed(link: OtaTransport, img: ByteArray): OtaException {
@@ -463,7 +495,7 @@ class OtaClientTest {
             override val mtu = 247
             override val ctrlIndications: Flow<ByteArray> = emptyFlow()
             val writes = mutableListOf<ByteArray>()
-            override suspend fun writeCtrl(value: ByteArray) {
+            override suspend fun writeCtrl(value: ByteArray, timeout: Duration) {
                 writes += value
             }
             override suspend fun writeData(value: ByteArray) = Unit

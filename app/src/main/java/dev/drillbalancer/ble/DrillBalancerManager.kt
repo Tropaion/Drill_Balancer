@@ -50,6 +50,13 @@ internal class DrillBalancerManager(
         fun onOtaCtrl(value: ByteArray)
 
         /**
+         * Asked as the link closes, before the request in flight fails: whether to clear the
+         * GATT cache (the GATT table may change with a firmware update). Any thread: Nordic
+         * also asks when the manager is closed.
+         */
+        fun clearCacheOnClose(): Boolean
+
+        /**
          * Android's pairing request for the device being connected (its system dialog is up).
          * Called on the main thread: Nordic's broadcast receiver has no handler.
          */
@@ -66,9 +73,6 @@ internal class DrillBalancerManager(
     private var firmwareRev: BluetoothGattCharacteristic? = null
     private var otaCtrl: BluetoothGattCharacteristic? = null
     private var otaData: BluetoothGattCharacteristic? = null
-
-    /** Set when the next disconnect follows a firmware update: the GATT table may change. */
-    @Volatile var clearCacheOnDisconnect = false
 
     val currentMtu: Int get() = mtu
     val hasOta: Boolean get() = otaCtrl != null && otaData != null
@@ -133,9 +137,8 @@ internal class DrillBalancerManager(
         otaData = null
     }
 
-    override fun shouldClearCacheWhenDisconnected(): Boolean = clearCacheOnDisconnect.also {
-        clearCacheOnDisconnect = false
-    }
+    // In close(), which Nordic runs as our link drops (autoConnect off) and on our disconnect.
+    override fun shouldClearCacheWhenDisconnected(): Boolean = events.clearCacheOnClose()
 
     // ---- operations ----
 
@@ -174,7 +177,9 @@ internal class DrillBalancerManager(
 
     suspend fun writeCommand(value: ByteArray) = write(command, value, BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT)
 
-    suspend fun writeOtaCtrl(value: ByteArray) = write(otaCtrl, value, BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT)
+    /** [timeoutMs]: FINISH is answered only once the device has checked the image. */
+    suspend fun writeOtaCtrl(value: ByteArray, timeoutMs: Long) =
+        write(otaCtrl, value, BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT, timeoutMs)
 
     /** Completes once Android took the packet (onCharacteristicWrite): no flooding. */
     suspend fun writeOtaData(value: ByteArray) = write(otaData, value, BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE)
@@ -202,8 +207,8 @@ internal class DrillBalancerManager(
         return data?.value ?: ByteArray(0)
     }
 
-    private suspend fun write(c: BluetoothGattCharacteristic?, value: ByteArray, type: Int) {
-        writeCharacteristic(c, value, type).timeout(TIMEOUT_MS).awaitOnHandler()
+    private suspend fun write(c: BluetoothGattCharacteristic?, value: ByteArray, type: Int, timeoutMs: Long = TIMEOUT_MS) {
+        writeCharacteristic(c, value, type).timeout(timeoutMs).awaitOnHandler()
     }
 
     /**

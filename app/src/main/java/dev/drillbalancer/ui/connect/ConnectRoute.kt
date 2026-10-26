@@ -14,7 +14,6 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -36,12 +35,11 @@ fun ConnectRoute(vm: ConnectViewModel) {
     val activity = LocalActivity.current
     val state by vm.state.collectAsStateWithLifecycle()
     var readiness by remember { mutableStateOf(BlePermissions.readiness(context)) }
-    var denied by rememberSaveable { mutableStateOf(false) }
+    var prompt by rememberSaveable { mutableStateOf(PermissionPrompt.ASK) }
     // The request in flight: permissions with a rationale before it and when it was launched
-    // (elapsedRealtime, so it survives a recreated activity), and the silent refusals before.
+    // (elapsedRealtime, so it survives a recreated activity).
     var rationaleBefore by rememberSaveable { mutableStateOf<Set<String>>(emptySet()) }
     var requestedAt by rememberSaveable { mutableLongStateOf(0L) }
-    var silentInARow by rememberSaveable { mutableIntStateOf(0) }
     val withRationale = { permissions: Collection<String> ->
         permissions.filterTo(HashSet()) { activity != null && ActivityCompat.shouldShowRequestPermissionRationale(activity, it) }
     }
@@ -74,8 +72,8 @@ fun ConnectRoute(vm: ConnectViewModel) {
         val refused = result.filterValues { !it }.keys
         val after = withRationale(refused)
         val elapsed = SystemClock.elapsedRealtime() - requestedAt
-        denied = activity != null && PermissionOutcome.deniedForGood(refused, rationaleBefore, after, elapsed, silentInARow)
-        silentInARow = if (PermissionOutcome.silent(refused, rationaleBefore, after)) silentInARow + 1 else 0
+        // Without an activity there is no rationale to tell by: offer both.
+        prompt = if (activity == null) PermissionPrompt.ASK_OR_SETTINGS else PermissionOutcome.after(refused, rationaleBefore, after, elapsed)
     }
     val forResult = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { refresh() }
     val launch = { intent: Intent ->
@@ -90,7 +88,7 @@ fun ConnectRoute(vm: ConnectViewModel) {
     ConnectScreen(
         state = state,
         readiness = readiness,
-        permissionsDenied = denied,
+        permissionPrompt = prompt,
         legacyLocation = BlePermissions.needsLocationServices(),
         actions = ConnectActions(
             requestPermissions = {
