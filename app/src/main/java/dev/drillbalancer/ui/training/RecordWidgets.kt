@@ -2,6 +2,7 @@ package dev.drillbalancer.ui.training
 
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -112,19 +113,20 @@ fun Hint(text: String, modifier: Modifier = Modifier) {
     Text(text, modifier, style = MaterialTheme.typography.bodyMedium, color = Grey)
 }
 
-/** A scrolling body over a bar with the screen's main actions (the setup and record screens). */
+/** A scrolling body ([scroll]) over a bar with the screen's main actions (the setup, record and review screens). */
 @Composable
 internal fun ScreenWithBar(
     modifier: Modifier,
     barSpacing: Dp,
     bar: @Composable ColumnScope.() -> Unit,
+    scroll: ScrollState = rememberScrollState(),
     content: @Composable ColumnScope.() -> Unit,
 ) {
     Column(modifier.fillMaxSize()) {
         Column(
             Modifier
                 .weight(1f)
-                .verticalScroll(rememberScrollState())
+                .verticalScroll(scroll)
                 .padding(horizontal = 16.dp, vertical = 8.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
             content = content,

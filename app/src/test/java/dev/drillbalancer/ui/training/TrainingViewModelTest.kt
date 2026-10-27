@@ -111,7 +111,7 @@ class TrainingViewModelTest {
         assertEquals("Metal · steel · hammer", vm.state.value.title)
     }
 
-    /** A recording changed by the finalizer or a saved review (store.changes) reloads the list. */
+    /** A recording changed by the finalizer, a saved review or a delete (store.changes) reloads the list. */
     @Test
     fun theListReloadsWhenARecordingChanges() = runTest(main.dispatcher) {
         val store = RecordingStore(File(tmp.root, "rec"))
@@ -133,6 +133,10 @@ class TrainingViewModelTest {
         store.changed(j.recordingId)
         advanceUntilIdle()
         assertEquals(listOf(j.recordingId), vm.state.value.rows.map { it.id })
+        // a take deleted from its review (RecordingStore.remove): its row goes
+        assertTrue(store.remove(j.recordingId))
+        advanceUntilIdle()
+        assertEquals(listOf<String>(), vm.state.value.rows.map { it.id })
     }
 
     @Test

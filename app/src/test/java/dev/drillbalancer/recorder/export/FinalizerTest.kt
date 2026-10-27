@@ -241,12 +241,14 @@ class FinalizerTest {
         assertTrue(labelled.isEmpty())
         // a take being recorded is left alone
         val d = "20261026T143312Z_k7q2_dddd"
-        install(journal(d, state = JournalState.RECORDING), imuOnly(7))
+        val bytes = imuOnly(7)
+        val writer = store.create(journal(d, state = JournalState.RECORDING), 1_000) { 0L }.apply { append(bytes, 0, bytes.size) }
         assertNull(store.finalize(d))
         assertNull(store.read(d)!!.finalizeError)
         assertEquals(RecordingStage.RECORDING, stage(d))
-        assertEquals(listOf<String>(), store.recover(active = setOf(d)))
+        assertEquals(listOf<String>(), store.recover())
         assertFalse(File(store.dir(d), Finalizer.META).exists())
+        writer.close()
     }
 
     @Test

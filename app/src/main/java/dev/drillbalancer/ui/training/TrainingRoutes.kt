@@ -48,6 +48,7 @@ import dev.drillbalancer.ui.components.KeepScreenOn
 import dev.drillbalancer.ui.components.TouchHeight
 import dev.drillbalancer.ui.components.startActivitySafely
 import dev.drillbalancer.ui.theme.Red
+import dev.drillbalancer.ui.training.review.DeleteTakeDialog
 import dev.drillbalancer.ui.training.review.ReviewActions
 import dev.drillbalancer.ui.training.review.ReviewScreen
 import dev.drillbalancer.ui.training.review.ReviewViewModel
@@ -55,6 +56,7 @@ import dev.drillbalancer.ui.training.upload.UploadSettingsActions
 import dev.drillbalancer.ui.training.upload.UploadSettingsScreen
 import dev.drillbalancer.ui.training.upload.UploadSettingsViewModel
 import dev.drillbalancer.upload.LocalUpload
+import dev.drillbalancer.upload.RepoCopy
 import dev.drillbalancer.upload.UploadServices
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.distinctUntilChanged
@@ -72,10 +74,23 @@ class TrainingDeps(
     // a saved review goes into the upload queue
     val review = ReviewRepository(store, labeler) { id -> uploads?.queue?.saved(id) }
 
-    /** Whether [id]'s saved review is in the current data repository (the review says so). Blocking file I/O. */
-    suspend fun uploaded(id: String): Boolean = uploads?.let { LocalUpload.of(store.dir(id), it.prefs.current().repo).done } ?: false
+    /** What the current data repository holds of [id] (the review says so, and Delete take what it keeps). Blocking file I/O. */
+    suspend fun repoCopy(id: String): RepoCopy {
+        val u = uploads ?: return RepoCopy.NONE
+        return LocalUpload.of(store.dir(id), u.prefs.current().repo).repoCopy
+    }
 
-    /** Each time an upload of [id] starts or ends (the review reads [uploaded] again). */
+    /**
+     * Deletes [id] from the phone (the review's Delete take; RecordingStore.remove says how an
+     * upload of it is stopped); the record screen no longer offers it as the last take, and counts
+     * it as deleted when it is one of its session's. Blocking file I/O: not cut short once it runs.
+     */
+    fun delete(id: String): Boolean {
+        val session = store.read(id)?.sessionId
+        return (uploads?.queue?.delete(id) ?: store.remove(id)).also { if (it) controller.deleted(id, session) }
+    }
+
+    /** Whether an upload of [id] is waiting or running, each time that changes (the review reads [repoCopy] again). */
     fun uploadChanges(id: String): Flow<Boolean> = uploads?.queue?.active?.map { id in it }?.distinctUntilChanged() ?: emptyFlow()
 
     fun listViewModel(session: DeviceSession?) = TrainingListViewModel(store, controller, session, uploads = uploads)
@@ -158,15 +173,17 @@ fun UploadSettingsRoute(vm: UploadSettingsViewModel, modifier: Modifier = Modifi
 
 /**
  * The review of a recording's labels (Dest.TrainingReview). Back leaves it with the draft kept
- * (it opens there again); Discard asks first when something was changed, Reset all to auto
- * when it would drop edits (changed, or reviewed before); Save and Accept all close it once the
- * labels are written.
+ * (it opens there again); Undo changes asks first when something was changed, Reset all to auto
+ * when it would drop edits (changed, or reviewed before), Delete take always (saying what the
+ * data repo keeps); Save and Accept all close it once the labels are written, Delete take once
+ * the take is gone.
  */
 @Composable
 fun TrainingReviewRoute(vm: ReviewViewModel, onDone: () -> Unit, modifier: Modifier = Modifier) {
     val state by vm.state.collectAsStateWithLifecycle()
     var confirm by rememberSaveable { mutableStateOf(false) }
     var confirmReset by rememberSaveable { mutableStateOf(false) }
+    var confirmDelete by rememberSaveable { mutableStateOf(false) }
     val done by rememberUpdatedState(onDone)
     LaunchedEffect(state.done) { if (state.done) done() }
     ReviewScreen(
@@ -178,31 +195,32 @@ fun TrainingReviewRoute(vm: ReviewViewModel, onDone: () -> Unit, modifier: Modif
             selectHole = vm::selectHole,
             toggleTag = vm::toggleTag, toggleSuggestion = vm::toggleSuggestion, zoomIn = vm::zoomIn, zoomOut = vm::zoomOut, zoomTo = vm::zoomTo,
             panBack = vm::panBack, panForward = vm::panForward, showAll = vm::showAll, acceptAll = vm::acceptAll,
-            save = vm::save, discard = { if (state.dirty) confirm = true else vm.discard() }, dismissMessage = vm::dismissMessage,
-            retry = vm::retry,
+            save = vm::save, undoChanges = { if (state.dirty) confirm = true else vm.undoChanges() },
+            deleteTake = { confirmDelete = true }, dismissMessage = vm::dismissMessage, retry = vm::retry,
         ),
         modifier,
     )
     if (confirm) {
         ConfirmDialog(
-            title = "Discard your changes?",
+            title = "Undo your changes?",
             text = "The labels go back to how they were saved last.",
-            confirmLabel = "Discard",
+            confirmLabel = "Undo changes",
             confirmColor = Red,
-            onConfirm = vm::discard,
+            onConfirm = vm::undoChanges,
             onDismiss = { confirm = false },
         )
     }
     if (confirmReset) {
         ConfirmDialog(
             title = "Reset all labels to auto?",
-            text = "Every marker, tag and suggestion goes back to what the detector found. Discard still brings back the labels saved last.",
+            text = "Every marker, tag and suggestion goes back to what the detector found. Undo changes still brings back the labels saved last.",
             confirmLabel = "Reset all",
             confirmColor = Red,
             onConfirm = vm::resetAll,
             onDismiss = { confirmReset = false },
         )
     }
+    if (confirmDelete) DeleteTakeDialog(state.repoCopy, state.uploading, onConfirm = vm::deleteTake, onDismiss = { confirmDelete = false })
 }
 
 /**
@@ -251,7 +269,9 @@ class ReviewStores : ViewModel() {
 @Composable
 fun reviewViewModel(id: String, deps: TrainingDeps, stores: ReviewStores): ReviewViewModel {
     DisposableEffect(id, stores) { onDispose(stores.shows(id)) }
-    return viewModel(viewModelStoreOwner = remember(id, stores) { stores.owner(id) }) { ReviewViewModel(id, deps.review, deps.store, uploaded = deps::uploaded, uploadChanges = deps.uploadChanges(id)) }
+    return viewModel(viewModelStoreOwner = remember(id, stores) { stores.owner(id) }) {
+        ReviewViewModel(id, deps.review, deps.store, repoCopy = deps::repoCopy, uploadChanges = deps.uploadChanges(id), removeTake = deps::delete)
+    }
 }
 
 /** The review of [id] (its view model in [stores], kept while the review is open). */

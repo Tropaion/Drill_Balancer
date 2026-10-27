@@ -87,7 +87,8 @@ class UploadDeps(
  * rate limit is waited out (here up to [WAIT_HERE_MS], else by a delayed upload after this one);
  * a rejected token (401) stops the whole queue until it is replaced (unless it was replaced
  * meanwhile: then once more with the new one); anything else ends with its reason in upload.json,
- * which the list shows with Retry (its [FailureKind] beside it). Every end but a retry is Result.success (the reason in
+ * which the list shows with Retry (its [FailureKind] beside it). An upload a Delete take stopped
+ * (RecordingStore.remove) ends when its take is gone, else goes on. Every end but a retry is Result.success (the reason in
  * upload.json and the output data): a failure would fail the upload appended after this one
  * without running it (a Save during this upload) and that Save's state would never be sent.
  * A stopped worker's HTTP request is disconnected ([stoppable]).
@@ -159,12 +160,17 @@ class UploadWorker(context: Context, params: WorkerParameters, private val deps:
     ): Result {
         val overwrite = inputData.getBoolean(KEY_OVERWRITE, false)
         var token = first
-        var api = deps.api(repo.first, repo.second, token.token)
-        fun uploader() = DatasetUploader(
-            api, deps.store, settings.repo, BRANCH, settings.muteAudio,
-            overwrite = overwrite, sendLimit = if (foreground) Long.MAX_VALUE else deps.backgroundMaxBytes,
-        )
-        var uploader = uploader()
+        lateinit var api: GitHubApi
+        lateinit var uploader: DatasetUploader
+        // a new client with [token] (a stopped one sends nothing more)
+        fun connect() {
+            api = deps.api(repo.first, repo.second, token.token)
+            uploader = DatasetUploader(
+                api, deps.store, settings.repo, BRANCH, settings.muteAudio,
+                overwrite = overwrite, sendLimit = if (foreground) Long.MAX_VALUE else deps.backgroundMaxBytes,
+            )
+        }
+        connect()
         var waits = 0
         var lastPct = -1
         var swapped = false
@@ -186,6 +192,12 @@ class UploadWorker(context: Context, params: WorkerParameters, private val deps:
                 return Result.success()
             } catch (e: CancellationException) {
                 throw e
+            } catch (_: StoppedByDelete) {
+                // the delete has ended: nothing to send when the take is gone, else it goes on in
+                // this run (no attempt of MAX_ATTEMPTS used, no backoff)
+                if (!deps.store.dir(id).isDirectory) return Result.success()
+                connect()
+                continue
             } catch (e: GitHubException.RateLimited) {
                 if (e.waitMs <= WAIT_HERE_MS && waits < 3) {
                     waits++
@@ -206,8 +218,7 @@ class UploadWorker(context: Context, params: WorkerParameters, private val deps:
                     is TokenRead.Ok -> if (!swapped) {
                         swapped = true
                         token = now
-                        api = deps.api(repo.first, repo.second, token.token)
-                        uploader = uploader()
+                        connect()
                         continue
                     }
                     TokenRead.Unreadable -> Unit
@@ -477,9 +488,9 @@ object UploadNotifications {
  * the settings of now); of one that runs, it is appended (APPEND_OR_REPLACE), so a Save during
  * an upload leads to one more upload of the new state: the worker never ends in failure
  * (UploadWorker), so the appended one runs whatever became of the first. restart: REPLACE even
- * while one runs (it is stopped). What REPLACE drops is carried over: an overwrite (tag
- * [OVERWRITE], the user's Retry after a conflict) stays one, and a rate limit's wait (tag
- * not_before:<epoch ms>) is not cut short.
+ * while one runs (it is stopped). [cancel]: the recording's whole chain (a deleted take). What
+ * REPLACE drops is carried over: an overwrite (tag [OVERWRITE], the user's Retry after a
+ * conflict) stays one, and a rate limit's wait (tag not_before:<epoch ms>) is not cut short.
  */
 class WorkUploadScheduler(context: Context) : UploadScheduler {
     private val wm = WorkManager.getInstance(context.applicationContext)
@@ -497,6 +508,10 @@ class WorkUploadScheduler(context: Context) : UploadScheduler {
         val notBefore = (live.mapNotNull { notBefore(it.tags) } + (now + delayMs)).max()
         val keep = overwrite || live.any { OVERWRITE in it.tags }
         wm.enqueueUniqueWork(name, ExistingWorkPolicy.REPLACE, request(id, wifiOnly, notBefore - now, keep, now))
+    }
+
+    override fun cancel(id: String) {
+        wm.cancelUniqueWork(name(id))
     }
 
     override fun cancelAll() {

@@ -17,6 +17,7 @@ import dev.drillbalancer.recorder.stream.StreamRecord
 import dev.drillbalancer.ui.PairingGate
 import dev.drillbalancer.ui.PairingPrompt
 import dev.drillbalancer.ui.training.asSecure
+import dev.drillbalancer.ui.training.doneText
 import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -158,6 +159,22 @@ class RecordingControllerTest {
             assertEquals(setup, j.setup)
         }
         assertEquals(store.read(first)!!.sessionId, store.read(second)!!.sessionId)
+
+        // Delete take (TrainingDeps.delete): the last take is no longer offered; the session's takes
+        // recorded stay what they were, its deleted ones are counted (DONE says so), another's are not
+        val session = store.read(first)!!.sessionId
+        c.deleted(first, session)
+        assertEquals(second, c.state.value.lastTake!!.recordingId)
+        assertEquals(2 to 1, c.state.value.takes to c.state.value.deleted)
+        c.deleted("20261026T143012Z_k7q2_zzzz", "20261026T143000Z_k7q2")
+        assertEquals(1, c.state.value.deleted)
+        c.deleted(second, session)
+        assertNull(c.state.value.lastTake)
+        assertEquals(2 to 2, c.state.value.takes to c.state.value.deleted)
+        assertEquals("2 takes recorded, all deleted since.", doneText(c.state.value.takes, c.state.value.deleted))
+        assertEquals("2 takes recorded, 1 deleted since. The other is in the list of recordings.", doneText(2, 1))
+        assertEquals("1 take recorded, deleted since.", doneText(1, 1))
+        assertEquals("No take was recorded.", doneText(0, 0))
         assertEquals("read", fake.recorderLog.first())
         assertEquals(listOf("open", "take_start", "stop", "take_start", "stop", "close"), fake.recorderLog.filter { it != "read" })
         assertEquals(1, server.hellos)
@@ -360,6 +377,7 @@ class RecordingControllerTest {
         c.await(3_000, "ready") { it.phase == RecordPhase.READY && it.takes == 1 }
         assertEquals(JournalState.RECORDING, failing.read(id)!!.state)
         assertEquals("disk full", failing.storageError(id))
+        assertFalse("not recorded any more: Delete take may delete it", failing.recording(id))
         assertFalse("not finished", id in finished)
         failing.retry(id)
         val j = failing.read(id)!!

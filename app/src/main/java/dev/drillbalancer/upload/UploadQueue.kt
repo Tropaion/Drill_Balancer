@@ -42,12 +42,35 @@ interface UploadScheduler {
      */
     suspend fun enqueue(id: String, wifiOnly: Boolean, delayMs: Long = 0, overwrite: Boolean = false, restart: Boolean = false)
 
+    /** Drops [id]'s uploads (its take is deleted): one waiting never runs, one running is stopped. */
+    fun cancel(id: String)
+
     /** Stops every upload (the token was rejected). */
     fun cancelAll()
 }
 
-/** What the phone knows of [dir]'s upload without asking GitHub ([waiting]: for the app to be open, UploadRecord.waiting; [kind]: the error's). */
-data class LocalUpload(val done: Boolean = false, val error: String? = null, val waiting: Boolean = false, val kind: FailureKind? = null) {
+/** Where a recording is in the data repos (the review's status, and what Delete take keeps). */
+enum class RepoCopy {
+    NONE,       // not uploaded
+    OLDER,      // uploaded, and saved again since: a label update not sent yet
+    CURRENT,    // its saved review is uploaded
+    ELSEWHERE,  // uploaded to another data repo, set before (that repo keeps it)
+}
+
+/**
+ * What the phone knows of [dir]'s upload without asking GitHub ([waiting]: for the app to be open,
+ * UploadRecord.waiting; [kind]: the error's; [repoCopy]: what the data repo holds of it, also a
+ * commit to one set before: UploadRecord.repos, also after an upload to the new one started).
+ */
+data class LocalUpload(
+    val repoCopy: RepoCopy = RepoCopy.NONE,
+    val error: String? = null,
+    val waiting: Boolean = false,
+    val kind: FailureKind? = null,
+) {
+    /** The data repo holds the recording as it is now. */
+    val done: Boolean get() = repoCopy == RepoCopy.CURRENT
+
     companion object {
         /**
          * [dir]'s upload.json against its files: done when its last commit to [repo] holds the
@@ -58,13 +81,21 @@ data class LocalUpload(val done: Boolean = false, val error: String? = null, val
             val r = UploadRecord.read(dir) ?: return LocalUpload()
             val meta = File(dir, Finalizer.META)
             val committed = r.committed[Finalizer.META]
-            val done = r.repo == repo && r.branch == DatasetUploader.DEFAULT_BRANCH && r.commit != null && committed != null && meta.isFile &&
+            val inRepo = r.repo == repo && r.branch == DatasetUploader.DEFAULT_BRANCH && r.commit != null
+            val done = inRepo && committed != null && meta.isFile &&
                 try {
                     GitHash.blobSha(meta.readBytes()) == committed
                 } catch (_: IOException) {
                     false
                 }
-            return LocalUpload(done, r.error, !done && r.waiting, r.failure)
+            val repos = r.repos
+            val copy = when {
+                done -> RepoCopy.CURRENT
+                repo in repos -> RepoCopy.OLDER
+                repos.isNotEmpty() -> RepoCopy.ELSEWHERE
+                else -> RepoCopy.NONE
+            }
+            return LocalUpload(copy, r.error, !done && r.waiting, r.failure)
         }
     }
 }
@@ -150,6 +181,9 @@ class UploadQueue(
             for (id in ids) if (active[id] == null) scheduler.enqueue(id, wifi)
         }
     }
+
+    /** Deletes [id] from the phone (RecordingStore.remove: how it stops an upload of it), then drops its uploads. Blocking. */
+    fun delete(id: String): Boolean = store.remove(id).also { if (it) scheduler.cancel(id) }
 
     /** Each entry's local upload state (blocking: reads upload.json and hashes meta.json). */
     fun local(entries: List<RecordingEntry>, repo: String): Map<String, LocalUpload> =

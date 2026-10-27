@@ -35,6 +35,12 @@ class UploadException(val kind: Kind, message: String, val retryable: Boolean = 
 }
 
 /**
+ * A Delete take of the recording stopped the upload (RecordingStore.reader), and that delete has
+ * ended: the recording is gone, or the delete failed and it is there as it was (UploadWorker).
+ */
+internal class StoppedByDelete : Exception("a Delete take stopped it")
+
+/**
  * Uploads one reviewed recording to the data repo as one commit through the Git Data API
  * (dataset contract: the phone never writes a dataset-level file):
  *
@@ -44,7 +50,9 @@ class UploadException(val kind: Kind, message: String, val retryable: Boolean = 
  *    the git blob sha, and the sha256 meta.files must hold). meta.json, events.json and the
  *    data files meta.files lists are sent, nothing else; a file over [maxFileBytes] is refused
  *    before anything is sent. The upload then reads the open files, so a Save meanwhile does not
- *    wait for it, and the next upload sends what it changed.
+ *    wait for it, and the next upload sends what it changed. A Delete take meanwhile stops it
+ *    ([api]'s abort; RecordingStore.remove): whatever the cut request threw is then
+ *    [StoppedByDelete], thrown once that delete ended, never a network error.
  * 2. GET the branch's commit (an empty repository: the template is pushed from the PC first)
  *    and the recording's folder there: when its meta.json has the same blob sha the recording
  *    is there already (no commit).
@@ -91,16 +99,28 @@ class DatasetUploader(
         data object NotReviewed : Result
     }
 
-    private class Snapshot(val files: List<BlobFile>, val meta: JsonObject) : Closeable {
+    // the store's reader of the recording until the upload ends (RecordingStore.reader)
+    private class Snapshot(val files: List<BlobFile>, val meta: JsonObject, val reader: RecordingStore.Reader) : Closeable {
         val shas: Map<String, String> = files.associate { it.name to it.gitSha }
-        override fun close() = files.forEach { it.close() }
+
+        override fun close() = try {
+            files.forEach { it.close() }
+        } finally {
+            reader.close()
+        }
     }
 
     /** Uploads [id]; [progress] hears the blob bytes sent of those to send. */
     fun upload(id: String, progress: (sent: Long, total: Long) -> Unit = { _, _ -> }): Result {
         require(RecordingIds.RECORDING_ID.matches(id)) { "not a recording id" }
         val snap = snapshot(id) ?: return Result.NotReviewed
-        snap.use { return push(id, it, progress) }
+        try {
+            snap.use { return push(id, it, progress) }
+        } catch (e: Exception) {
+            if (!snap.reader.stopped) throw e
+            store.awaitRemoved(id)
+            throw StoppedByDelete()
+        }
     }
 
     // A storage error here (reading, or muting) is the phone's, not the network's: retryable, told apart.
@@ -136,7 +156,7 @@ class DatasetUploader(
                     throw UploadException(UploadException.Kind.FILES_CHANGED, "${f.name} does not match its sha256 in meta.json")
                 }
             }
-            Snapshot(open, meta)
+            Snapshot(open, meta, store.reader(id, api::abort))
         } catch (e: Throwable) {
             open.forEach { it.close() }
             throw e

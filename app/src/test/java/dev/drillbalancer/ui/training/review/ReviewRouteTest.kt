@@ -1,14 +1,18 @@
 package dev.drillbalancer.ui.training.review
 
 import android.view.ViewConfiguration
+import androidx.compose.runtime.Composable
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.semantics.getOrNull
 import androidx.compose.ui.test.SemanticsMatcher
+import androidx.compose.ui.test.junit4.StateRestorationTester
 import androidx.compose.ui.test.assert
 import androidx.compose.ui.test.assertCountEquals
+import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.assertIsNotDisplayed
 import androidx.compose.ui.test.hasAnyAncestor
 import androidx.compose.ui.test.hasClickAction
 import androidx.compose.ui.test.hasText
@@ -22,7 +26,9 @@ import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performSemanticsAction
 import androidx.compose.ui.test.performTouchInput
 import androidx.test.core.app.ApplicationProvider
+import dev.drillbalancer.recorder.JournalState
 import dev.drillbalancer.recorder.RecordingStore
+import dev.drillbalancer.recorder.export.FinalizerFixtures
 import dev.drillbalancer.recorder.label.AutoLabeler
 import dev.drillbalancer.recorder.label.LabelFiles
 import dev.drillbalancer.recorder.label.LabelTestData
@@ -33,6 +39,7 @@ import dev.drillbalancer.ui.Themed
 import dev.drillbalancer.ui.awaitReal
 import dev.drillbalancer.ui.components.TouchHeight
 import dev.drillbalancer.ui.training.TrainingReviewRoute
+import dev.drillbalancer.upload.RepoCopy
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -43,6 +50,7 @@ import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 import java.io.File
+import java.io.IOException
 
 /** The review route as the user meets it: what asks first, and what TalkBack and Switch Access can reach. */
 @RunWith(RobolectricTestRunner::class)
@@ -60,10 +68,14 @@ class ReviewRouteTest {
     private var done = false
     private lateinit var id: String
 
-    private fun open(name: String = "fx_stuck_kick"): ReviewViewModel {
+    private fun open(
+        name: String = "fx_stuck_kick",
+        removeTake: (String) -> Boolean = { store.remove(it) },
+        setContent: (@Composable () -> Unit) -> Unit = { compose.setContent(it) },
+    ): ReviewViewModel {
         id = LabelTestData.install(store, name, labeler)
-        val vm = ReviewViewModel(id, ReviewRepository(store, labeler), store)
-        compose.setContent { Themed { TrainingReviewRoute(vm, onDone = { done = true }) } }
+        val vm = ReviewViewModel(id, ReviewRepository(store, labeler), store, removeTake = removeTake)
+        setContent { Themed { TrainingReviewRoute(vm, onDone = { done = true }) } }
         compose.awaitReal(what = "loaded") { !vm.state.value.loading }
         return vm
     }
@@ -80,20 +92,117 @@ class ReviewRouteTest {
     private fun handleOf(m: MarkerView) = compose.onNode(isHandle(m.spokenName()))
 
     @Test
-    fun discardAsksFirstWhenSomethingChanged() {
+    fun undoChangesAsksFirstWhenSomethingChanged() {
         val vm = open()
         val c = vm.contact()
         compose.runOnIdle { vm.drag(c.id, c.tUs + 50_000) }
-        compose.onNodeWithText("Discard").performClick()
-        compose.onNodeWithText("Discard your changes?").assertExists()
+        compose.onNodeWithText("Undo changes").performClick()
+        compose.onNodeWithText("Undo your changes?").assertExists()
         dialogButton("Cancel").performClick()
-        compose.onNodeWithText("Discard your changes?").assertDoesNotExist()
+        compose.onNodeWithText("Undo your changes?").assertDoesNotExist()
         assertTrue(vm.state.value.dirty)
         assertFalse(done)
-        compose.onNodeWithText("Discard").performClick()
-        dialogButton("Discard").performClick()
+        compose.onNodeWithText("Undo changes").performClick()
+        dialogButton("Undo changes").performClick()
         compose.awaitReal(what = "closed") { done }
         assertEquals(null, LabelFiles.readLabels(File(store.dir(id), LabelFiles.DRAFT)))
+        assertTrue("the take stays", store.dir(id).isDirectory)
+    }
+
+    /** Nothing changed: Undo changes closes the review at once. */
+    @Test
+    fun undoChangesWithoutChangesCloses() {
+        open()
+        compose.onNodeWithText("Undo changes").performClick()
+        compose.onNodeWithText("Undo your changes?").assertDoesNotExist()
+        compose.awaitReal(what = "closed") { done }
+        assertTrue(store.dir(id).isDirectory)
+    }
+
+    /** Delete take asks first, saying what goes (a take not uploaded: for good); confirmed, the take is gone and the review closes. */
+    @Test
+    fun deleteTakeAsksFirstThenCloses() {
+        open()
+        compose.onNodeWithText("Delete take").performScrollTo().performClick()
+        compose.onNodeWithText("Delete this take?").assertExists()
+        compose.onNodeWithText(deleteTakeText(RepoCopy.NONE, false)).assertExists()
+        dialogButton("Cancel").performClick()
+        compose.onNodeWithText("Delete this take?").assertDoesNotExist()
+        assertFalse(done)
+        assertTrue(store.dir(id).isDirectory)
+        compose.onNodeWithText("Delete take").performScrollTo().performClick()
+        dialogButton("Delete").performClick()
+        compose.awaitReal(what = "closed") { done }
+        assertFalse(store.dir(id).exists())
+    }
+
+    /** A delete that fails says so where it is seen: the review scrolls up to the message (Delete take is at the end). */
+    @Test
+    fun aFailedDeleteShowsItsMessage() {
+        val vm = open(removeTake = { throw IOException("Permission denied") })
+        compose.onNodeWithText("Delete take").performScrollTo().performClick()
+        compose.onNodeWithText("All").assertIsNotDisplayed()          // the top of the review is out of view
+        dialogButton("Delete").performClick()
+        compose.awaitReal(what = "failed") { vm.state.value.message != null }
+        compose.onNodeWithText("Deleting failed (Permission denied).").assertIsDisplayed()
+        assertFalse(done)
+        assertTrue(store.dir(id).isDirectory)
+    }
+
+    /**
+     * Only a new message scrolls the review up: one already there when the review comes into
+     * view again (a rotation) leaves it where it was.
+     */
+    @Test
+    fun aMessageShownBeforeARotationDoesNotScrollTheReviewUp() {
+        val restore = StateRestorationTester(compose)
+        val vm = open(removeTake = { throw IOException("Permission denied") }, setContent = { restore.setContent(it) })
+        compose.onNodeWithText("Delete take").performScrollTo().performClick()
+        dialogButton("Delete").performClick()
+        compose.awaitReal(what = "failed") { vm.state.value.message != null }
+        compose.onNodeWithText("Deleting failed (Permission denied).").assertIsDisplayed()
+        compose.onNodeWithText("Delete take").performScrollTo()          // down again, the message kept
+        compose.onNodeWithText("All").assertIsNotDisplayed()
+        restore.emulateSavedInstanceStateRestore()
+        compose.waitForIdle()
+        compose.onNodeWithText("Delete take").assertIsDisplayed()
+        compose.onNodeWithText("All").assertIsNotDisplayed()
+    }
+
+    /** A take that cannot be reviewed still offers Delete take (it asks first); deleted, the review closes. */
+    @Test
+    fun aTakeThatCannotBeReviewedCanBeDeleted() {
+        val j = FinalizerFixtures.install(store, "rich")
+        id = j.recordingId
+        store.write(store.read(id)!!.copy(state = JournalState.COMPLETE, finalizeError = "the take has no SESSION record"))
+        val vm = ReviewViewModel(id, ReviewRepository(store, labeler), store)
+        compose.setContent { Themed { TrainingReviewRoute(vm, onDone = { done = true }) } }
+        compose.awaitReal(what = "failed") { vm.state.value.error != null }
+        compose.onNodeWithText("Cannot review").assertIsDisplayed()
+        compose.onNodeWithText("Delete take").performScrollTo().performClick()
+        compose.onNodeWithText(deleteTakeText(RepoCopy.NONE, false)).assertExists()
+        dialogButton("Delete").performClick()
+        compose.awaitReal(what = "closed") { done }
+        assertFalse(store.dir(id).exists())
+    }
+
+    /** A failed Delete take of a take that cannot be reviewed: its message's OK dismisses it. */
+    @Test
+    fun aFailedDeleteOfATakeThatCannotBeReviewedCanBeDismissed() {
+        val j = FinalizerFixtures.install(store, "rich")
+        id = j.recordingId
+        store.write(store.read(id)!!.copy(state = JournalState.COMPLETE, finalizeError = "the take has no SESSION record"))
+        val vm = ReviewViewModel(id, ReviewRepository(store, labeler), store, removeTake = { throw IOException("Permission denied") })
+        compose.setContent { Themed { TrainingReviewRoute(vm, onDone = { done = true }) } }
+        compose.awaitReal(what = "failed") { vm.state.value.error != null }
+        compose.onNodeWithText("Delete take").performScrollTo().performClick()
+        dialogButton("Delete").performClick()
+        compose.awaitReal(what = "delete failed") { vm.state.value.message != null }
+        compose.onNodeWithText("Deleting failed (Permission denied).").assertIsDisplayed()
+        compose.onNodeWithText("OK").performClick()
+        compose.onNodeWithText("Deleting failed (Permission denied).").assertDoesNotExist()
+        compose.onNodeWithText("Cannot review").assertIsDisplayed()
+        assertFalse(done)
     }
 
     @Test

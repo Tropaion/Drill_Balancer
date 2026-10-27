@@ -82,11 +82,7 @@ fun TrainingRecordScreen(state: RecordUiState, actions: RecordActions, modifier:
             RecordPhase.DONE -> Panel(border = Green) {
                 Text("Session finished", style = MaterialTheme.typography.headlineSmall)
                 Text(
-                    when (r.takes) {
-                        0 -> "No take was recorded."
-                        1 -> "1 take recorded. It is in the list of recordings."
-                        else -> "${r.takes} takes recorded. They are in the list of recordings."
-                    },
+                    doneText(r.takes, r.deleted),
                     style = MaterialTheme.typography.bodyLarge,
                 )
             }
@@ -99,6 +95,17 @@ fun TrainingRecordScreen(state: RecordUiState, actions: RecordActions, modifier:
         if (r.phase == RecordPhase.READY || r.phase == RecordPhase.DONE || r.phase == RecordPhase.FAILED) {
             r.lastTake?.let { LastTake(it, r.takes) { actions.review(it.recordingId) } }
         }
+    }
+}
+
+/** What DONE says of the session's [takes], [deleted] of them deleted since (the review's Delete take). */
+internal fun doneText(takes: Int, deleted: Int): String {
+    val kept = takes - deleted
+    return when {
+        takes == 0 -> "No take was recorded."
+        deleted == 0 -> if (takes == 1) "1 take recorded. It is in the list of recordings." else "$takes takes recorded. They are in the list of recordings."
+        kept == 0 -> if (takes == 1) "1 take recorded, deleted since." else "$takes takes recorded, all deleted since."
+        else -> "$takes takes recorded, $deleted deleted since. " + if (kept == 1) "The other is in the list of recordings." else "The others are in the list of recordings."
     }
 }
 

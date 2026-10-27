@@ -211,11 +211,23 @@ class RecordingController(
         _state.update { if (it.phase.active) it else RecordingState(bleLinked = it.bleLinked) }
     }
 
+    /**
+     * [id], a take of the session [sessionId], was deleted (the review's Delete take): the record
+     * screen no longer offers it as the last take; one of this session's counts as deleted (its
+     * takes recorded stay what they were).
+     */
+    fun deleted(id: String, sessionId: String?) {
+        _state.update {
+            // never more than it ended: a take that failed to start can stay, uncounted
+            val ours = sessionId != null && sessionId == it.sessionId && it.deleted < it.takes
+            it.copy(lastTake = it.lastTake?.takeIf { t -> t.recordingId != id }, deleted = if (ours) it.deleted + 1 else it.deleted)
+        }
+    }
+
     /** Journals of a run that died are cut to their last record and marked interrupted (once at start-up). */
     fun recover(): Job = scope.launch(io + cleanupGuard) {
-        val active = synchronized(lock) { sink?.writer?.journal?.recordingId }
         try {
-            val ids = store.recover(setOfNotNull(active))
+            val ids = store.recover()
             if (ids.isNotEmpty()) Log.i(TAG, "recovered interrupted takes: $ids")
         } catch (e: IOException) {
             Log.w(TAG, "recovery failed", e)
@@ -239,6 +251,7 @@ class RecordingController(
                 sessionId = if (retry && it.sessionId != null) it.sessionId else RecordingIds.sessionId(clock.now(), install),
                 setup = setup,
                 takes = if (retry) it.takes else 0,
+                deleted = if (retry) it.deleted else 0,
                 lastTake = if (retry) it.lastTake else null,
                 bleLinked = it.bleLinked,
             )
@@ -421,7 +434,13 @@ class RecordingController(
             val mine = releaseSink(s)
             withContext(io) {
                 writer.close()
-                if (writer.bytes == 0L) store.delete(journal.recordingId)
+                // a take that never started leaves nothing (a folder that cannot be moved stays, an empty take)
+                if (writer.bytes == 0L) {
+                    try {
+                        store.remove(journal.recordingId)
+                    } catch (_: IOException) {
+                    }
+                }
             }
             _state.update { it.copy(phase = if (mine && it.phase == RecordPhase.RECORDING) RecordPhase.READY else it.phase, recordingId = null) }
             if (e !is Secure.Cancelled) notice(if (e is DeviceError.Att && e.error == AttError.REC_STATE) NOT_READY else errorText(e), error = true)

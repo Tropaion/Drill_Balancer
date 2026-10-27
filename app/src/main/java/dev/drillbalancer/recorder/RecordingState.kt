@@ -61,6 +61,7 @@ data class RecordingState(
     val lan: Boolean = false,           // the simulator over the current network
     val recordingId: String? = null,    // the take being recorded
     val takes: Int = 0,                 // ended this session
+    val deleted: Int = 0,               // of those, deleted since (the review's Delete take)
     val lastTake: TakeSummary? = null,
     val live: LiveView = LiveView(),
     val stalled: Boolean = false,

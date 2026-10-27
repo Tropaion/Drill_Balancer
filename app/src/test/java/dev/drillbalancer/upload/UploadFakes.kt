@@ -3,6 +3,7 @@ package dev.drillbalancer.upload
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.update
+import java.util.Collections
 
 /** The upload settings in memory. */
 class FakeUploadPrefs(initial: UploadSettings = UploadSettings()) : UploadPrefs {
@@ -72,9 +73,14 @@ class FakeScheduler : UploadScheduler {
     override val active: Flow<Map<String, ActiveUpload>> = activeFlow
     val enqueued = ArrayList<Enqueued>()
     var cancels = 0
+    val cancelled: MutableList<String> = Collections.synchronizedList(ArrayList())
 
     override suspend fun enqueue(id: String, wifiOnly: Boolean, delayMs: Long, overwrite: Boolean, restart: Boolean) {
         synchronized(enqueued) { enqueued += Enqueued(id, wifiOnly, delayMs, overwrite, restart) }
+    }
+
+    override fun cancel(id: String) {
+        cancelled += id
     }
 
     override fun cancelAll() {

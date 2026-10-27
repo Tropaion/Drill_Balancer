@@ -14,6 +14,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Assert.fail
 import org.junit.Rule
@@ -50,6 +51,40 @@ class DatasetUploaderTest {
     private fun remoteFolder(id: String): Map<String, String> {
         val p = UploadRecord.repoPath(id) + "/"
         return gh.files().filterKeys { it.startsWith(p) }.mapKeys { it.key.removePrefix(p) }
+    }
+
+    /**
+     * The data repo setting changed after an upload: the upload to the new one moves upload.json
+     * there on its first blob, but the repo set before is still known to hold a commit of it (what
+     * Delete take says it keeps), also once the new one holds it, and back on the first one.
+     */
+    @Test
+    fun aRepoSetBeforeIsKeptWhenTheUploadMovesToAnotherOne() {
+        val id = UploadTestData.reviewed(store, labeler)
+        uploader().upload(id)
+        val other = FakeGitHub(owner = "someone", name = "data")
+        try {
+            var blobs = 0
+            val cut = object : GitHubApi by other.api() {
+                override fun createBlob(content: BlobContent, sent: (Long) -> Unit): String {
+                    if (++blobs == 2) throw IOException("connection reset")
+                    return other.api().createBlob(content, sent)
+                }
+            }
+            val b = "someone/data"
+            assertThrows(IOException::class.java) { DatasetUploader(cut, store, b).upload(id) }
+            val rec = UploadRecord.read(dir(id))!!
+            assertEquals("upload.json is the new repo's", b, rec.repo)
+            assertNull(rec.commit)
+            assertEquals(listOf(repo), rec.committedRepos)
+            assertEquals(RepoCopy.ELSEWHERE, LocalUpload.of(dir(id), b).repoCopy)
+            DatasetUploader(other.api(), store, b).upload(id)
+            assertEquals(RepoCopy.CURRENT, LocalUpload.of(dir(id), b).repoCopy)
+            assertEquals("the one before keeps it", setOf(b, repo), UploadRecord.read(dir(id))!!.repos)
+            assertEquals("set back: it holds a commit", RepoCopy.OLDER, LocalUpload.of(dir(id), repo).repoCopy)
+        } finally {
+            other.close()
+        }
     }
 
     @Test

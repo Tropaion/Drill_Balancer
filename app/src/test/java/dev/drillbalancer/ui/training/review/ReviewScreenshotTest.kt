@@ -2,7 +2,9 @@ package dev.drillbalancer.ui.training.review
 
 import androidx.compose.ui.test.junit4.v2.createComposeRule
 import androidx.compose.ui.test.onRoot
+import com.github.takahirom.roborazzi.ExperimentalRoborazziApi
 import com.github.takahirom.roborazzi.captureRoboImage
+import com.github.takahirom.roborazzi.captureScreenRoboImage
 import dev.drillbalancer.recorder.SessionSetup
 import dev.drillbalancer.recorder.label.AutoDetect
 import dev.drillbalancer.recorder.label.LabelCheck
@@ -21,6 +23,7 @@ import dev.drillbalancer.ui.PHONE
 import dev.drillbalancer.ui.SHELL
 import dev.drillbalancer.ui.Themed
 import dev.drillbalancer.ui.components.UiMessage
+import dev.drillbalancer.upload.RepoCopy
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -47,6 +50,8 @@ class ReviewScreenshotTest {
         )
     }
 
+    // a dialog is a window of its own: the whole screen is captured then
+    @OptIn(ExperimentalRoborazziApi::class)
     private fun shot(
         d: ReviewData,
         labels: Labels = d.labels,
@@ -55,13 +60,20 @@ class ReviewScreenshotTest {
         selected: String? = null,
         message: UiMessage? = null,
         cursor: Long = (labels.c0 + labels.c1) / 2,
-        uploaded: Boolean = false,
+        repoCopy: RepoCopy = RepoCopy.NONE,
+        dialog: RepoCopy? = null,
+        uploading: Boolean = false,
     ) {
         val lanes = ReviewViewModel.lanesOf(d.lanes, from, to, d.lanes.values.map { ReviewViewModel.scaleOf(it) })
         val hole = labels.events.firstOrNull { it.id == selected }?.hole
-        val state = ReviewViewModel.stateOf(d, labels, lanes, from, to, cursor, selected, hole, message, uploaded = uploaded)
-        compose.setContent { Themed { InFrame(null, SHELL, title = "Review") { m -> ReviewScreen(state, ReviewActions(), m) } } }
-        compose.onRoot().captureRoboImage()
+        val state = ReviewViewModel.stateOf(d, labels, lanes, from, to, cursor, selected, hole, message, repoCopy = repoCopy)
+        compose.setContent {
+            Themed {
+                InFrame(null, SHELL, title = "Review") { m -> ReviewScreen(state, ReviewActions(), m) }
+                if (dialog != null) DeleteTakeDialog(dialog, uploading, {}, {})
+            }
+        }
+        if (dialog != null) captureScreenRoboImage() else compose.onRoot().captureRoboImage()
     }
 
     /** A take as the detector labelled it: one hole, a stall, a kickback, a restart, the retract (the tool under the title). */
@@ -107,9 +119,9 @@ class ReviewScreenshotTest {
         shot(d, bad, selected = e.markerId, message = UiMessage("Not saved: ${e.message}"))
     }
 
-    /** The whole screen (tall window): the tags of the hole and the detector's suggestions with their auto badge. */
+    /** The whole screen (tall window): the tags of the hole and the detector's suggestions with their auto badge, Delete take at the end. */
     @Test
-    @Config(qualifiers = "w360dp-h1700dp-xhdpi")
+    @Config(qualifiers = "w360dp-h2000dp-xhdpi")
     fun reviewTagsAndSuggestions() {
         val d = data("fx_suggestions")
         val wob = d.labels.spans.first { it.type == "wobble" }
@@ -151,5 +163,39 @@ class ReviewScreenshotTest {
 
     /** A review opened again, uploaded before: its state under the title, Save the main action. */
     @Test
-    fun reviewReopenedUploaded() = shot(data("fx_drill_through", status = "reviewed"), uploaded = true)
+    fun reviewReopenedUploaded() = shot(data("fx_drill_through", status = "reviewed"), repoCopy = RepoCopy.CURRENT)
+
+    /** Delete take's confirmation for a take never uploaded: deleted for good. */
+    @Test
+    fun reviewDeleteNotUploaded() = shot(data("fx_drill_through"), dialog = RepoCopy.NONE)
+
+    /** For an uploaded take: only the phone's copy goes, the data repo keeps it. */
+    @Test
+    fun reviewDeleteUploaded() = shot(data("fx_drill_through", status = "reviewed"), repoCopy = RepoCopy.CURRENT, dialog = RepoCopy.CURRENT)
+
+    /** Uploaded, then saved again: the label update not sent yet is dropped too. */
+    @Test
+    fun reviewDeleteUpdatePending() = shot(data("fx_drill_through", status = "reviewed"), repoCopy = RepoCopy.OLDER, dialog = RepoCopy.OLDER)
+
+    /** Not uploaded yet, its upload under way: it is stopped (one already finishing still lands). */
+    @Test
+    fun reviewDeleteWhileUploading() = shot(data("fx_drill_through", status = "reviewed"), dialog = RepoCopy.NONE, uploading = true)
+
+    private fun notLoaded(state: ReviewUiState) {
+        compose.setContent { Themed { InFrame(null, SHELL, title = "Review") { m -> ReviewScreen(state, ReviewActions(), m) } } }
+        compose.onRoot().captureRoboImage()
+    }
+
+    /** A take no dataset files can be made from: why, and Delete take (a failed one's message above). */
+    @Test
+    fun reviewCannotBeReviewed() = notLoaded(
+        ReviewUiState(
+            loading = false, error = "This recording cannot be reviewed: the take has no SESSION record", canDelete = true,
+            message = UiMessage("Deleting failed (Permission denied)."),
+        ),
+    )
+
+    /** Waiting for its finalize (not running yet): Delete take under it. */
+    @Test
+    fun reviewWaitingDeletable() = notLoaded(ReviewUiState(loading = true, waiting = true, canDelete = true))
 }

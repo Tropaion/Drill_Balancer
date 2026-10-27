@@ -2,7 +2,7 @@ package dev.drillbalancer.ui.training.review
 
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
@@ -11,6 +11,8 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
@@ -18,6 +20,11 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -28,6 +35,7 @@ import dev.drillbalancer.recorder.label.Phase
 import dev.drillbalancer.ui.components.ActionButton
 import dev.drillbalancer.ui.components.BusyPanel
 import dev.drillbalancer.ui.components.ButtonKind
+import dev.drillbalancer.ui.components.ConfirmDialog
 import dev.drillbalancer.ui.components.MessageBanner
 import dev.drillbalancer.ui.components.Panel
 import dev.drillbalancer.ui.components.SectionTitle
@@ -41,6 +49,7 @@ import dev.drillbalancer.ui.theme.Grey
 import dev.drillbalancer.ui.theme.Red
 import dev.drillbalancer.ui.training.Hint
 import dev.drillbalancer.ui.training.ScreenWithBar
+import dev.drillbalancer.upload.RepoCopy
 
 class ReviewActions(
     val tapMarker: (id: String) -> Unit = {},
@@ -62,7 +71,8 @@ class ReviewActions(
     val showAll: () -> Unit = {},
     val acceptAll: () -> Unit = {},
     val save: () -> Unit = {},
-    val discard: () -> Unit = {},
+    val undoChanges: () -> Unit = {},
+    val deleteTake: () -> Unit = {},
     val dismissMessage: () -> Unit = {},
     val retry: () -> Unit = {},
 )
@@ -70,26 +80,56 @@ class ReviewActions(
 /**
  * The review of a recording's labels: the signals with the phases the labels give, markers to
  * drag or nudge (uncertain ones dashed amber until tapped), markers to add, tags per hole and
- * the detector's suggestions, then Accept all / Save / Discard. A review opened again says so
- * (and whether it is uploaded), and Save is its main action.
+ * the detector's suggestions, then Accept all / Save / Undo changes; Delete take at the end of
+ * the content. A review opened again says so (and whether it is uploaded), and Save is its main
+ * action. A take that cannot be reviewed, or is not ready, still offers Delete take
+ * ([ReviewUiState.canDelete]).
  */
 @Composable
 fun ReviewScreen(state: ReviewUiState, actions: ReviewActions, modifier: Modifier = Modifier) {
     when {
-        state.error != null -> Box(modifier.fillMaxSize().padding(16.dp)) {
+        state.error != null -> NotLoaded(state, actions, modifier) {
             Panel(border = Red) {
                 Text("Cannot review", style = MaterialTheme.typography.headlineSmall, color = Red)
                 Text(state.error, style = MaterialTheme.typography.bodyLarge)
-                if (state.canRetry) ActionButton("Try again", actions.retry, Modifier.fillMaxWidth())
+                if (state.canRetry) ActionButton("Try again", actions.retry, Modifier.fillMaxWidth(), enabled = !state.busy)
             }
         }
-        state.loading -> Box(modifier.fillMaxSize().padding(16.dp)) {
+        state.loading -> NotLoaded(state, actions, modifier) {
             BusyPanel(if (state.waiting) "Preparing the recording…" else "Loading the labels…") {
                 if (state.waiting) Hint("Its dataset files are being written and labelled automatically. This takes a few seconds.")
             }
         }
-        else -> ScreenWithBar(modifier, barSpacing = 8.dp, bar = { Bar(state, actions) }) { Body(state, actions) }
+        else -> {
+            val scroll = rememberScrollState()
+            // A new message is at the top: brought into view (a failed Save or Delete take is pressed
+            // further down). Not one there when the review came into view (a rotation, the other host):
+            // the review stays where it was.
+            var seen by remember { mutableStateOf(state.message) }
+            LaunchedEffect(state.message) {
+                val m = state.message
+                if (m != null && m != seen) scroll.animateScrollTo(0)
+                seen = m
+            }
+            ScreenWithBar(modifier, barSpacing = 8.dp, bar = { Bar(state, actions) }, scroll = scroll) { Body(state, actions) }
+        }
     }
+}
+
+/** The review not loaded ([content]: why), with a Delete take's message above and Delete take below when it is offered. */
+@Composable
+private fun NotLoaded(state: ReviewUiState, actions: ReviewActions, modifier: Modifier, content: @Composable () -> Unit) {
+    Column(modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        state.message?.let { MessageBanner(it, actionLabel = "OK", onAction = actions.dismissMessage) }
+        content()
+        if (state.canDelete) DeleteTakeButton(state, actions)
+    }
+}
+
+// the take itself, apart from its labels: last, and asks first (TrainingReviewRoute)
+@Composable
+private fun DeleteTakeButton(state: ReviewUiState, actions: ReviewActions) {
+    ActionButton("Delete take", actions.deleteTake, Modifier.fillMaxWidth(), enabled = !state.busy, kind = ButtonKind.DANGER_OUTLINED)
 }
 
 @OptIn(ExperimentalLayoutApi::class)
@@ -98,7 +138,7 @@ private fun Body(state: ReviewUiState, actions: ReviewActions) {
     state.message?.let { MessageBanner(it, actionLabel = "OK", onAction = actions.dismissMessage) }
     if (state.title.isNotEmpty()) Text(state.title, style = MaterialTheme.typography.titleMedium)
     if (state.tool.isNotEmpty()) Hint(state.tool)
-    state.status?.let { Text(it, style = MaterialTheme.typography.bodyMedium, color = if (state.uploaded) Green else Blue) }
+    state.status?.let { Text(it, style = MaterialTheme.typography.bodyMedium, color = if (state.repoCopy == RepoCopy.CURRENT) Green else Blue) }
     SignalPlot(state, actions)
     Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
         StepButton("−", "Zoom out", state.toUs - state.fromUs < state.c1Us - state.c0Us, actions.zoomOut)
@@ -175,17 +215,53 @@ private fun Body(state: ReviewUiState, actions: ReviewActions) {
         }
     }
     ActionButton("Reset all to auto", actions.resetAll, Modifier.fillMaxWidth(), kind = ButtonKind.SECONDARY)
+    DeleteTakeButton(state, actions)
 }
 
 @Composable
 private fun Bar(state: ReviewUiState, actions: ReviewActions) {
     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        ActionButton("Discard", actions.discard, Modifier.weight(1f), enabled = !state.busy, kind = ButtonKind.SECONDARY)
+        // "Undo changes" is the longest label: the widest button, so it fits a 360 dp phone in one line
+        ActionButton("Undo changes", actions.undoChanges, Modifier.weight(1.5f), enabled = !state.busy, kind = ButtonKind.SECONDARY)
         // a new review ends with Accept all; one changed, or reviewed before, with Save
         val save = state.dirty || state.reviewed
         ActionButton("Save", actions.save, Modifier.weight(1f), enabled = !state.busy, kind = if (save) ButtonKind.PRIMARY else ButtonKind.SECONDARY)
-        ActionButton("Accept all", actions.acceptAll, Modifier.weight(1.2f), enabled = !state.busy, kind = if (save) ButtonKind.SECONDARY else ButtonKind.PRIMARY)
+        ActionButton("Accept all", actions.acceptAll, Modifier.weight(1.3f), enabled = !state.busy, kind = if (save) ButtonKind.SECONDARY else ButtonKind.PRIMARY)
     }
+}
+
+/**
+ * What Delete take's confirmation says: what goes, and what the data repo keeps ([RepoCopy]);
+ * [uploading]: an upload of it is waiting or running (it is stopped, unless it is already committing).
+ */
+fun deleteTakeText(copy: RepoCopy, uploading: Boolean): String {
+    val text = when (copy) {
+        RepoCopy.NONE ->
+            if (uploading) {
+                "It is not uploaded yet: its upload is stopped and its files are deleted from the phone for good."
+            } else {
+                "It was not uploaded: its files are deleted from the phone for good, and it will never be uploaded."
+            }
+        RepoCopy.CURRENT -> "It is uploaded: only the phone's copy is deleted. The data repo keeps it."
+        RepoCopy.OLDER ->
+            "It is uploaded: only the phone's copy is deleted. The data repo keeps the labels it has; the label update not sent yet is dropped."
+        RepoCopy.ELSEWHERE ->
+            "It was uploaded to the data repo set before: only the phone's copy is deleted, and that repo keeps it."
+    }
+    return if (uploading) "$text An upload of it that is already finishing still reaches the data repo." else text
+}
+
+/** Delete take's confirmation (red). */
+@Composable
+fun DeleteTakeDialog(copy: RepoCopy, uploading: Boolean, onConfirm: () -> Unit, onDismiss: () -> Unit) {
+    ConfirmDialog(
+        title = "Delete this take?",
+        text = deleteTakeText(copy, uploading),
+        confirmLabel = "Delete",
+        confirmColor = Red,
+        onConfirm = onConfirm,
+        onDismiss = onDismiss,
+    )
 }
 
 @OptIn(ExperimentalLayoutApi::class)

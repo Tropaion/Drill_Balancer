@@ -22,7 +22,11 @@ import java.io.IOException
 import java.io.RandomAccessFile
 import java.time.Instant
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.locks.Condition
+import java.util.concurrent.locks.ReentrantLock
+import kotlin.concurrent.withLock
 
 /** Where a take's journal stands. */
 @Serializable
@@ -154,13 +158,14 @@ class RecordingStore(
 ) {
     private val json = Json { ignoreUnknownKeys = true; encodeDefaults = true }
     private val finalizing = Any()                                   // one finalize (and its labelling) at a time
-    private val folderLocks = ConcurrentHashMap<String, Any>()       // per recording: its files written by one at a time
+    private val folderLocks = ConcurrentHashMap<String, FolderLock>()    // per recording: its files written by one at a time
     private val _changes = MutableStateFlow(0)
 
     @Volatile
     private var preparingId: String? = null
     private val storageErrors = ConcurrentHashMap<String, String>()
     private val unclosed = ConcurrentHashMap<String, TakeJournal>()  // how a take ended, when its journal could not be closed
+    private val writing = ConcurrentHashMap.newKeySet<String>()       // takes whose journal is open ([create] until its writer closes)
 
     // What list() read of each finished take's folder (not one being recorded: its stream grows),
     // until [forget]; a read that overlapped a forget is not kept ([generations]).
@@ -168,10 +173,36 @@ class RecordingStore(
     private val folders = ConcurrentHashMap<String, Folder>()
     private val generations = ConcurrentHashMap<String, Long>()
 
+    // A recording's folder lock, with its open [Reader]s and its [remove]s under way (under it), and a
+    // signal when one of them starts or ends.
+    internal class FolderLock : ReentrantLock() {
+        val readers = ArrayList<Reader>()
+        var removing = 0
+        val readersChanged: Condition = newCondition()
+    }
+
+    /** [reader]'s handle: [stopped] once a [remove] asked it to stop (its stop called once), [close] lets that remove go on. */
+    class Reader internal constructor(private val lock: FolderLock, private val stop: () -> Unit) : Closeable {
+        @Volatile
+        var stopped = false     // set under lock, before the stop
+            private set
+
+        internal fun stopOnce() {
+            if (!stopped) {
+                stopped = true
+                stop()
+            }
+        }
+
+        override fun close() = lock.withLock {
+            if (lock.readers.remove(this)) lock.readersChanged.signalAll()
+        }
+    }
+
     /** How many folders [list] read from storage (not from what it kept): tests. */
     internal val folderReads = AtomicInteger()
 
-    /** Counts the finalizations (and their failures) and saved reviews, so a list can reload. */
+    /** Counts the finalizations (and their failures), saved reviews and deleted takes, so a list can reload. */
     val changes: StateFlow<Int> = _changes.asStateFlow()
 
     /** [id]'s files changed outside [finalize] (a review saved its labels): [list] reads its folder again, [changes] counts it. */
@@ -184,12 +215,24 @@ class RecordingStore(
     fun preparing(id: String): Boolean = preparingId == id
 
     /**
+     * [id]'s take is being recorded: its journal is open ([create]'s writer, until it is finished
+     * or closed). Not one whose take.json says recording that nobody writes: a journal that could
+     * not be closed ([storageFailed]), or one of a run that died that [recover] has not cut.
+     */
+    fun recording(id: String): Boolean = id in writing
+
+    // [id]'s writer closed (JournalWriter)
+    internal fun closed(id: String) {
+        writing -= id
+    }
+
+    /**
      * Runs [block] while [id]'s files are not finalized or labelled (the review labelling or
      * saving the recording); other recordings' finalizes go on meanwhile. [list] reads the folder
      * again afterwards.
      */
     fun <T> exclusive(id: String, block: () -> T): T = try {
-        synchronized(folderLock(id), block)
+        folderLock(id).withLock(block)
     } finally {
         forget(id)
     }
@@ -200,7 +243,34 @@ class RecordingStore(
         folders.remove(id)
     }
 
-    private fun folderLock(id: String): Any = folderLocks.computeIfAbsent(id) { Any() }
+    private fun folderLock(id: String): FolderLock = folderLocks.computeIfAbsent(id) { FolderLock() }
+
+    /**
+     * [id]'s files are read outside its folder lock from now until the returned handle is closed
+     * (an upload's open snapshot: DatasetUploader). [remove] never moves them meanwhile: it calls
+     * [stop] (the upload's request is cut) and waits for the close. Taken under the folder lock
+     * that made the snapshot ([exclusive]), so no delete comes between the files it opened and this.
+     */
+    fun reader(id: String, stop: () -> Unit): Reader {
+        val l = folderLock(id)
+        l.withLock {
+            val r = Reader(l, stop)
+            l.readers += r
+            l.readersChanged.signalAll()       // a remove waiting for the others stops this one too
+            return r
+        }
+    }
+
+    /**
+     * Returns once no [remove] of [id] is under way (a reader it stopped: whether the take is gone
+     * or stays, the folder says then). Blocking, interruptible.
+     */
+    fun awaitRemoved(id: String) {
+        val l = folderLocks[id] ?: return       // no lock: no remove ever ran
+        l.withLock {
+            while (l.removing > 0) l.readersChanged.await()
+        }
+    }
 
     /** Why the last try to make [id]'s dataset files failed on storage (null: it did not); [retry] tries again. */
     fun storageError(id: String): String? = storageErrors[id]
@@ -225,8 +295,14 @@ class RecordingStore(
     fun create(journal: TakeJournal, syncMs: Long, elapsedMs: () -> Long): JournalWriter {
         val d = dir(journal.recordingId)
         if (!d.mkdirs() && !d.isDirectory) throw IOException("cannot create ${d.name}")
-        write(journal)
-        return JournalWriter(this, journal, File(d, STREAM), elapsedMs, syncMs)
+        writing += journal.recordingId
+        try {
+            write(journal)
+            return JournalWriter(this, journal, File(d, STREAM), elapsedMs, syncMs)
+        } catch (e: Throwable) {
+            writing -= journal.recordingId
+            throw e
+        }
     }
 
     internal fun sync(out: FileOutputStream) = syncFile(out)
@@ -248,11 +324,11 @@ class RecordingStore(
     }
 
     /**
-     * Newest first; folders without a readable take.json are left out. A finished take's folder
+     * Newest first; folders without a readable take.json (and the [TRASH]) are left out. A finished take's folder
      * is read once and kept until its files change ([forget]).
      */
     fun list(): List<RecordingEntry> =
-        (root.listFiles { f -> f.isDirectory } ?: emptyArray()).mapNotNull { d ->
+        (root.listFiles { f -> f.isDirectory && f.name != TRASH } ?: emptyArray()).mapNotNull { d ->
             val id = d.name
             val f = folders[id] ?: readFolder(d)
             f?.let { RecordingEntry(it.journal, it.streamBytes, it.bytes, it.reviewStatus, storageErrors[id]) }
@@ -286,7 +362,7 @@ class RecordingStore(
      * for the same data are kept).
      */
     fun finalize(id: String): FinalizeResult? = synchronized(finalizing) {
-        synchronized(folderLock(id)) {
+        folderLock(id).withLock {
             val j = read(id) ?: return null
             if (j.state == JournalState.RECORDING) return null
             preparingId = id
@@ -363,21 +439,26 @@ class RecordingStore(
         )
     }
 
-    /** Finished takes without dataset files that did not fail before ([active]: still being written). */
-    fun pending(active: Set<String> = emptySet()): List<String> = list().filter {
+    /** Finished takes without dataset files that did not fail before (and whose journal is not open: [recording]). */
+    fun pending(): List<String> = list().filter {
         val j = it.journal
-        j.state != JournalState.RECORDING && !it.finalized && j.finalizeError == null && j.recordingId !in active
+        j.state != JournalState.RECORDING && !it.finalized && j.finalizeError == null && !recording(j.recordingId)
     }.map { it.journal.recordingId }
 
     /**
-     * Journals the app was writing when it died ([active]: the ones it still writes): cut back
-     * to the end of their last complete record and marked interrupted. Then every finished take
+     * Journals the app was writing when it died (not the ones it still writes: [recording]): cut back
+     * to the end of their last complete record and marked interrupted, each under its folder lock
+     * (one deleted meanwhile is left out); one that cannot be is a storage error ([storageFailed]:
+     * the review offers Try again and Delete take), thrown after the others. Then every finished take
      * without dataset files is finalized ([finalize]; the interrupted ones up to their last
      * complete record), each on its own: a storage error on one is thrown after the others were
      * tried. The labels of finalized ones the app died while writing are finished
-     * (Finalizer.repairLabels). Returns the ids cut.
+     * (Finalizer.repairLabels). What deleted takes left in [TRASH] goes first, each under its
+     * folder lock when it has one (a [remove] meanwhile moves into the trash): the trash folder
+     * itself stays. Returns the ids cut.
      */
-    fun recover(active: Set<String> = emptySet()): List<String> {
+    fun recover(): List<String> {
+        for (t in File(root, TRASH).listFiles() ?: emptyArray()) folderLocks[t.name]?.withLock { t.deleteRecursively() } ?: t.deleteRecursively()
         val out = ArrayList<String>()
         var failed: IOException? = null
         for (e in list()) {
@@ -386,16 +467,23 @@ class RecordingStore(
                 try {
                     // the folder is read again only when the repair changed it
                     val id = j.recordingId
-                    if (synchronized(folderLock(id)) { Finalizer.repairLabels(dir(id)) }) forget(id)
+                    if (folderLock(id).withLock { Finalizer.repairLabels(dir(id)) }) forget(id)
                 } catch (x: IOException) {
                     failed = failed ?: x
                 }
             }
-            if (j.state != JournalState.RECORDING || j.recordingId in active) continue
-            interrupt(j)
-            out += j.recordingId
+            val id = j.recordingId
+            if (j.state != JournalState.RECORDING || recording(id)) continue
+            try {
+                folderLock(id).withLock { read(id)?.takeIf { it.state == JournalState.RECORDING }?.let(::interrupt) } ?: continue
+            } catch (x: IOException) {
+                storageFailed(id, x)
+                failed = failed ?: x
+                continue
+            }
+            out += id
         }
-        for (id in pending(active)) {
+        for (id in pending()) {
             try {
                 finalize(id)
             } catch (e: IOException) {
@@ -406,10 +494,66 @@ class RecordingStore(
         return out
     }
 
-    fun delete(id: String): Boolean = try {
-        dir(id).deleteRecursively()
-    } finally {
-        forget(id)
+    /**
+     * Deletes [id] from the phone (the review's Delete take): its whole folder, under its folder
+     * lock ([exclusive]: never while it is finalized, labelled or saved). This is the delete
+     * against an upload of the take: one reading its files ([reader]: DatasetUploader's snapshot)
+     * is stopped first (its stop: the request in flight is cut, none after it) and waited for, at
+     * most [waitMs] (an IOException then, nothing deleted), so the files are never moved while an
+     * upload reads them; that take's uploads only, never another's. An upload that starts after
+     * finds no recording (it sends nothing and writes nothing), and UploadQueue.delete drops the
+     * waiting ones. A reader it stopped hears when it ended ([awaitRemoved]): gone, or, after a
+     * delete that failed, there as it was (its upload goes on in the same run, UploadWorker). What
+     * the data repo holds stays there; so does an upload already committing when it was stopped
+     * (GitHub took its PATCH). The folder is first moved into [TRASH] in one rename, so it is gone
+     * from [list], [recover] and an upload at once, whole: a delete cut short (the app killed, a
+     * file that cannot be deleted) never leaves a half folder that [recover] would finalize again.
+     * What stays in the trash is deleted at the next start ([recover]). True when it removed the
+     * folder ([changes] counts it, so a list reloads); false, with nothing deleted, while its take
+     * is being recorded ([recording]; a journal left recording that nobody writes is deleted) or
+     * when there is no folder. An IOException, with nothing deleted, when the folder cannot be
+     * moved. Blocking: once it runs, it ends.
+     */
+    fun remove(id: String, waitMs: Long = REMOVE_WAIT_MS): Boolean {
+        val l = folderLock(id)
+        val removed = l.withLock {
+            if (recording(id)) return false
+            l.removing++
+            try {
+                removeLocked(id, l, waitMs)
+            } finally {
+                l.removing--
+                l.readersChanged.signalAll()
+            }
+        }
+        if (removed) _changes.update { it + 1 }
+        return removed
+    }
+
+    private fun removeLocked(id: String, l: FolderLock, waitMs: Long): Boolean {
+        var left = TimeUnit.MILLISECONDS.toNanos(waitMs)
+        while (l.readers.isNotEmpty()) {
+            l.readers.forEach { it.stopOnce() }
+            if (left <= 0) throw IOException("its upload does not stop")
+            left = l.readersChanged.awaitNanos(left)
+        }
+        val d = dir(id)
+        val there = d.exists()
+        if (there) {
+            val trash = File(root, TRASH)
+            val t = File(trash, id)
+            try {
+                t.deleteRecursively()       // left by a delete cut short (an id is never made again)
+                if (!trash.mkdirs() && !trash.isDirectory) throw IOException("cannot create $TRASH")
+                if (!d.renameTo(t)) throw IOException("cannot delete $id")
+            } finally {
+                forget(id)
+            }
+            t.deleteRecursively()
+        }
+        storageErrors.remove(id)
+        unclosed.remove(id)
+        return there
     }
 
     fun freeBytes(): Long {
@@ -427,8 +571,12 @@ class RecordingStore(
         const val JOURNAL = "take.json"
         const val META = "meta.json"
         const val AUTO_ONLY = "auto_only"
+        const val TRASH = ".deleted"               // deleted takes on their way out ([remove]); never a recording id
         const val REVIEWED = "reviewed"
         const val OUT_OF_MEMORY = "the app ran out of memory finalizing it"
+
+        /** How long [remove] waits for an upload of the take to stop (its request is cut: it ends at once). */
+        const val REMOVE_WAIT_MS = 30_000L
 
         /**
          * The stage of a recording whose meta.review.status is [reviewStatus] (null: not
@@ -517,6 +665,7 @@ class JournalWriter internal constructor(
     /**
      * Syncs and closes the journal and records how the take ended in take.json. [journal] says
      * so even when that fails on storage (RecordingStore.storageFailed keeps it for the retry).
+     * The take is no longer recorded afterwards either way (RecordingStore.recording).
      */
     @Synchronized
     fun finish(state: JournalState, endReason: String?, note: String?, stats: JournalStats?, ended: Instant) {
@@ -525,12 +674,16 @@ class JournalWriter internal constructor(
             state = state, endReason = endReason, note = note, stats = stats, bytes = bytes, endedUtc = RecordingIds.utc(ended),
         )
         try {
-            store.sync(out)
+            try {
+                store.sync(out)
+            } finally {
+                out.close()
+                closed = true
+            }
+            store.write(journal)
         } finally {
-            out.close()
-            closed = true
+            store.closed(journal.recordingId)
         }
-        store.write(journal)
     }
 
     /** Closes without touching take.json (a take that never started). */
@@ -538,6 +691,10 @@ class JournalWriter internal constructor(
     override fun close() {
         if (closed) return
         closed = true
-        out.close()
+        try {
+            out.close()
+        } finally {
+            store.closed(journal.recordingId)
+        }
     }
 }

@@ -20,6 +20,7 @@ import dev.drillbalancer.recorder.label.Source
 import dev.drillbalancer.ui.components.UiMessage
 import dev.drillbalancer.ui.training.setupTitle
 import dev.drillbalancer.ui.training.toolLine
+import dev.drillbalancer.upload.RepoCopy
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
@@ -103,22 +104,27 @@ data class ReviewUiState(
     val unconfirmed: Int = 0,
     val dirty: Boolean = false,
     val reviewed: Boolean = false,         // saved as reviewed before
-    val uploaded: Boolean = false,         // that review is in the data repo
+    val repoCopy: RepoCopy = RepoCopy.NONE,    // what the data repo holds (the status; what Delete take keeps: TrainingDeps.repoCopy)
+    val uploading: Boolean = false,        // an upload of it waiting or running (Delete take stops it)
     val status: String? = null,            // a review opened again: "Reviewed · uploaded. Save sends a label update."
     val busy: Boolean = false,
     val message: UiMessage? = null,
-    val done: Boolean = false,             // saved or discarded: the screen closes
+    val done: Boolean = false,             // saved, undone or deleted: the screen closes
+    val canDelete: Boolean = false,        // Delete take is offered (ReviewViewModel's rule)
 )
 
 /**
  * The review of one recording: its labels on the signal lanes, edited with markers, nudges,
  * add / delete / reset, confirmations and tags (LabelEdits), a draft kept on every change, and
- * Save after the label check (LabelCheck) or Discard. Holds no Android types. [derive]: the
+ * Save after the label check (LabelCheck), Undo changes or Delete take. Holds no Android types. [derive]: the
  * derived labels (off angle, orientation) of the labels, computed once per labels value on [io]
  * (a drag shows the ones before until they are there). Drafts are written on [io] by a writer
  * that outlives the view model: one not written yet when it is cleared is written after.
- * [uploaded]: whether the recording's saved review is uploaded (read on [io] once it is loaded,
- * and again at each [uploadChanges] while the review is open: an upload that ends meanwhile).
+ * [repoCopy]: what the data repo holds of the recording (read on [io] once it is loaded, and
+ * again at each [uploadChanges] while the review is open: an upload that ends meanwhile);
+ * [uploadChanges]: whether an upload of it is waiting or running.
+ * [removeTake]: deletes the take from the phone, false when it cannot be now (TrainingDeps.delete:
+ * its upload stopped first); blocking, called on [io] under the draft's lock.
  */
 class ReviewViewModel(
     private val id: String,
@@ -126,8 +132,9 @@ class ReviewViewModel(
     private val store: RecordingStore,
     private val io: CoroutineDispatcher = Dispatchers.IO,
     private val derive: (LevelRows?, Labels, Double) -> DerivedLabels = { level, l, tol -> Derived.compute(level, l, tol) },
-    private val uploaded: suspend (id: String) -> Boolean = { false },
-    private val uploadChanges: Flow<*> = emptyFlow<Unit>(),
+    private val repoCopy: suspend (id: String) -> RepoCopy = { RepoCopy.NONE },
+    private val uploadChanges: Flow<Boolean> = emptyFlow(),
+    private val removeTake: (id: String) -> Boolean = { store.remove(it) },
 ) : ViewModel() {
     private data class Model(
         val data: ReviewData,
@@ -137,16 +144,13 @@ class ReviewViewModel(
         val cursorUs: Long,
         val selected: String? = null,
         val hole: Int? = null,
-        val message: UiMessage? = null,
-        val busy: Boolean = false,
-        val done: Boolean = false,
     )
 
     private val model = MutableStateFlow<Model?>(null)
     private val _state = MutableStateFlow(ReviewUiState())
     val state: StateFlow<ReviewUiState> = _state.asStateFlow()
     private val drafts = Channel<Labels>(Channel.CONFLATED)
-    private val files = ReentrantLock()  // the draft, Save and Discard: a draft write never lands after Save or Discard
+    private val files = ReentrantLock()  // the draft, Save, Undo changes and Delete take: a draft write never lands after them
     private var closed = false           // under files
     private var written: Labels? = null  // under files: the draft on storage
     private val toDerive = MutableStateFlow<Labels?>(null)
@@ -155,16 +159,28 @@ class ReviewViewModel(
     private var envelopeKey: Pair<Long, Long>? = null
     private var envelopes: List<LaneView> = emptyList()
     private var scales: List<Pair<Float, Float>> = emptyList()
-    private var uploadedNow = false        // [uploaded], read at the load and at each [uploadChanges]
+
+    // The screen's state besides the labels, loaded or not ([publish] merges it in; main thread).
+    private var notLoaded = ReviewUiState()    // while [model] is null: loading, waiting, or why it cannot be reviewed
+    private var idle = false                   // while it waits: its take is neither recorded nor prepared right now
+    private var busy = false                   // a Save or Delete take under way
+    private var message: UiMessage? = null
+    private var done = false
+    private var repoCopyNow = RepoCopy.NONE    // [repoCopy], read at the load and at each [uploadChanges]
+    private var uploadingNow = false           // the last [uploadChanges]
 
     init {
         viewModelScope.launch { load() }
         viewModelScope.launch {
-            uploadChanges.collect {
-                val u = readUploaded()
-                if (u != uploadedNow) {
-                    uploadedNow = u
+            uploadChanges.collect { active ->
+                val c = readRepoCopy()
+                if (c != repoCopyNow) {
+                    repoCopyNow = c
+                    uploadingNow = active
                     publish()
+                } else if (active != uploadingNow) {
+                    uploadingNow = active
+                    _state.update { it.copy(uploading = active) }       // the status does not change
                 }
             }
         }
@@ -210,23 +226,28 @@ class ReviewViewModel(
     private suspend fun load() {
         while (true) {
             val seen = store.changes.value          // before the look: a change while it looks is not missed
-            when (val src = withContext(io) { repo.source(id) }) {
+            val (src, idle) = withContext(io) { repo.source(id) to (!store.recording(id) && !store.preparing(id)) }
+            when (src) {
                 ReviewSource.Ready -> break
                 is ReviewSource.Failed -> {
-                    _state.value = if (src.outOfMemory) {
-                        ReviewUiState(loading = false, canRetry = true, error = MEMORY_ERROR)
-                    } else if (src.retry) {
-                        ReviewUiState(
-                            loading = false, canRetry = true,
-                            error = "The recording could not be prepared (${src.reason}). Free some space on the phone, then try again.",
-                        )
-                    } else {
-                        ReviewUiState(loading = false, error = "This recording cannot be reviewed: ${src.reason}")
-                    }
+                    unloaded(
+                        if (src.outOfMemory) {
+                            ReviewUiState(loading = false, canRetry = true, error = MEMORY_ERROR)
+                        } else if (src.retry) {
+                            ReviewUiState(
+                                loading = false, canRetry = true,
+                                error = "The recording could not be prepared (${src.reason}). Free some space on the phone, then try again.",
+                            )
+                        } else {
+                            ReviewUiState(loading = false, error = "This recording cannot be reviewed: ${src.reason}")
+                        },
+                    )
                     return
                 }
                 ReviewSource.NotReady -> {
-                    _state.value = ReviewUiState(loading = true, waiting = true)
+                    // idle: one waiting to be finalized, or whose journal says recording that nobody
+                    // writes (the app died, recover has not cut it)
+                    unloaded(ReviewUiState(loading = true, waiting = true), idle)
                     store.changes.first { it != seen }
                 }
             }
@@ -234,34 +255,39 @@ class ReviewViewModel(
         val (data, d) = try {
             withContext(io) { repo.load(id).let { it to derive(it.level, it.labels, it.tolDeg) } }
         } catch (e: Exception) {
-            _state.value = ReviewUiState(loading = false, error = "The recording could not be read (${e.message ?: e.javaClass.simpleName}).")
+            unloaded(ReviewUiState(loading = false, error = "The recording could not be read (${e.message ?: e.javaClass.simpleName})."))
             return
         } catch (_: OutOfMemoryError) {
             // labelling a long take on a small heap: not the take's fault, Try again labels it again
-            _state.value = ReviewUiState(loading = false, canRetry = true, error = MEMORY_ERROR)
+            unloaded(ReviewUiState(loading = false, canRetry = true, error = MEMORY_ERROR))
             return
         }
+        if (done) return              // deleted meanwhile
         scales = data.lanes.values.map { scaleOf(it) }
         val l = data.labels
         derived = d
         derivedOf = l
-        uploadedNow = readUploaded()
-        model.value = Model(
-            data, l, l.c0, l.c1, l.c0 + (l.c1 - l.c0) / 2,
-            hole = l.holes.firstOrNull()?.hole,
-            message = if (data.fromDraft) UiMessage("Your unsaved changes were restored.", UiMessage.Kind.INFO) else null,
-        )
+        repoCopyNow = readRepoCopy()
+        message = if (data.fromDraft) UiMessage("Your unsaved changes were restored.", UiMessage.Kind.INFO) else null
+        update(Model(data, l, l.c0, l.c1, l.c0 + (l.c1 - l.c0) / 2, hole = l.holes.firstOrNull()?.hole))
+    }
+
+    /** The review is not loaded ([s]: an error, or waiting; [idle]: its take is neither recorded nor prepared); nothing once it closed (deleted). */
+    private fun unloaded(s: ReviewUiState, idle: Boolean = false) {
+        if (done) return
+        notLoaded = s
+        this.idle = idle
         publish()
     }
 
-    /** Whether the saved review is uploaded; one whose upload state cannot be read is not. */
-    private suspend fun readUploaded(): Boolean = withContext(io) {
+    /** What the data repo holds of the recording; one whose upload state cannot be read is not uploaded. */
+    private suspend fun readRepoCopy(): RepoCopy = withContext(io) {
         try {
-            uploaded(id)
+            repoCopy(id)
         } catch (e: CancellationException) {
             throw e
         } catch (_: Exception) {
-            false
+            RepoCopy.NONE
         }
     }
 
@@ -269,8 +295,8 @@ class ReviewViewModel(
 
     /** After a storage or memory error (canRetry): makes the recording's files again if they are not there, then opens it. */
     fun retry() {
-        if (!_state.value.canRetry) return
-        _state.value = ReviewUiState(loading = true, waiting = true)
+        if (!_state.value.canRetry || busy) return
+        unloaded(ReviewUiState(loading = true, waiting = true))
         viewModelScope.launch {
             try {
                 withContext(io) { repo.retry(id) }
@@ -367,7 +393,12 @@ class ReviewViewModel(
 
     fun showAll() = view { m -> m.copy(fromUs = m.labels.c0, toUs = m.labels.c1) }
 
-    fun dismissMessage() = edit(remember = false) { it.copy(message = null) }
+    /** Dismisses the message; also the one a failed Delete take left while the review is not loaded. */
+    fun dismissMessage() {
+        if (busy || done) return
+        message = null
+        publish()
+    }
 
     /** Confirms every uncertain marker as it is, then saves. */
     fun acceptAll() {
@@ -378,11 +409,12 @@ class ReviewViewModel(
     /** Checks the labels and saves them as reviewed; the screen closes when it is done. */
     fun save() {
         val m = model.value ?: return
-        if (m.busy) return
+        if (busy || done) return
         val errors = LabelCheck.errors(m.labels)
         if (errors.isNotEmpty()) {
             val first = errors.first()
-            update(m.copy(message = UiMessage("Not saved: ${first.message}"), selected = first.markerId ?: m.selected).let { x ->
+            message = UiMessage("Not saved: ${first.message}")
+            update(m.copy(selected = first.markerId ?: m.selected).let { x ->
                 first.markerId?.let { mid -> x.labels.events.firstOrNull { it.id == mid } }?.let { x.keepVisible(it.tUs) } ?: x
             })
             return
@@ -390,18 +422,14 @@ class ReviewViewModel(
         val open = m.labels.events.filter { LabelEdits.needsConfirm(it) }
         if (open.isNotEmpty()) {
             val n = open.size
-            update(
-                m.copy(
-                    message = UiMessage(
-                        "$n uncertain label${if (n == 1) "" else "s"} (dashed) need${if (n == 1) "s" else ""} a tap to confirm, or use Accept all.",
-                        UiMessage.Kind.WARNING,
-                    ),
-                    selected = open.first().id,
-                ).keepVisible(open.first().tUs),
+            message = UiMessage(
+                "$n uncertain label${if (n == 1) "" else "s"} (dashed) need${if (n == 1) "s" else ""} a tap to confirm, or use Accept all.",
+                UiMessage.Kind.WARNING,
             )
+            update(m.copy(selected = open.first().id).keepVisible(open.first().tUs))
             return
         }
-        update(m.copy(busy = true, message = null))
+        screen(busy = true, message = null)
         viewModelScope.launch {
             try {
                 withContext(io) {
@@ -410,16 +438,15 @@ class ReviewViewModel(
                         closed = true
                     }
                 }
-                model.value?.let { update(it.copy(busy = false, done = true)) }
+                screen(busy = false, message = null, done = true)
             } catch (e: Exception) {
-                model.value?.let { update(it.copy(busy = false, message = UiMessage("Saving failed (${e.message ?: e.javaClass.simpleName}). The draft is kept."))) }
+                screen(busy = false, message = UiMessage("Saving failed (${e.message ?: e.javaClass.simpleName}). The draft is kept."))
             }
         }
     }
 
-    /** Drops the unsaved changes; the screen closes. */
-    fun discard() {
-        val m = model.value
+    /** Undo changes: drops the unsaved changes (the draft); the screen closes. */
+    fun undoChanges() {
         viewModelScope.launch {
             try {
                 withContext(io) {
@@ -430,8 +457,41 @@ class ReviewViewModel(
                 }
             } catch (_: Exception) {
             }
-            if (m != null) update(m.copy(done = true)) else _state.update { it.copy(done = true) }
+            done = true
+            publish()
         }
+    }
+
+    /**
+     * Delete take: the take goes from the phone ([removeTake]; what the data repo holds stays
+     * there), with the draft and the unsaved changes; the screen closes once it is gone. Also of
+     * a take that cannot be reviewed or is not ready ([ReviewUiState.canDelete]). It runs under
+     * the draft's lock: no draft is written after a delete that succeeded, and one waiting for
+     * the writer is written after one that failed (the review goes on).
+     */
+    fun deleteTake() {
+        if (busy || done || !_state.value.canDelete) return
+        screen(busy = true, message = null)
+        viewModelScope.launch {
+            val failed = try {
+                // false: being recorded, or no folder (gone already: done all the same)
+                val gone = withContext(io) { files.withLock { (removeTake(id) || !store.dir(id).exists()).also { if (it) closed = true } } }
+                if (gone) null else "This take cannot be deleted while it is recorded."
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                "Deleting failed (${e.message ?: e.javaClass.simpleName})."
+            }
+            screen(busy = false, message = failed?.let { UiMessage(it) }, done = failed == null)
+        }
+    }
+
+    // A Save's or Delete take's state, loaded or not
+    private fun screen(busy: Boolean, message: UiMessage?, done: Boolean = false) {
+        this.busy = busy
+        this.message = message
+        this.done = done
+        publish()
     }
 
     // ---- state ----
@@ -450,7 +510,7 @@ class ReviewViewModel(
 
     private inline fun edit(remember: Boolean, change: (Model) -> Model) {
         val m = model.value ?: return
-        if (m.busy || m.done) return
+        if (busy || done) return
         val n = change(m)
         if (n === m) return
         update(n)
@@ -463,14 +523,25 @@ class ReviewViewModel(
     }
 
     private fun publish() {
-        val m = model.value ?: return
+        val m = model.value
+        // Delete take: a loaded review, one that cannot be reviewed, and one waiting while its take is
+        // neither recorded nor prepared right now ([idle])
+        val canDelete = m != null || notLoaded.error != null || idle
+        if (m == null) {
+            _state.value = notLoaded.copy(
+                busy = busy, message = message, done = done, repoCopy = repoCopyNow, uploading = uploadingNow, canDelete = canDelete,
+            )
+            return
+        }
         val key = m.fromUs to m.toUs
         if (key != envelopeKey) {
             envelopes = lanesOf(m.data.lanes, m.fromUs, m.toUs, scales)
             envelopeKey = key
         }
         if (m.labels !== derivedOf) toDerive.value = m.labels
-        _state.value = stateOf(m.data, m.labels, envelopes, m.fromUs, m.toUs, m.cursorUs, m.selected, m.hole, m.message, m.busy, m.done, derived, uploadedNow)
+        _state.value = stateOf(
+            m.data, m.labels, envelopes, m.fromUs, m.toUs, m.cursorUs, m.selected, m.hole, message, busy, done, derived, repoCopyNow, uploadingNow, canDelete,
+        )
     }
 
     companion object {
@@ -534,7 +605,9 @@ class ReviewViewModel(
             busy: Boolean = false,
             done: Boolean = false,
             derivedLabels: DerivedLabels? = null,      // Derived.compute of labels; null: computed here
-            uploaded: Boolean = false,
+            repoCopy: RepoCopy = RepoCopy.NONE,
+            uploading: Boolean = false,
+            canDelete: Boolean = false,
         ): ReviewUiState {
             val markers = labels.events.sortedBy { it.tUs }.map { e ->
                 MarkerView(e.id, e.type, e.tUs, shortLabel(e.type, e.hole), LabelEdits.needsConfirm(e), e.source == Source.USER, e.edited)
@@ -586,13 +659,13 @@ class ReviewViewModel(
                 errors = issues.filter { it.error }.map { it.message },
                 warnings = issues.filter { !it.error }.map { it.message },
                 unconfirmed = labels.events.count { LabelEdits.needsConfirm(it) },
-                dirty = labels != data.saved, reviewed = reviewed, uploaded = reviewed && uploaded,
+                dirty = labels != data.saved, reviewed = reviewed, repoCopy = repoCopy, uploading = uploading,
                 status = when {
                     !reviewed -> null
-                    uploaded -> "Reviewed · uploaded. Save sends a label update."
+                    repoCopy == RepoCopy.CURRENT -> "Reviewed · uploaded. Save sends a label update."
                     else -> "Reviewed. Save stores a new revision."
                 },
-                busy = busy, message = message, done = done,
+                busy = busy, message = message, done = done, canDelete = canDelete,
             )
         }
 

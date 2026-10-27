@@ -19,8 +19,12 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
@@ -38,6 +42,7 @@ import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 import java.io.File
+import java.io.IOException
 import java.util.Collections
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
@@ -369,8 +374,18 @@ class UploadWorkerTest {
         assertTrue(LocalUpload.of(store.dir(id), prefs.flow.value.repo).done)
     }
 
-    /** GitHubApi calls of each upload, in order, tagged by the upload (A, B, ...); [hold] stops A's first blob. */
-    private class Calls(private val inner: GitHubApi, private val tag: String, private val log: MutableList<String>, private val hold: (() -> Unit)?) : GitHubApi {
+    /**
+     * GitHubApi calls of each upload, in order, tagged by the upload (A, B, ...); [hold] stops A's
+     * first blob, [holdPatch] its branch update once GitHub took it; [onAbort]: the upload is stopped.
+     */
+    private class Calls(
+        private val inner: GitHubApi,
+        private val tag: String,
+        private val log: MutableList<String>,
+        private val hold: (() -> Unit)?,
+        private val holdPatch: () -> Unit = {},
+        private val onAbort: () -> Unit = {},
+    ) : GitHubApi {
         private fun <T> note(what: String, f: () -> T): T {
             log += "$tag $what"
             return f()
@@ -387,7 +402,12 @@ class UploadWorkerTest {
         }
         override fun createTree(baseTree: String, entries: List<TreeEntry>) = note("tree") { inner.createTree(baseTree, entries) }
         override fun createCommit(message: String, tree: String, parents: List<String>) = note("commit") { inner.createCommit(message, tree, parents) }
-        override fun updateRef(branch: String, commit: String) = note("patch") { inner.updateRef(branch, commit) }
+        override fun updateRef(branch: String, commit: String) = note("patch") { inner.updateRef(branch, commit).also { holdPatch() } }
+        override fun abort() {
+            log += "$tag abort"
+            inner.abort()
+            onAbort()
+        }
     }
 
     /**
@@ -466,5 +486,213 @@ class UploadWorkerTest {
         val b = UploadTestData.reviewed(store, labeler, "golden")
         assertEquals(ListenableWorker.Result.success(), run(b, foregroundAllowed = false))
         assertTrue(LocalUpload.of(store.dir(b), prefs.flow.value.repo).done)
+    }
+
+    // ---- Delete take (UploadQueue.delete) ----
+
+    private fun queue(scope: CoroutineScope) = UploadQueue(store, scheduler, prefs, tokens, scope, Dispatchers.IO)
+
+    private fun inRepo(id: String) = gh.files().filterKeys { it.startsWith(UploadRecord.repoPath(id) + "/") }
+
+    /** A take that was never uploaded: its folder goes for good, its uploads are dropped, and a worker that runs anyway sends nothing. */
+    @Test
+    fun deletingATakeNotUploadedRemovesItForGood() = runBlocking {
+        val id = UploadTestData.reviewed(store, labeler)
+        assertTrue(queue(this).delete(id))
+        assertEquals(listOf(id), scheduler.cancelled.toList())
+        assertFalse(store.dir(id).exists())
+        assertTrue(store.list().none { it.journal.recordingId == id })
+        // an upload of it enqueued again meanwhile (a rate limit's, Upload now's): it finds no recording
+        assertTrue(run(id).ended)
+        assertTrue(gh.requests.toString(), gh.requests.isEmpty())
+        assertFalse("no folder made again", store.dir(id).exists())
+        assertTrue(inRepo(id).isEmpty())
+    }
+
+    /**
+     * An uploaded take, saved again since (the label update not sent yet): LocalUpload says the
+     * data repo holds an older copy (RepoCopy.OLDER); Delete take removes the phone's copy only, the data repo keeps the
+     * upload it has, and the label update is never sent.
+     */
+    @Test
+    fun deletingAnUploadedTakeKeepsTheDataReposCopy() = runBlocking {
+        val id = UploadTestData.reviewed(store, labeler)
+        assertEquals(ListenableWorker.Result.success(), run(id))
+        val repo = prefs.flow.value.repo
+        assertEquals(RepoCopy.CURRENT, LocalUpload.of(store.dir(id), repo).repoCopy)
+        UploadTestData.save(store, labeler, id)
+        assertEquals(RepoCopy.OLDER, LocalUpload.of(store.dir(id), repo).repoCopy)
+        assertFalse(LocalUpload.of(store.dir(id), repo).done)
+        // another repository holds nothing of it; it is in the one set before (Delete take says so)
+        assertEquals(RepoCopy.ELSEWHERE, LocalUpload.of(store.dir(id), "someone/else").repoCopy)
+        val kept = inRepo(id)
+        assertTrue(kept.isNotEmpty())
+        queue(this).enqueue(id)                                  // the label update, waiting
+        assertTrue(queue(this).delete(id))
+        assertEquals(listOf(id), scheduler.cancelled.toList())
+        assertFalse(store.dir(id).exists())
+        assertTrue(run(id).ended)                               // it ran anyway: nothing sent
+        assertEquals(kept, inRepo(id))
+    }
+
+    /** Queued (waiting for its turn or the network): the work is cancelled, nothing of it is uploaded afterwards. */
+    @Test
+    fun deletingAQueuedUploadCancelsIt() = runBlocking {
+        val id = UploadTestData.reviewed(store, labeler)
+        val q = queue(this)
+        q.enqueue(id)
+        scheduler.activeFlow.value = mapOf(id to ActiveUpload.Queued)
+        assertEquals(id, scheduler.enqueued.single().id)
+        assertTrue(q.delete(id))
+        assertEquals(listOf(id), scheduler.cancelled.toList())
+        assertFalse(store.dir(id).exists())
+        assertTrue(run(id).ended)
+        assertTrue(gh.requests.isEmpty())
+        assertTrue(inRepo(id).isEmpty())
+        assertFalse(store.dir(id).exists())
+    }
+
+    /**
+     * The worker for [id] whose first blob waits for [release] once [held] (its files open), on
+     * [log]; [stops]: a stop (the delete's) cuts that wait, as it cuts a request in flight.
+     */
+    private fun heldDeps(log: MutableList<String>, held: CountDownLatch, release: CountDownLatch, stops: Boolean = true) =
+        UploadDeps(store, prefs, tokens, scheduler, api = { o, n, t ->
+            val hold = { if (held.count > 0) { held.countDown(); release.await(30, TimeUnit.SECONDS) } }
+            Calls(HttpGitHubApi(o, n, t, gh.baseUrl), "A", log, hold, onAbort = { if (stops) release.countDown() })
+        })
+
+    /**
+     * Delete take while that take uploads (its first blob in flight, its files open): the upload
+     * is stopped (its request cut, none after it), the delete waits for it to end and then
+     * removes the folder: nothing is committed, no upload.json made again; its work is dropped,
+     * and the run ends as done (the take is gone), never as a network failure.
+     */
+    @Test
+    fun deletingDuringItsUploadStopsItFirst() = runBlocking {
+        val id = UploadTestData.reviewed(store, labeler)
+        val log: MutableList<String> = Collections.synchronizedList(ArrayList())
+        val held = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+        try {
+            val upload = scope.async { worker(id, deps = heldDeps(log, held, release)).doWork() }
+            assertTrue(held.await(30, TimeUnit.SECONDS))
+            assertTrue(withTimeout(30_000) { withContext(Dispatchers.IO) { queue(scope).delete(id) } })
+            assertTrue(log.toString(), "A abort" in log)
+            assertEquals("stopped, the take gone: nothing to retry", ListenableWorker.Result.success(), withTimeout(30_000) { upload.await() })
+            assertEquals(listOf(id), scheduler.cancelled.toList())
+            assertFalse(store.dir(id).exists())
+            assertTrue(log.toString(), log.none { it == "A patch" || it == "A tree" })
+            assertTrue(inRepo(id).isEmpty())
+        } finally {
+            release.countDown()
+            scope.cancel()
+        }
+    }
+
+    /**
+     * An upload that does not stop at once (GitHub took its commit, the answer is on its way):
+     * the delete waits for it, and never removes the files it reads; it does not wait for
+     * another take's upload. The commit stays in the data repo.
+     */
+    @Test
+    fun aDeleteWaitsForThatTakesUploadOnly() = runBlocking {
+        val a = UploadTestData.reviewed(store, labeler, "rich")
+        val b = UploadTestData.reviewed(store, labeler, "golden")
+        val log: MutableList<String> = Collections.synchronizedList(ArrayList())
+        val held = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        val deps = UploadDeps(store, prefs, tokens, scheduler, api = { o, n, t ->
+            Calls(HttpGitHubApi(o, n, t, gh.baseUrl), "A", log, null, holdPatch = { held.countDown(); release.await(30, TimeUnit.SECONDS) })
+        })
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+        try {
+            val upload = scope.async { worker(a, deps = deps).doWork() }
+            assertTrue(held.await(30, TimeUnit.SECONDS))
+            assertTrue("B at once, while A uploads", withTimeout(10_000) { withContext(Dispatchers.IO) { queue(scope).delete(b) } })
+            assertFalse(store.dir(b).exists())
+            val deleting = scope.async { queue(scope).delete(a) }
+            Thread.sleep(300)
+            assertFalse("it waits for A's upload", deleting.isCompleted)
+            assertTrue(log.toString(), "A abort" in log)
+            assertTrue(File(store.dir(a), Finalizer.META).isFile)
+            release.countDown()
+            assertEquals(ListenableWorker.Result.success(), withTimeout(30_000) { upload.await() })
+            assertTrue(withTimeout(30_000) { deleting.await() })
+            assertFalse(store.dir(a).exists())
+            assertTrue("A's commit is in the data repo", inRepo(a).isNotEmpty())
+            assertEquals(listOf(b, a), scheduler.cancelled.toList())
+        } finally {
+            release.countDown()
+            scope.cancel()
+        }
+    }
+
+    /**
+     * A delete that fails (the folder cannot be moved) while the take uploads: the upload it
+     * stopped goes on in the same run once the delete ended (no attempt used, no backoff: on
+     * WorkManager's last attempt it is not written as a network failure), never dropped nor
+     * enqueued again; the take stays.
+     */
+    @Test
+    fun aDeleteThatFailsLeavesTheUploadAsItWas() = runBlocking {
+        val id = UploadTestData.reviewed(store, labeler)
+        val log: MutableList<String> = Collections.synchronizedList(ArrayList())
+        val held = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        File(store.root, RecordingStore.TRASH).writeText("not a folder")          // the move fails
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+        try {
+            val last = worker(id, attempt = UploadWorker.MAX_ATTEMPTS - 1, deps = heldDeps(log, held, release))
+            val upload = scope.async { last.doWork() }
+            assertTrue(held.await(30, TimeUnit.SECONDS))
+            val failed = runCatching { withTimeout(30_000) { withContext(Dispatchers.IO) { queue(scope).delete(id) } } }.exceptionOrNull()
+            assertTrue(failed.toString(), failed is IOException)
+            assertEquals("it goes on and uploads it", ListenableWorker.Result.success(), withTimeout(30_000) { upload.await() })
+            assertTrue(log.toString(), "A abort" in log && "A patch" in log)
+            assertTrue("nothing dropped", scheduler.cancelled.isEmpty())
+            assertTrue("nothing enqueued again", scheduler.enqueued.isEmpty())
+            assertTrue(File(store.dir(id), Finalizer.META).isFile)
+            assertNull("no failure written", error(id))
+            assertTrue(LocalUpload.of(store.dir(id), prefs.flow.value.repo).done)
+        } finally {
+            release.countDown()
+            scope.cancel()
+        }
+    }
+
+    /**
+     * Back while the delete waits for the take's upload to stop (the review is cleared): the
+     * delete is not cut short, it ends, so its outcome is always seen: the take gone, its work
+     * dropped, nothing enqueued again.
+     */
+    @Test
+    fun aDeleteWhoseCallerIsCancelledStillEnds() = runBlocking {
+        val id = UploadTestData.reviewed(store, labeler)
+        val log: MutableList<String> = Collections.synchronizedList(ArrayList())
+        val held = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+        try {
+            val upload = scope.async { worker(id, deps = heldDeps(log, held, release, stops = false)).doWork() }
+            assertTrue(held.await(30, TimeUnit.SECONDS))
+            var result: Boolean? = null
+            val caller = scope.launch { withContext(Dispatchers.IO) { result = queue(scope).delete(id) } }
+            Thread.sleep(300)
+            assertTrue("it waits for the upload", caller.isActive && store.dir(id).isDirectory)
+            caller.cancel()
+            release.countDown()
+            withTimeout(30_000) { caller.join() }
+            withTimeout(30_000) { upload.await() }
+            assertEquals(true, result)
+            assertFalse(store.dir(id).exists())
+            assertEquals(listOf(id), scheduler.cancelled.toList())
+            assertTrue(scheduler.enqueued.isEmpty())
+            assertTrue(inRepo(id).isEmpty())
+        } finally {
+            release.countDown()
+            scope.cancel()
+        }
     }
 }

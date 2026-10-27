@@ -13,7 +13,9 @@ import java.io.File
  * commit), so a resumed upload sends only the rest; [committed]: the files as the last commit
  * that holds the recording has them ([commit]); [error]: why the last try failed for good (null:
  * it did not), [errorKind] its [FailureKind] (key; none in an upload.json written before kinds); [waiting]: it waits for the app to be open (too much to send without the
- * foreground service; UploadQueue.appVisible sends it). Replaced atomically (RecordingStore.writeAtomic) after every blob and commit.
+ * foreground service; UploadQueue.appVisible sends it); [committedRepos]: the data repos a commit
+ * of it went to before the record moved to another one ([target]; read through [repos]), so Delete
+ * take can say that one set before keeps it. Replaced atomically (RecordingStore.writeAtomic) after every blob and commit.
  */
 @Serializable
 data class UploadRecord(
@@ -28,13 +30,17 @@ data class UploadRecord(
     val error: String? = null,
     @SerialName("error_kind") val errorKind: String? = null,
     val waiting: Boolean = false,
+    @SerialName("committed_repos") val committedRepos: List<String> = emptyList(),
 ) {
     /** [errorKind] as a kind. */
     val failure: FailureKind? get() = FailureKind.of(errorKind)
 
-    /** For [repo] / [branch]: a record of another target counts for nothing (its blobs are elsewhere). */
+    /** Every data repo that holds a commit of it ([committedRepos], and this record's: one from before the list). */
+    val repos: Set<String> get() = committedRepos.toSet() + listOfNotNull(repo.takeIf { commit != null })
+
+    /** For [repo] / [branch]: a record of another target counts for nothing (its blobs are elsewhere), but for [repos]. */
     fun target(repo: String, branch: String, path: String): UploadRecord =
-        if (this.repo == repo && this.branch == branch && this.path == path) this else UploadRecord(repo = repo, branch = branch, path = path)
+        if (this.repo == repo && this.branch == branch && this.path == path) this else UploadRecord(repo = repo, branch = branch, path = path, committedRepos = repos.sorted())
 
     companion object {
         const val SCHEMA = "drillbalancer.upload/1"

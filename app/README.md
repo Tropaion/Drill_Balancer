@@ -329,8 +329,21 @@ main button; a new review's is *Accept all*.
   (reviewed, by the install id, with the number of changed labels) and
   `meta.derived` recomputed for the new labels. The row reads *Saved*.
   Every change is kept as a draft at once, so Back (or the app dying)
-  loses nothing; *Discard* drops the draft. *Discard* asks first when
-  something changed, and *Reset all to auto* when it would drop edits.
+  loses nothing; *Undo changes* drops the draft and closes the review (the
+  labels saved last stay). *Undo changes* asks first when something
+  changed, and *Reset all to auto* when it would drop edits.
+- **Delete take** (the red outlined button at the end of the review) asks
+  first. It is there too when a take cannot be reviewed or waits to be
+  prepared, but not while it is recorded or prepared right now. A take that
+  was not uploaded is gone for good: its files are deleted from the phone
+  and it is never uploaded. An uploaded one goes from the phone only: the
+  data repo keeps it (also the data repo set before the setting was
+  changed; a label update not sent yet is dropped), and the dialog says
+  which applies. An upload of the take that is waiting or running is
+  stopped; one that is already committing still reaches the data repo. The
+  review then closes and the row is gone (a finished session says how many
+  of its takes were deleted). A delete that fails shows its message at the
+  top of the review, and the take stays as it was.
 - The review needs no device: when the Bluetooth link ends it stays open
   (on the connect screen's side), and the link coming back shows it on the
   tabs again. It is the same review on both sides, and across a rotation
@@ -453,8 +466,8 @@ the new commit, up to 5 times; a branch GitHub will not move at all, such as
 a protected one, fails at once with GitHub's reason) and
 `DatasetUploader`. `upload.json` in the recording folder keeps the git blob
 sha of every file sent and the last commit, so an upload cut short sends
-only the rest; when GitHub has dropped blobs no commit held, they are sent
-again once. A recording whose meta.json
+only the rest, and every data repo a commit of it went to; when GitHub has
+dropped blobs no commit held, they are sent again once. A recording whose meta.json
 is on the branch already with the same blob sha is marked uploaded without
 a commit. The upload runs in WorkManager (`UploadWorker`, one unique job per
 recording, exponential backoff, Wi-Fi only or any network) as foreground

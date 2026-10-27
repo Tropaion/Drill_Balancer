@@ -26,9 +26,13 @@ import dev.drillbalancer.recorder.label.Source
 import dev.drillbalancer.recorder.label.TestParams
 import dev.drillbalancer.ui.MainDispatcherRule
 import dev.drillbalancer.ui.components.UiMessage
+import dev.drillbalancer.upload.RepoCopy
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.Runnable
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.test.StandardTestDispatcher
+import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.json.jsonObject
@@ -43,6 +47,7 @@ import org.junit.Test
 import org.junit.rules.TemporaryFolder
 import java.io.File
 import java.io.IOException
+import kotlin.coroutines.CoroutineContext
 
 /** The review flow on real recordings (the autodetect fixtures, labelled by the app's detector). */
 @OptIn(ExperimentalCoroutinesApi::class)
@@ -237,19 +242,25 @@ class ReviewViewModelTest {
         val again = ReviewViewModel(id, repo, store, io = main.dispatcher)
         advanceUntilIdle()
         assertTrue(again.state.value.reviewed)
-        assertFalse(again.state.value.uploaded)
+        assertEquals(RepoCopy.NONE, again.state.value.repoCopy)
         assertEquals("Reviewed. Save stores a new revision.", again.state.value.status)
-        val up = ReviewViewModel(id, repo, store, io = main.dispatcher, uploaded = { it == id })
+        val up = ReviewViewModel(id, repo, store, io = main.dispatcher, repoCopy = { if (it == id) RepoCopy.CURRENT else RepoCopy.NONE })
         advanceUntilIdle()
-        assertTrue(up.state.value.uploaded)
+        assertEquals(RepoCopy.CURRENT, up.state.value.repoCopy)
         assertEquals("Reviewed · uploaded. Save sends a label update.", up.state.value.status)
+        // uploaded, then saved again: the label update not sent yet (what Delete take says it drops)
+        val older = ReviewViewModel(id, repo, store, io = main.dispatcher, repoCopy = { RepoCopy.OLDER })
+        advanceUntilIdle()
+        assertEquals(RepoCopy.OLDER, older.state.value.repoCopy)
+        assertEquals("Reviewed. Save stores a new revision.", older.state.value.status)
         // an upload state that cannot be read is no upload
-        val unread = ReviewViewModel(id, repo, store, io = main.dispatcher, uploaded = { throw IOException("gone") })
+        val unread = ReviewViewModel(id, repo, store, io = main.dispatcher, repoCopy = { throw IOException("gone") })
         advanceUntilIdle()
         assertEquals("Reviewed. Save stores a new revision.", unread.state.value.status)
+        assertEquals(RepoCopy.NONE, unread.state.value.repoCopy)
     }
 
-    /** An upload that ends while the review is open (or one that starts again): the status follows it. */
+    /** An upload that ends while the review is open (or one that starts again): the status follows it, and what Delete take says (uploading). */
     @Test
     fun theUploadStatusFollowsTheUploadWhileOpen() = runTest(main.dispatcher) {
         val (id, vm) = open("fx_pulled_open")
@@ -257,18 +268,20 @@ class ReviewViewModelTest {
         advanceUntilIdle()
         var done = false
         val active = MutableStateFlow(true)        // the queue's: an upload of it running
-        val again = ReviewViewModel(id, repo, store, io = main.dispatcher, uploaded = { done }, uploadChanges = active)
+        val again = ReviewViewModel(id, repo, store, io = main.dispatcher, repoCopy = { if (done) RepoCopy.CURRENT else RepoCopy.NONE }, uploadChanges = active)
         advanceUntilIdle()
         assertEquals("Reviewed. Save stores a new revision.", again.state.value.status)
+        assertTrue(again.state.value.uploading)
         done = true
         active.value = false
         advanceUntilIdle()
-        assertTrue(again.state.value.uploaded)
+        assertFalse(again.state.value.uploading)
+        assertEquals(RepoCopy.CURRENT, again.state.value.repoCopy)
         assertEquals("Reviewed · uploaded. Save sends a label update.", again.state.value.status)
         done = false
         active.value = true
         advanceUntilIdle()
-        assertFalse(again.state.value.uploaded)
+        assertEquals(RepoCopy.NONE, again.state.value.repoCopy)
     }
 
     @Test
@@ -314,8 +327,9 @@ class ReviewViewModelTest {
         assertEquals(before, File(store.dir(id), Finalizer.EVENTS).readText())
     }
 
+    /** Undo changes drops the draft (the labels saved last come back) and closes the review. */
     @Test
-    fun aDraftIsRestoredAndDiscarded() = runTest(main.dispatcher) {
+    fun aDraftIsRestoredAndUndone() = runTest(main.dispatcher) {
         val (id, vm) = open("fx_stuck_kick")
         val c = vm.marker("contact")
         vm.drag(c.id, c.tUs + 50_000)
@@ -324,13 +338,175 @@ class ReviewViewModelTest {
         assertEquals(vm.marker("contact").tUs, again.marker("contact").tUs)
         assertTrue(again.state.value.dirty)
         assertEquals(UiMessage.Kind.INFO, again.state.value.message?.kind)
-        again.discard()
+        again.undoChanges()
         advanceUntilIdle()
         assertTrue(again.state.value.done)
         assertNull(draft(id))
         assertEquals(c.tUs, saved(id).events.first { it.id == c.id }.tUs)
+        assertTrue("the take stays", File(store.dir(id), Finalizer.META).isFile)
         val third = ReviewViewModel(id, repo, store, io = main.dispatcher)
         assertFalse(third.state.value.dirty)
+        // nothing changed: it just closes
+        third.undoChanges()
+        advanceUntilIdle()
+        assertTrue(third.state.value.done)
+        assertEquals(c.tUs, saved(id).events.first { it.id == c.id }.tUs)
+    }
+
+    /** An io whose tasks the test runs, in the order it picks. */
+    private class ManualDispatcher : CoroutineDispatcher() {
+        private val tasks = ArrayList<Runnable>()
+        val size: Int get() = synchronized(tasks) { tasks.size }
+
+        override fun dispatch(context: CoroutineContext, block: Runnable) {
+            synchronized(tasks) { tasks += block }
+        }
+
+        fun runAt(i: Int) = synchronized(tasks) { tasks.removeAt(i) }.run()
+    }
+
+    private fun TestScope.drain(io: ManualDispatcher) {
+        advanceUntilIdle()
+        while (io.size > 0) {
+            io.runAt(0)
+            advanceUntilIdle()
+        }
+    }
+
+    /**
+     * Delete take: the whole folder goes (RecordingStore.remove by default), the review closes and
+     * the list no longer has it. A draft write still waiting when it runs (the writer comes after
+     * the delete) is not written: the folder is not made again.
+     */
+    @Test
+    fun deleteTakeRemovesTheFolderAndCloses() = runTest(main.dispatcher) {
+        val io = ManualDispatcher()
+        val id = LabelTestData.install(store, "fx_stuck_kick", labeler)
+        val vm = ReviewViewModel(id, repo, store, io = io)
+        drain(io)
+        assertFalse(vm.state.value.loading)
+        assertTrue(vm.state.value.canDelete)
+        val changes = store.changes.value
+        val c = vm.marker("contact")
+        vm.drag(c.id, c.tUs + 40_000)          // its draft write waits for io
+        val queued = io.size
+        vm.deleteTake()
+        assertTrue(vm.state.value.busy)
+        assertEquals("the delete's io task is the last", queued + 1, io.size)
+        io.runAt(io.size - 1)                   // the delete before the writer
+        vm.save()                               // busy: nothing else runs meanwhile
+        drain(io)
+        assertTrue(vm.state.value.done)
+        assertFalse(vm.state.value.busy)
+        assertFalse("no draft made it again", store.dir(id).exists())
+        assertTrue(store.list().none { it.journal.recordingId == id })
+        assertTrue("the list reloads", store.changes.value > changes)
+    }
+
+    /**
+     * A draft write still waiting when a delete that fails runs (the writer comes after it) is
+     * written after it: the last edit is kept (Back loses nothing), not dropped by the delete.
+     */
+    @Test
+    fun aDraftWaitingForAFailedDeleteIsStillWritten() = runTest(main.dispatcher) {
+        val io = ManualDispatcher()
+        val id = LabelTestData.install(store, "fx_stuck_kick", labeler)
+        val vm = ReviewViewModel(id, repo, store, io = io, removeTake = { throw IOException("Permission denied") })
+        drain(io)
+        val c = vm.marker("contact")
+        vm.drag(c.id, c.tUs + 40_000)          // its draft write waits for io
+        vm.deleteTake()
+        io.runAt(io.size - 1)                   // the delete before the writer
+        drain(io)
+        assertEquals("Deleting failed (Permission denied).", vm.state.value.message?.text)
+        assertFalse(vm.state.value.done)
+        assertEquals(vm.marker("contact").tUs, draft(id)!!.events.first { it.id == c.id }.tUs)
+    }
+
+    /**
+     * A take that cannot be reviewed (no dataset files can be made from it, a storage error, out
+     * of memory) or is not ready can still be deleted, but not one recorded or finalized right
+     * now; once it is gone the review closes (the waiting review's next look does not show it gone).
+     */
+    @Test
+    fun aTakeThatCannotBeReviewedCanBeDeleted() = runTest(main.dispatcher) {
+        val broken = FinalizerFixtures.install(store, "rich")
+        store.write(store.read(broken.recordingId)!!.copy(state = JournalState.COMPLETE, finalizeError = "the take has no SESSION record"))
+        val vm = ReviewViewModel(broken.recordingId, repo, store, io = main.dispatcher)
+        advanceUntilIdle()
+        assertNotNull(vm.state.value.error)
+        assertTrue(vm.state.value.canDelete)
+        vm.deleteTake()
+        advanceUntilIdle()
+        assertTrue(vm.state.value.done)
+        assertFalse(store.dir(broken.recordingId).exists())
+
+        // a failed delete there says so, and the review stays as it was
+        val other = FinalizerFixtures.install(store, "golden")
+        store.write(store.read(other.recordingId)!!.copy(state = JournalState.COMPLETE, finalizeError = "the take has no SESSION record"))
+        val failing = ReviewViewModel(other.recordingId, repo, store, io = main.dispatcher, removeTake = { throw IOException("Permission denied") })
+        advanceUntilIdle()
+        failing.deleteTake()
+        advanceUntilIdle()
+        assertEquals("Deleting failed (Permission denied).", failing.state.value.message?.text)
+        assertNotNull(failing.state.value.error)
+        assertFalse(failing.state.value.done)
+        failing.dismissMessage()                    // its OK, while the review is not loaded
+        assertNull(failing.state.value.message)
+        assertNotNull(failing.state.value.error)
+
+        // being recorded (its journal open): not offered (nor done when asked)
+        val rec = FinalizerFixtures.install(store, "rich")
+        val writer = store.create(store.read(rec.recordingId)!!.copy(state = JournalState.RECORDING), 1_000) { 0 }
+        val recording = ReviewViewModel(rec.recordingId, repo, store, io = main.dispatcher)
+        advanceUntilIdle()
+        assertTrue(recording.state.value.waiting)
+        assertFalse(recording.state.value.canDelete)
+        recording.deleteTake()
+        advanceUntilIdle()
+        assertTrue(store.dir(rec.recordingId).isDirectory)
+        writer.close()
+
+        // says recording, but nobody writes it (the app died, the start has not cut it yet): offered
+        val left = ReviewViewModel(rec.recordingId, repo, store, io = main.dispatcher)
+        advanceUntilIdle()
+        assertTrue(left.state.value.waiting)
+        assertTrue(left.state.value.canDelete)
+
+        // finished, waiting for its finalize: offered; deleted, the review closes and stays closed
+        store.write(store.read(rec.recordingId)!!.copy(state = JournalState.COMPLETE))
+        val waiting = ReviewViewModel(rec.recordingId, repo, store, io = main.dispatcher)
+        advanceUntilIdle()
+        assertTrue(waiting.state.value.waiting)
+        assertTrue(waiting.state.value.canDelete)
+        waiting.deleteTake()
+        advanceUntilIdle()
+        assertTrue(waiting.state.value.done)
+        assertFalse(store.dir(rec.recordingId).exists())
+    }
+
+    /** A delete that cannot go now (the take recorded) or fails says so; the review goes on, drafts too. */
+    @Test
+    fun aDeleteThatFailsKeepsTheReview() = runTest(main.dispatcher) {
+        val id = LabelTestData.install(store, "fx_stuck_kick", labeler)
+        var result: () -> Boolean = { false }
+        val vm = ReviewViewModel(id, repo, store, io = main.dispatcher, removeTake = { result() })
+        vm.deleteTake()
+        advanceUntilIdle()
+        assertFalse(vm.state.value.done)
+        assertFalse(vm.state.value.busy)
+        assertEquals("This take cannot be deleted while it is recorded.", vm.state.value.message?.text)
+        result = { throw IOException("Permission denied") }
+        vm.deleteTake()
+        advanceUntilIdle()
+        assertFalse(vm.state.value.done)
+        assertEquals("Deleting failed (Permission denied).", vm.state.value.message?.text)
+        // drafts are written again
+        val c = vm.marker("contact")
+        vm.drag(c.id, c.tUs + 40_000)
+        advanceUntilIdle()
+        assertEquals(vm.marker("contact").tUs, draft(id)!!.events.first { it.id == c.id }.tUs)
+        assertTrue(File(store.dir(id), Finalizer.META).isFile)
     }
 
     @Test

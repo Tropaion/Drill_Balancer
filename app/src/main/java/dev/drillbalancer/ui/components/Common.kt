@@ -82,7 +82,8 @@ data class UiMessage(val text: String, val kind: Kind = Kind.ERROR) {
     enum class Kind { ERROR, WARNING, INFO, SUCCESS }
 }
 
-enum class ButtonKind { PRIMARY, SECONDARY, DANGER }
+/** [DANGER_OUTLINED]: a destructive action that is not the screen's next step (outlined in red). */
+enum class ButtonKind { PRIMARY, SECONDARY, DANGER, DANGER_OUTLINED }
 
 @Composable
 fun ActionButton(
@@ -113,6 +114,11 @@ fun ActionButton(
         ButtonKind.DANGER -> Button(
             onClick, modifier.heightIn(min = TouchHeight), enabled, shape = shape, contentPadding = padding,
             colors = ButtonDefaults.buttonColors(containerColor = Red, contentColor = Color.Black),
+        ) { label() }
+        ButtonKind.DANGER_OUTLINED -> OutlinedButton(
+            onClick, modifier.heightIn(min = TouchHeight), enabled, shape = shape, contentPadding = padding,
+            border = BorderStroke(1.dp, if (enabled) Red else Dark),
+            colors = ButtonDefaults.outlinedButtonColors(contentColor = Red),
         ) { label() }
     }
 }
