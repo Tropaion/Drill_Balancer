@@ -77,7 +77,10 @@ data class UploadCounts(
     val done: Int = 0,
     val notQueued: Int = 0,          // reviewed, not uploaded, not in the queue (Upload now sends them)
     val needsReview: Int = 0,
-)
+) {
+    /** What Upload now has to send: the reviewed recordings not uploaded and not uploading now. */
+    val toSend: Int get() = queued + failed + notQueued
+}
 
 /**
  * The app's upload queue over [scheduler]: a Save enqueues the recording, Upload now and a

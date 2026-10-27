@@ -1,6 +1,6 @@
 {
   "schema": "dbauto.params/1",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "note": "Parameters of the auto-detector (dbdata/autodetect.py, the app's recorder/label). Changing a value changes params_sha256 in every events.json written afterwards; bump version with any change of the algorithm.",
   "frame_ms": 10,
   "features": {
@@ -42,7 +42,9 @@
     "off_level_db": 10.0,
     "conf_scale_z": 3.0,
     "off_f0_ms": 300,
-    "conf_ms": 300
+    "conf_ms": 300,
+    "end_ms": 50,
+    "end_conf_scale_db": 3.0
   },
   "spinup": {
     "min_ms": 50,

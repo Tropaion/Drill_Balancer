@@ -1,6 +1,5 @@
 package dev.drillbalancer.recorder.export
 
-import dev.drillbalancer.upload.UploadRecord
 import dev.drillbalancer.upload.UploadTestData
 import org.junit.Assert.assertTrue
 import org.junit.Assume.assumeTrue
@@ -29,10 +28,7 @@ class MuteValidatorExportTest {
         for (name in FinalizerFixtures.names) {
             val id = UploadTestData.reviewed(store, labeler, name) { l -> if (name == "rich") UploadTestData.motorRun(l, 0.5, 1.0) else l }
             assertTrue(name, AudioMute.apply(store.dir(id)))
-            val dest = File(out, UploadRecord.repoPath(id))
-            dest.deleteRecursively()
-            dest.mkdirs()
-            for (f in Finalizer.DATASET_FILES) File(store.dir(id), f).takeIf { it.isFile }?.copyTo(File(dest, f))
+            UploadTestData.exportToRepo(store.dir(id), File(out))
         }
     }
 }

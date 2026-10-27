@@ -28,7 +28,7 @@ class LabelContractTest {
         val det = expected["detector"]!!.jsonObject
         assertEquals(det["params_sha256"]!!.jsonPrimitive.content, TestParams.loaded.sha256)
         assertEquals(det["version"]!!.jsonPrimitive.content, TestParams.loaded.p.detector)
-        assertEquals("dbauto/1.1.0", TestParams.loaded.p.detector)
+        assertEquals("dbauto/1.2.0", TestParams.loaded.p.detector)
         // the review renumbers kickbacks with the detector's hole_after_ms
         assertEquals(TestParams.loaded.p.kickback.holeAfterMs * 1000, LabelEdits.HOLE_AFTER_US.toDouble(), 0.0)
     }

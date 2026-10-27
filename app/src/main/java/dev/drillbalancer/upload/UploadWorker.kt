@@ -8,6 +8,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.os.Build
+import android.os.SystemClock
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.work.BackoffPolicy
@@ -28,8 +29,10 @@ import dev.drillbalancer.MainActivity
 import dev.drillbalancer.R
 import dev.drillbalancer.recorder.RecordingStore
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
@@ -54,6 +57,8 @@ class UploadDeps(
     val scheduler: UploadScheduler,
     val api: GitHubApiFactory = ::HttpGitHubApi,
     val backgroundMaxBytes: Long = UploadWorker.BACKGROUND_MAX_BYTES,
+    /** Milliseconds of a monotonic clock: the progress notification's throttle. */
+    val clock: () -> Long = SystemClock::elapsedRealtime,
 ) {
     interface Provider {
         val uploadDeps: UploadDeps
@@ -133,7 +138,25 @@ class UploadWorker(context: Context, params: WorkerParameters, private val deps:
         }
     }
 
-    private suspend fun upload(id: String, settings: UploadSettings, repo: Pair<String, String>, first: TokenRead.Ok, foreground: Boolean): Result {
+    // the progress notification's throttle lives as long as the upload: a held-back update never comes after it
+    private suspend fun upload(id: String, settings: UploadSettings, repo: Pair<String, String>, first: TokenRead.Ok, foreground: Boolean): Result =
+        coroutineScope {
+            val notify = UploadNotifications.Throttle(this, deps.clock) { pct -> setForegroundAsync(UploadNotifications.info(applicationContext, id, pct)) }
+            try {
+                send(id, settings, repo, first, foreground, notify)
+            } finally {
+                notify.cancel()
+            }
+        }
+
+    private suspend fun send(
+        id: String,
+        settings: UploadSettings,
+        repo: Pair<String, String>,
+        first: TokenRead.Ok,
+        foreground: Boolean,
+        notify: UploadNotifications.Throttle,
+    ): Result {
         val overwrite = inputData.getBoolean(KEY_OVERWRITE, false)
         var token = first
         var api = deps.api(repo.first, repo.second, token.token)
@@ -150,11 +173,13 @@ class UploadWorker(context: Context, params: WorkerParameters, private val deps:
                 val result = stoppable(api) {
                     uploader.upload(id) { sent, total ->
                         val pct = if (total > 0) (sent * 100 / total).toInt().coerceIn(0, 99) else 0
-                        if (pct != lastPct) {
+                        val changed = pct != lastPct
+                        if (changed) {
                             lastPct = pct
                             setProgressAsync(workDataOf(KEY_PCT to pct))
-                            if (foreground) setForegroundAsync(UploadNotifications.info(applicationContext, id, pct))
                         }
+                        // Android drops a package's notification updates beyond 5 a second
+                        if (foreground && (changed || sent >= total)) notify.offer(pct, final = sent >= total)
                     }
                 }
                 if (result !is DatasetUploader.Result.NotReviewed) finished(id, settings)
@@ -335,6 +360,65 @@ object UploadMessages {
 /** The upload's foreground notification (channel "uploads"). */
 object UploadNotifications {
     private const val CHANNEL = "uploads"
+
+    /**
+     * The progress percents [show]n: at most one per [intervalMs] of [clock] (milliseconds, the
+     * clock [scope]'s delays run on), the latest one offered meanwhile shown when the interval
+     * is over (a pause in the progress leaves no older percent shown), the final one at once;
+     * each percent once. [offer] may come from any thread; [cancel] drops one held back.
+     */
+    class Throttle(
+        private val scope: CoroutineScope,
+        private val clock: () -> Long,
+        private val intervalMs: Long = INTERVAL_MS,
+        private val show: (pct: Int) -> Unit,
+    ) {
+        private val lock = Any()
+        private var last: Long? = null
+        private var shown: Int? = null
+        private var pending: Int? = null
+        private var trailing: Job? = null
+
+        fun offer(pct: Int, final: Boolean = false) = synchronized(lock) {
+            val now = clock()
+            val prev = last
+            if (final || prev == null || now - prev >= intervalMs) {
+                drop()
+                emit(pct, now)
+                return@synchronized
+            }
+            pending = pct
+            if (trailing == null) {
+                trailing = scope.launch {
+                    delay(prev + intervalMs - now)
+                    synchronized(lock) {
+                        if (trailing !== coroutineContext[Job]) return@launch      // replaced meanwhile
+                        trailing = null
+                        pending?.let { emit(it, clock()) }
+                        pending = null
+                    }
+                }
+            }
+        }
+
+        fun cancel() = synchronized(lock) { drop() }
+
+        private fun drop() {
+            trailing?.cancel()
+            trailing = null
+            pending = null
+        }
+
+        private fun emit(pct: Int, now: Long) {
+            if (pct == shown) return
+            shown = pct
+            last = now
+            show(pct)
+        }
+    }
+
+    /** About one progress update a second: Android sheds a package's updates beyond 5 a second. */
+    const val INTERVAL_MS = 1000L
 
     /** [waiting]: for the upload before it (one at a time). */
     fun info(context: Context, id: String, pct: Int?, waiting: Boolean = false): ForegroundInfo {

@@ -15,6 +15,9 @@ of `firmware/tools/dataset/dbdata/autodetect.py`; its parameters are
 | `fx_noaudio` | drill without microphones; the motor already runs when the data begins | no audio (z_aud NaN, the spin-up from the IMU), motor_on at T0 (`open_motor_on`); only the motor runs are found |
 | `fx_pulled_open` | drill, the bit stalls, is pulled out with the motor off, and the take ends during the next spin-up | the restart check failing (a retract before the motor_on, `restart_retract`), the spin-up fallback, an open end |
 | `fx_gap` | drill, a transport gap of about 0.8 s in the middle of the hole, a kickback as the bit breaks through | `gaps.audio_gap_frames`, frames without data (s NaN), a kickback just after a hole (`hole_after_ms`) |
+| `fx_spindown_end` | drill, one hole through; the take ends 0.4 s after the motor_off, in the spin-down | a run still on at the end whose motor_off is found from the end of the data (section 5, `end_ms`) |
+| `fx_slow_spindown_end` | drill with a 147 Hz motor, one hole through; the take ends 0.5 s after the motor_off, in the spin-down | the same, but the pitch has left the f0 tracker's range: no voiced frame in the last `off_hold_ms`, the last voiced one before it has not fallen (section 5, `slows_at_end`) |
+| `fx_loud_free_end` | drill, one hole through, the sound of the cut 12 dB louder (`synth.LOUD_LOAD`); the take ends 0.3 s before the motor_off, in the free run after the breakthrough | a run still on at the end 10 dB below its median but not slowing (its f0 is steady): no motor_off (section 5) |
 | `fx_suggestions` | drill with wobble, wander and speech injected (`synth.INJECTIONS`: the simulator has no model for them) | the three suggestion rules, a long motor-off tail |
 
 Each folder is a recording as the dataset contract has it (synthetic,

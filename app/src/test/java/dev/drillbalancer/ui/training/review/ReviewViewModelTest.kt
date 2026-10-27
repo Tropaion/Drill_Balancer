@@ -27,6 +27,7 @@ import dev.drillbalancer.recorder.label.TestParams
 import dev.drillbalancer.ui.MainDispatcherRule
 import dev.drillbalancer.ui.components.UiMessage
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runTest
@@ -170,9 +171,104 @@ class ReviewViewModelTest {
         assertTrue(l.events.filter { it.confidence < LabelEdits.LOW_CONFIDENCE }.all { it.confirmed })
         assertEquals(listOf<String>(), LabelCheck.errors(l).map { it.message })
         val review = meta["review"]!!.jsonObject
-        assertEquals("{\"status\":\"reviewed\",\"detector\":\"dbauto/1.1.0\",\"revision\":${l.revision},\"edited_events\":0,\"reviewer\":\"k7q2\"}", review.toString())
+        assertEquals("{\"status\":\"reviewed\",\"detector\":\"dbauto/1.2.0\",\"revision\":${l.revision},\"edited_events\":0,\"reviewer\":\"k7q2\"}", review.toString())
         assertNull(draft(id))
         assertEquals(RecordingStage.SAVED, store.list().single { it.journal.recordingId == id }.stage)
+    }
+
+    /** A count handle's tap: the view on its markers' range and half of it again (at least the shortest view). */
+    @Test
+    fun aCountHandleZoomsInOnItsMarkers() = runTest(main.dispatcher) {
+        val (_, vm) = open("fx_stuck_kick")
+        val ms = vm.state.value.markers
+        val a = ms[1].tUs
+        val b = ms[3].tUs
+        vm.zoomTo(a, b)
+        val s = vm.state.value
+        assertEquals((b - a) * 3 / 2, s.toUs - s.fromUs)
+        assertTrue(a in s.fromUs until s.toUs && b in s.fromUs until s.toUs)
+        vm.zoomTo(a, a)
+        assertEquals(ReviewViewModel.MIN_SPAN_US, vm.state.value.toUs - vm.state.value.fromUs)
+    }
+
+    /** After a count handle's zoom the cursor is in the view, and so is a marker added there. */
+    @Test
+    fun theCursorComesAlongIntoACountsView() = runTest(main.dispatcher) {
+        val (_, vm) = open("fx_stuck_kick")
+        val ms = vm.state.value.markers
+        val a = ms[1].tUs
+        val b = ms[3].tUs
+        vm.setCursor(ms.last().tUs)
+        vm.zoomTo(a, b)
+        val s = vm.state.value
+        assertEquals((a + b) / 2, s.cursorUs)
+        // one already in the view stays where it is
+        vm.setCursor(a + 1_000)
+        vm.zoomTo(a, b)
+        assertEquals(a + 1_000, vm.state.value.cursorUs)
+        vm.add("motor_off")
+        val added = vm.state.value.selected!!.marker.tUs
+        assertTrue(added in vm.state.value.fromUs until vm.state.value.toUs)
+    }
+
+    /** A marker added at a cursor a pan left behind brings the view to it. */
+    @Test
+    fun anAddedMarkerIsInTheView() = runTest(main.dispatcher) {
+        val (_, vm) = open("fx_stuck_kick")
+        vm.zoomIn()
+        vm.zoomIn()
+        val cursor = vm.state.value.cursorUs
+        repeat(4) { vm.panForward() }
+        assertFalse(cursor in vm.state.value.fromUs until vm.state.value.toUs)
+        vm.add("kickback")
+        val s = vm.state.value
+        assertTrue(s.selected!!.marker.tUs in s.fromUs until s.toUs)
+    }
+
+    /** A review opened again says it is reviewed, and uploaded: Save then sends a label update. */
+    @Test
+    fun aReviewOpenedAgainShowsItsState() = runTest(main.dispatcher) {
+        val (id, vm) = open("fx_pulled_open")
+        assertFalse(vm.state.value.reviewed)
+        assertNull("a new review", vm.state.value.status)
+        vm.acceptAll()
+        advanceUntilIdle()
+        assertTrue(vm.state.value.done)
+        val again = ReviewViewModel(id, repo, store, io = main.dispatcher)
+        advanceUntilIdle()
+        assertTrue(again.state.value.reviewed)
+        assertFalse(again.state.value.uploaded)
+        assertEquals("Reviewed. Save stores a new revision.", again.state.value.status)
+        val up = ReviewViewModel(id, repo, store, io = main.dispatcher, uploaded = { it == id })
+        advanceUntilIdle()
+        assertTrue(up.state.value.uploaded)
+        assertEquals("Reviewed · uploaded. Save sends a label update.", up.state.value.status)
+        // an upload state that cannot be read is no upload
+        val unread = ReviewViewModel(id, repo, store, io = main.dispatcher, uploaded = { throw IOException("gone") })
+        advanceUntilIdle()
+        assertEquals("Reviewed. Save stores a new revision.", unread.state.value.status)
+    }
+
+    /** An upload that ends while the review is open (or one that starts again): the status follows it. */
+    @Test
+    fun theUploadStatusFollowsTheUploadWhileOpen() = runTest(main.dispatcher) {
+        val (id, vm) = open("fx_pulled_open")
+        vm.acceptAll()
+        advanceUntilIdle()
+        var done = false
+        val active = MutableStateFlow(true)        // the queue's: an upload of it running
+        val again = ReviewViewModel(id, repo, store, io = main.dispatcher, uploaded = { done }, uploadChanges = active)
+        advanceUntilIdle()
+        assertEquals("Reviewed. Save stores a new revision.", again.state.value.status)
+        done = true
+        active.value = false
+        advanceUntilIdle()
+        assertTrue(again.state.value.uploaded)
+        assertEquals("Reviewed · uploaded. Save sends a label update.", again.state.value.status)
+        done = false
+        active.value = true
+        advanceUntilIdle()
+        assertFalse(again.state.value.uploaded)
     }
 
     @Test
@@ -424,7 +520,7 @@ class ReviewViewModelTest {
         advanceUntilIdle()
         assertNull(vm.state.value.error)
         assertFalse(vm.state.value.loading)
-        assertEquals("labelled now", "dbauto/1.1.0", saved(j.recordingId).detector?.version)
+        assertEquals("labelled now", "dbauto/1.2.0", saved(j.recordingId).detector?.version)
         assertEquals("not finalized again", changes, store.changes.value)
     }
 
@@ -454,7 +550,7 @@ class ReviewViewModelTest {
         advanceUntilIdle()
         assertNull(vm.state.value.error)
         assertFalse(vm.state.value.loading)
-        assertEquals("finalized and labelled", "dbauto/1.1.0", saved(id).detector?.version)
+        assertEquals("finalized and labelled", "dbauto/1.2.0", saved(id).detector?.version)
         assertFalse(s.read(id)!!.finalizeRetry)
         assertEquals(RecordingStage.NEEDS_REVIEW, s.list().first { it.journal.recordingId == id }.stage)
     }

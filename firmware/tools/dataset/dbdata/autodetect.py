@@ -117,8 +117,23 @@ are finite. Times of frames are their starts.
         nf(off_f0_ms)) that is voiced, has s(k) >= on_z and f0(k) >= (1 - off_f0_drop) *
         median of the voiced f0 over the off_hold_ms before k (at least 3);
         motor_off = min(k_en, k + 1); k_en when none.
-   A run without a low stretch at the end has no motor_off (an open end);
-   one from frame 0 gets motor_on at T0 with confidence open_motor_on.
+   A run still on at the last frame ends in its spin-down when the data
+   does: when median(E over the last nf(end_ms) frames) is at least
+   off_level_db below median(E over the run [on, K)) (E as above, the
+   louder stream over the conf_ms before K) and the motor slows at the
+   end (a quieter free run after a loud cut is no spin-down): the last
+   frame k from K - 1 down to max(on, K - nf(off_search_ms)) that is
+   voiced with s(k) >= on_z and at least 3 voiced frames in the
+   off_hold_ms before it has f0(k) < (1 - off_f0_drop) * their median f0
+   (the f0 knee's test of b. failing), or no frame of the last
+   nf(off_hold_ms) is voiced with s >= on_z (the pitch fell out of the
+   f0 range); with no such frame (no audio, an unvoiced motor):
+   median(s over the last nf(end_ms) frames) < on_z.
+   Then k_d = K and the walk back above finds the motor_off (searched from frame K - 1; none when its knee
+   would be K), confidence sigmoid((that drop - off_level_db) /
+   end_conf_scale_db) in place of the one of section 13. Otherwise the run
+   has no motor_off (an open end): a take that ends with the motor running.
+   A run from frame 0 gets motor_on at T0 with confidence open_motor_on.
 
 6. Spin-up end k_su [spinup]: the first k from on + nf(min_ms) up to on +
    nf(max_ms) (exclusive, and before the run's end) whose next nf(stable_ms)
@@ -241,9 +256,10 @@ are finite. Times of frames are their starts.
 13. Confidence of the events: sigmoid((x - threshold) / conf_scale):
    motor_on x = the median s of its nf(on_ms) trigger frames vs on_z;
    motor_off x = the median s of the nf(conf_ms) frames before k_d vs off_z
-   (both conf_scale_z), times confidence.disagree when audio exists and
-   z_imu and z_aud (their medians over the run's first nf(conf_ms) frames)
-   are on different sides of on_z, or one is NaN. contact: the hold's
+   (both conf_scale_z; a spin-down the data ends in: section 5), times
+   confidence.disagree when audio exists and z_imu and z_aud (their
+   medians over the run's first nf(conf_ms) frames) are on different
+   sides of on_z, or one is NaN. contact: the hold's
    median smoothed score vs score, times disagree when the hold's mean
    audio ratio (mean of r_f0, r_cut per frame) and IMU ratio (mean of
    r_imu, r_thrust, r_hammer per frame) are >= 1 and < 0.5 (either way).
@@ -828,6 +844,7 @@ class _Detector:
                     runs.append(cur)
                     cur, state, cnt, lower = None, "off", 0, k + 1
         if cur is not None:
+            self.open_end(cur)
             runs.append(cur)
         # the board is clipped to the drill, so a running motor always shakes it: a run the IMU
         # never confirms is sound alone (speech, another machine in the room)
@@ -845,32 +862,75 @@ class _Detector:
         on = self.p["motor"]["on_z"]
         return not (np.isfinite(zi) and np.isfinite(za)) or (zi < on) != (za < on)
 
+    def off_energy(self, run: Run, kd: int) -> np.ndarray:
+        """E of section 5: med3 of the louder stream over the conf_ms before kd."""
+        f = self.f
+        w = slice(max(run.on, kd - self.nf(self.p["motor"]["conf_ms"])), kd)
+        loud_aud = self.has_audio and med(f["z_aud"][w]) >= med(f["z_imu"][w])
+        return self.e_aud_s if loud_aud else self.e_imu_s
+
+    def open_end(self, run: Run):
+        """A run still on when the data ends: when E has fallen off_level_db below the run's
+        level over the last end_ms and the motor slows (slows_at_end), the data ends in its
+        spin-down (before the low stretch): run.off = K, and motor_off_time finds the knee as for
+        a low stretch (none when that knee would be K: the run stays open)."""
+        mp = self.p["motor"]
+        e = self.off_energy(run, self.K)
+        drop = med(e[run.on:self.K]) - med(e[max(run.on, self.K - self.nf(mp["end_ms"])):self.K])
+        if np.isfinite(drop) and drop >= mp["off_level_db"] and self.slows_at_end(run):
+            run.off = self.K
+            if self.motor_off_time(run) >= self.K:
+                run.off = None            # no knee in the data: an open end after all
+            else:
+                run.off_conf = sigmoid((drop - mp["off_level_db"]) / mp["end_conf_scale_db"])
+
+    def slows_at_end(self, run: Run) -> bool:
+        """Whether the motor slows at the end of the data, not just runs free after a louder cut:
+        the last voiced frame (s >= on_z, at least 3 voiced frames in the off_hold_ms before it)
+        within off_search_ms of the end has an f0 that fell (motor_off_time's f0 test failing), or
+        no frame of the last off_hold_ms is voiced (the pitch fell out of the tracker's range);
+        without such a frame (no audio, an unvoiced motor) the stream has fallen below on_z over
+        the last end_ms."""
+        mp, s, on_z = self.p["motor"], self.f["s"], self.p["motor"]["on_z"]
+        tail = max(run.on, self.K - self.nf(mp["off_hold_ms"]))
+        for k in range(self.K - 1, max(run.on, self.K - self.nf(mp["off_search_ms"])) - 1, -1):
+            steady = self.f0_steady(k)
+            if steady is not None:
+                return bool(not steady or not any(self.voiced[i] and s[i] >= on_z for i in range(tail, self.K)))
+        return bool(med(s[max(run.on, self.K - self.nf(mp["end_ms"])):self.K]) < on_z)
+
+    def past_med(self, a: np.ndarray, k: int) -> float:
+        """med of a over the off_hold_ms before frame k; NaN with fewer than 3 finite values."""
+        past = a[max(0, k - self.nf(self.p["motor"]["off_hold_ms"])):k]
+        return med(past) if np.isfinite(past).sum() >= 3 else math.nan
+
+    def f0_steady(self, k: int) -> bool | None:
+        """motor_off_time's f0 test at frame k: f0(k) >= (1 - off_f0_drop) * past_med(f0, k);
+        None when k has no test (unvoiced, s < on_z, or fewer than 3 voiced frames before it)."""
+        mp, f0 = self.p["motor"], self.f["f0"]
+        if not self.voiced[k] or self.f["s"][k] < mp["on_z"]:
+            return None
+        ref = self.past_med(f0, k)
+        return bool(f0[k] >= (1.0 - mp["off_f0_drop"]) * ref) if np.isfinite(ref) else None
+
     def motor_off_time(self, run: Run) -> int:
-        """The frame the motor stops, walking back from the low stretch run.off: first the
-        louder stream's energy knee, then the f0 knee within off_f0_ms before it."""
+        """The frame the motor stops, walking back from the low stretch run.off (K: the data
+        ends in the spin-down, see open_end): first the louder stream's energy knee, then the f0
+        knee within off_f0_ms before it."""
         mp, f = self.p["motor"], self.f
         kd = run.off
         lo = max(run.on + 1, kd - self.nf(mp["off_search_ms"]))
-        hold = self.nf(mp["off_hold_ms"])
         s, on_z = f["s"], mp["on_z"]
-        w = slice(max(run.on, kd - self.nf(mp["conf_ms"])), kd)
-        loud_aud = self.has_audio and med(f["z_aud"][w]) >= med(f["z_imu"][w])
-        e = self.e_aud_s if loud_aud else self.e_imu_s
+        e = self.off_energy(run, kd)
         level = med(e[run.on:kd]) - mp["off_level_db"]
         k_en = kd
-        for k in range(kd, lo - 1, -1):
-            past = e[max(0, k - hold):k]
-            if s[k] >= on_z and np.isfinite(e[k]) and e[k] >= level and np.isfinite(past).sum() >= 3 and \
-                    e[k] >= med(past) - mp["off_drop_db"]:
+        for k in range(min(kd, self.K - 1), lo - 1, -1):
+            if s[k] >= on_z and np.isfinite(e[k]) and e[k] >= level and \
+                    e[k] >= self.past_med(e, k) - mp["off_drop_db"]:
                 k_en = min(kd, k + 1)
                 break
-        f0 = f["f0"]
-        for k in range(k_en, max(lo, k_en - self.nf(mp["off_f0_ms"])) - 1, -1):
-            if not self.voiced[k] or s[k] < on_z:
-                continue
-            past = f0[max(0, k - hold):k]
-            past = past[np.isfinite(past)]
-            if len(past) >= 3 and f0[k] >= (1.0 - mp["off_f0_drop"]) * med(past):
+        for k in range(min(k_en, self.K - 1), max(lo, k_en - self.nf(mp["off_f0_ms"])) - 1, -1):
+            if self.f0_steady(k):
                 return min(k_en, k + 1)
         return k_en
 

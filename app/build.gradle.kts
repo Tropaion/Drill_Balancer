@@ -66,10 +66,13 @@ roborazzi {
 // back old images instead of rendering, so the unit tests always run for real.
 // The conformance tests read the firmware sources (and the stream's golden vector and the
 // dataset contract) at run time, so a change there alone must also make the tests run again.
-// DB_SIM_URL (the opt-in simulator check, README) is an input too, as are DB_FINALIZE_OUT,
-// DB_REVIEW_OUT and DB_MUTE_OUT (where FinalizerCrossCheckTest, ReviewValidatorExportTest and
-// MuteValidatorExportTest leave recordings for dbdata.validate, opt-in), and DB_GITHUB_LIVE_BRANCH
-// (the opt-in GitHubLiveTest's branch). DB_GITHUB_TOKEN, the live test's token, is no input:
+// DB_SIM_URL (the opt-in simulator check, README) is an input too, with its DB_SIM_OUT,
+// DB_SIM_SCENARIOS, DB_SIM_STORE_OUT, DB_SIM_TRUTH_OUT and DB_SIM_FINALIZE_OUT (the scenario
+// takes' plan and outputs; the plan's content is no input and the simulator's state cannot be,
+// so these run with --rerun), as are DB_FINALIZE_OUT, DB_REVIEW_OUT and DB_MUTE_OUT (where
+// FinalizerCrossCheckTest, ReviewValidatorExportTest and MuteValidatorExportTest leave
+// recordings for dbdata.validate, opt-in), and DB_GITHUB_LIVE_BRANCH (the opt-in
+// GitHubLiveTest's branch). DB_GITHUB_TOKEN, the live test's token, is no input:
 // Gradle would keep an input's value in its task history and configuration cache. It is read
 // from the environment when the tests start (doFirst), never at configuration, never cached
 // (unit test tasks never are) and never written to a report; run the live test with --rerun.
@@ -84,7 +87,11 @@ tasks.withType<Test>().configureEach {
             )
         },
     ).withPathSensitivity(PathSensitivity.RELATIVE).withPropertyName("firmwareSources")
-    for (name in listOf("DB_SIM_URL", "DB_FINALIZE_OUT", "DB_REVIEW_OUT", "DB_MUTE_OUT", "DB_GITHUB_LIVE_BRANCH")) {
+    val optIn = listOf(
+        "DB_SIM_URL", "DB_SIM_OUT", "DB_SIM_SCENARIOS", "DB_SIM_STORE_OUT", "DB_SIM_TRUTH_OUT", "DB_SIM_FINALIZE_OUT",
+        "DB_FINALIZE_OUT", "DB_REVIEW_OUT", "DB_MUTE_OUT", "DB_GITHUB_LIVE_BRANCH",
+    )
+    for (name in optIn) {
         val v = providers.environmentVariable(name)
         inputs.property(name, v.orElse(""))
         v.orNull?.let { environment(name, it) }

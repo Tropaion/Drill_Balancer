@@ -1,5 +1,6 @@
 package dev.drillbalancer.upload
 
+import android.app.Notification
 import android.content.Context
 import android.content.pm.ServiceInfo
 import androidx.concurrent.futures.CallbackToFutureAdapter
@@ -16,9 +17,13 @@ import dev.drillbalancer.recorder.export.Finalizer
 import dev.drillbalancer.recorder.export.FinalizerFixtures
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.test.advanceTimeBy
+import kotlinx.coroutines.test.runCurrent
+import kotlinx.coroutines.test.runTest
 import mockwebserver3.MockResponse
 import mockwebserver3.SocketEffect
 import org.junit.After
@@ -109,6 +114,64 @@ class UploadWorkerTest {
         assertEquals("uploads", foreground.first().notification.channelId)
         // the review can still be edited and saved: the dataset files are enough
         UploadTestData.save(store, labeler, id)
+    }
+
+    /**
+     * The progress notification at most once a second (Android sheds a package's notification
+     * updates beyond 5 a second), and always the final state: on a clock that stands still, the
+     * first percent, at most one held back per second of the upload, and the last.
+     */
+    @Test
+    fun theProgressNotificationIsThrottled() {
+        val still = UploadDeps(store, prefs, tokens, scheduler, api = deps.api, clock = { 0L })
+        val id = UploadTestData.reviewed(store, labeler)
+        assertEquals(ListenableWorker.Result.success(), run(id, deps = still))
+        val shown = foreground.map { it.notification.extras }.filter { !it.getBoolean(Notification.EXTRA_PROGRESS_INDETERMINATE) }.map { it.getInt(Notification.EXTRA_PROGRESS) }
+        assertTrue(progress.toString(), progress.size > 2)
+        assertEquals(progress.first(), shown.first())
+        assertEquals(99, shown.last())
+        assertTrue(shown.toString(), shown.size < progress.size && shown.zipWithNext().all { (a, b) -> a < b })
+    }
+
+    /** One a second; one held back is shown when the second is over (a pause leaves no older percent shown); the final at once. */
+    @OptIn(ExperimentalCoroutinesApi::class)
+    @Test
+    fun theThrottleShowsTheLatestPercentAfterAPause() = runTest {
+        val shown = ArrayList<Int>()
+        val t = UploadNotifications.Throttle(backgroundScope, { testScheduler.currentTime }) { shown += it }
+        t.offer(40)
+        assertEquals(listOf(40), shown)
+        advanceTimeBy(300)
+        t.offer(50)
+        advanceTimeBy(100)
+        t.offer(60)                     // 50 and 60 within the second: 60 is held back
+        advanceTimeBy(500)
+        runCurrent()
+        assertEquals(listOf(40), shown)
+        advanceTimeBy(100)              // the second is over (1000 ms), the callbacks paused
+        runCurrent()
+        assertEquals(listOf(40, 60), shown)
+        advanceTimeBy(5000)
+        runCurrent()
+        assertEquals("nothing more without an offer", listOf(40, 60), shown)
+        t.offer(70)                     // a second after 60: at once
+        assertEquals(listOf(40, 60, 70), shown)
+        t.offer(80)
+        t.offer(99, final = true)       // the final at once, the held-back 80 dropped
+        advanceTimeBy(2000)
+        runCurrent()
+        assertEquals(listOf(40, 60, 70, 99), shown)
+        t.offer(99, final = true)       // each percent once
+        assertEquals(listOf(40, 60, 70, 99), shown)
+        // cancelled (the upload ended another way): one held back never comes
+        val after = ArrayList<Int>()
+        val c = UploadNotifications.Throttle(backgroundScope, { testScheduler.currentTime }) { after += it }
+        c.offer(10)
+        c.offer(20)
+        c.cancel()
+        advanceTimeBy(2000)
+        runCurrent()
+        assertEquals(listOf(10), after)
     }
 
     @Test

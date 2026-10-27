@@ -132,7 +132,13 @@ jobs:
           set -euo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          n="$(wc -l < "$RUNNER_TEMP/changed.txt")"
+          # a listed folder that is gone was removed in this push, not validated
+          n=0; r=0
+          while read -r d; do if [ -d "$d" ]; then n=$((n + 1)); else r=$((r + 1)); fi; done < "$RUNNER_TEMP/changed.txt"
+          what="$n recording(s) validated"
+          if [ "$r" -gt 0 ]; then
+            what="$what, $r removed"
+          fi
           for i in 1 2 3 4 5; do
             # a missing report fails here: the validator crashed
             python -m dbdata.index . --report "$RUNNER_TEMP/report.json"
@@ -141,7 +147,7 @@ jobs:
               echo "index unchanged"
               exit 0
             fi
-            git commit -m "Update index ($n recording(s) validated)"
+            git commit -m "Update index ($what)"
             if git push origin "HEAD:${GITHUB_REF_NAME}"; then
               exit 0
             fi

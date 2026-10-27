@@ -33,6 +33,8 @@ import dev.drillbalancer.upload.UploadServices
 import dev.drillbalancer.upload.UploadStage
 import dev.drillbalancer.upload.UploadTestData
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.test.StandardTestDispatcher
+import kotlinx.coroutines.test.TestCoroutineScheduler
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runTest
@@ -298,6 +300,7 @@ class UploadViewModelTest {
         done(a)
         val vm = settings()
         assertEquals(UploadCounts(done = 1, notQueued = 1, needsReview = 1), vm.state.value.counts)
+        assertTrue(vm.state.value.canUploadNow)
         vm.uploadNow()
         advanceUntilIdle()
         assertEquals(listOf(FakeScheduler.Enqueued(b, true, 0)), scheduler.enqueued)
@@ -313,7 +316,23 @@ class UploadViewModelTest {
         vm.uploadNow()
         advanceUntilIdle()
         assertEquals("Nothing to upload: every reviewed recording is uploaded.", vm.state.value.message!!.text)
+        assertEquals(UploadCounts(done = 2, needsReview = 1), vm.state.value.counts)
+        assertFalse("nothing waits to be sent", vm.state.value.canUploadNow)
         assertEquals(RecordingStore.AUTO_ONLY, store.list().first { it.journal.recordingId.endsWith("1c8y") }.reviewStatus)
+    }
+
+    /** Before the queue is counted (or when counting fails) the counts are unknown: Upload now stays on. */
+    @Test
+    fun uploadNowIsOnUntilTheCountsSayNothingWaits() = runTest(main.dispatcher) {
+        UploadTestData.reviewed(store, labeler, "rich")
+        // the count's storage reads never finish: the settings are there, the counts are not
+        val stuck = StandardTestDispatcher(TestCoroutineScheduler())
+        val vm = UploadSettingsViewModel(services(), store, stuck)
+        advanceUntilIdle()
+        assertTrue(vm.state.value.loaded)
+        assertNull(vm.state.value.counts)
+        assertFalse(vm.state.value.nothingToSend)
+        assertTrue(vm.state.value.canUploadNow)
     }
 
     /** Test connection's words: a 403 in plain words (not GitHub's status line), a 5xx, a keystore that failed. */

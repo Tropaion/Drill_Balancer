@@ -1,8 +1,8 @@
 {
   "schema": "dbauto.fixture/1",
   "detector": {
-    "version": "dbauto/1.1.0",
-    "params_sha256": "b9e9e3dcdead681c6c6d9390e363cbd35ee422ff6666e21b4903338c45cb2991"
+    "version": "dbauto/1.2.0",
+    "params_sha256": "e1f514475f55ea6174c384dcc8613f5e3d02dd60a2fae372689ba82dd37b5901"
   },
   "frames": 798,
   "t0_us": 3242648,
@@ -54,8 +54,8 @@
       11215493
     ],
     "detector": {
-      "version": "dbauto/1.1.0",
-      "params_sha256": "b9e9e3dcdead681c6c6d9390e363cbd35ee422ff6666e21b4903338c45cb2991"
+      "version": "dbauto/1.2.0",
+      "params_sha256": "e1f514475f55ea6174c384dcc8613f5e3d02dd60a2fae372689ba82dd37b5901"
     },
     "events": [
       {

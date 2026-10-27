@@ -108,13 +108,42 @@ simulator's web panel; without Bluetooth the panel's API stands in for
 ```sh
 cd ../firmware/tools/sim && ./run.sh --no-ble --rec-host 127.0.0.1     # one terminal
 DB_SIM_URL=http://127.0.0.1:8765 DB_SIM_OUT=/tmp/e2e \
-  ./gradlew testDebugUnitTest --tests '*SimulatorEndToEndTest'        # another
+  ./gradlew testDebugUnitTest --tests '*SimulatorEndToEndTest' --rerun   # another
 ```
+
+`--rerun`: Gradle cannot see the simulator, nor the content of a plan file
+(below), so without it an unchanged command would be up to date and record
+nothing.
 
 `DB_SIM_OUT` (optional) keeps the journal as `<id>.dbrec` with its
 `take.json`, for the dataset tools:
 `python -m dbdata.dbrec info /tmp/e2e/<id>.dbrec` (in
 `firmware/tools/dataset`).
+
+`recordsTheScenarioTakes` in the same class records a set of varied takes
+instead (skipped unless `DB_SIM_SCENARIOS` is set as well). `DB_SIM_SCENARIOS`
+names a JSON list of takes; each entry is its own session with:
+- `setup`: a `SessionSetup` as `take.json` holds it;
+- `steps`: panel commands sent at given take times (`at_s`, `cmd`, e.g. a
+  `scenario`);
+- `take_s` and `end`: `stop` (STOP at `take_s`), `client_drop` (the panel
+  drops the stream client: the take is kept as interrupted, `client_lost`) or
+  `device` (the device's own END, e.g. `max_s` from the setup).
+
+The takes use the install id `simtakesrecorded` (recording ids
+`…_simt_xxxx`), and each session starts in a minute of its own. Outputs, all
+optional:
+- `DB_SIM_STORE_OUT`: each take's store folder `<id>/{stream.dbr, take.json}`,
+  as the phone holds it before finalizing;
+- `DB_SIM_TRUTH_OUT`: the simulator's ground truth, `<id>.json`;
+- `DB_SIM_FINALIZE_OUT`: a copy of each take finalized and auto-labelled as
+  the app does, in the data repo's layout, for `python -m dbdata.validate`.
+
+```sh
+DB_SIM_URL=http://127.0.0.1:8765 DB_SIM_SCENARIOS=takes.json \
+  DB_SIM_STORE_OUT=/tmp/store DB_SIM_FINALIZE_OUT=/tmp/check \
+  ./gradlew testDebugUnitTest --tests '*SimulatorEndToEndTest.recordsTheScenarioTakes' --rerun
+```
 
 ### Against the device simulator
 
@@ -216,7 +245,7 @@ the app writes the take's **dataset files** next to its journal
 the dataset contract has them and as `dbdata.dbrec export` writes them
 from the same bytes (`FinalizerCrossCheckTest`). It then **labels** the
 take (`recorder/label`): a Kotlin port of `dbdata.autodetect` (detector
-`dbauto/1.1.0`; its parameters are the contract's `autodetect_params.json`,
+`dbauto/1.2.0`; its parameters are the contract's `autodetect_params.json`,
 shipped as an asset) finds the motor runs, contacts, breakthroughs and
 retracts, stalls and kickbacks, and suggests wobble, wander and speech.
 events.json gets its labels (source auto, `detector` with the parameters'
@@ -244,8 +273,13 @@ review (it waits there if the labels are not ready yet): the session's
 labels and tool under the title, four signal
 lanes (IMU energy, sound, motor pitch, cutting noise; min/max per column
 of the visible range) with the phases the labels give as coloured bands,
-and one 56 dp handle per marker above them (in a second row where two
-would overlap).
+and a 56 dp handle per marker above them, each with a leader line to its
+marker (two close ones stacked in two rows). Where more markers crowd
+than that, a count handle stands for them ("4 / zoom"): a tap zooms in on
+them, and the selected marker always keeps its own handle. A review
+opened again says so under the title (*Reviewed · uploaded. Save sends a
+label update.*, or *Reviewed* alone before the upload), and Save is its
+main button; a new review's is *Accept all*.
 
 - **Move** a marker by dragging its handle (it snaps to the 10 ms frames)
   or with the -100 / -10 / +10 / +100 ms buttons; *Reset* puts a moved
@@ -276,7 +310,7 @@ would overlap).
   tabs again. It is the same review on both sides, and across a rotation
   too: the edits, the view and a Save under way go on.
 - With TalkBack or Switch Access a handle is a button (select, or confirm
-  an uncertain marker), and the lanes have *Cursor back* / *Cursor
+  an uncertain marker; a count handle zooms in), and the lanes have *Cursor back* / *Cursor
   forward* actions.
 - A recording whose files could not be written (the phone full) reads
   *Interrupted* in the list and its review says so with *Try again*; the
@@ -284,7 +318,7 @@ would overlap).
   recorded opens the review.
 
 Checks against the Python reference: `AutoDetectVectorsTest` replays the
-eight golden fixtures of `firmware/tools/dataset/fixtures/autodetect`
+nine golden fixtures of `firmware/tools/dataset/fixtures/autodetect`
 (features within 1e-6, the same events, spans and holes, times within a
 frame, confidences within 0.01; also the app's FLAC reader against the
 tests' full decoder). `PhasesCrossCheckTest` replays `fixtures/labels`:
@@ -324,7 +358,7 @@ A saved review is uploaded on its own to a **private GitHub repository**
 already bootstrapped with its template from the PC), one commit per
 recording. Recordings that still *Need review* wait; *Upload settings*
 (the line under *New recording*) has *Upload now* for every reviewed one not
-uploaded yet. Each row shows its upload next to its local stage: *Not
+uploaded yet (off while none waits to be sent). Each row shows its upload next to its local stage: *Not
 uploaded*, *Queued*, *Uploading 42 %*, *Uploaded* or *Upload failed* with the
 reason and *Retry upload* (or *Upload settings* when only they fix it: no
 token, a rejected one, a repository name that is not owner/name; upload.json

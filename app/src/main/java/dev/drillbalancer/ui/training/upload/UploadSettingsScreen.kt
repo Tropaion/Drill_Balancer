@@ -47,6 +47,7 @@ import dev.drillbalancer.ui.theme.Green
 import dev.drillbalancer.ui.theme.Grey
 import dev.drillbalancer.ui.theme.Red
 import dev.drillbalancer.ui.training.Hint
+import dev.drillbalancer.upload.UploadCounts
 
 class UploadSettingsActions(
     val editRepo: (String) -> Unit = {},
@@ -116,7 +117,8 @@ fun UploadSettingsScreen(state: UploadSettingsUiState, actions: UploadSettingsAc
                 else -> "Token set" to Green
             }
             Text(text, style = MaterialTheme.typography.titleMedium, color = color)
-            Hint(TOKEN_HELP)
+            // how to make one, until one is set (the dialog shows it again for Replace)
+            if (!state.token.set || state.token.rejected) Hint(TOKEN_HELP)
             if (!state.token.set) {
                 ActionButton("Set token", actions.openTokenDialog, Modifier.fillMaxWidth())
             } else {
@@ -147,14 +149,18 @@ fun UploadSettingsScreen(state: UploadSettingsUiState, actions: UploadSettingsAc
 
         SectionTitle("Queue")
         Panel {
-            val c = state.counts
+            val c = state.counts ?: UploadCounts()
             Text(
                 "${c.queued + c.notQueued} waiting · ${c.uploading} uploading · ${c.failed} failed · ${c.done} uploaded",
                 style = MaterialTheme.typography.bodyLarge,
             )
             if (c.needsReview > 0) Hint(if (c.needsReview == 1) "1 recording needs its review first." else "${c.needsReview} recordings need their review first.")
             ActionButton("Upload now", actions.uploadNow, Modifier.fillMaxWidth(), enabled = state.canUploadNow)
-            if (state.token.rejected) Hint("Replace the token first: GitHub rejected it.")
+            if (state.token.rejected) {
+                Hint("Replace the token first: GitHub rejected it.")
+            } else if (state.nothingToSend) {
+                Hint("Nothing waits to be sent.")
+            }
         }
     }
     if (state.tokenDialog) TokenDialog(state.token.set, state.tokenError, actions.setToken, actions.closeTokenDialog)

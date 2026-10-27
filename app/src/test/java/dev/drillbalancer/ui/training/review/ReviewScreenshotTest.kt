@@ -8,10 +8,13 @@ import dev.drillbalancer.recorder.label.AutoDetect
 import dev.drillbalancer.recorder.label.LabelCheck
 import dev.drillbalancer.recorder.label.LabelEdits
 import dev.drillbalancer.recorder.label.LabelTestData
+import dev.drillbalancer.recorder.label.HoleLabel
 import dev.drillbalancer.recorder.label.Labels
 import dev.drillbalancer.recorder.label.Lanes
+import dev.drillbalancer.recorder.label.Marker
 import dev.drillbalancer.recorder.label.RecordingFiles
 import dev.drillbalancer.recorder.label.ReviewData
+import dev.drillbalancer.recorder.label.Source
 import dev.drillbalancer.recorder.label.TestParams
 import dev.drillbalancer.ui.InFrame
 import dev.drillbalancer.ui.PHONE
@@ -35,12 +38,12 @@ class ReviewScreenshotTest {
 
     private val setup = SessionSetup(material = "wood/softwood", thicknessMm = 38.0, mode = "drill", bitType = "brad_point", bitDiameterMm = 8.0)
 
-    private fun data(name: String, setup: SessionSetup = this.setup): ReviewData {
+    private fun data(name: String, setup: SessionSetup = this.setup, status: String = "auto_only"): ReviewData {
         val rec = RecordingFiles.read(LabelTestData.fixture(name))
         val det = AutoDetect.detect(rec.inputs, TestParams.loaded)
         return ReviewData(
             rec.inputs.recordingId, det.labels, det.labels, det.labels, false, Lanes.of(det.features), rec.inputs.level,
-            rec.inputs.tolDeg, "k7q2", "auto_only", setup,
+            rec.inputs.tolDeg, "k7q2", status, setup,
         )
     }
 
@@ -52,10 +55,11 @@ class ReviewScreenshotTest {
         selected: String? = null,
         message: UiMessage? = null,
         cursor: Long = (labels.c0 + labels.c1) / 2,
+        uploaded: Boolean = false,
     ) {
         val lanes = ReviewViewModel.lanesOf(d.lanes, from, to, d.lanes.values.map { ReviewViewModel.scaleOf(it) })
         val hole = labels.events.firstOrNull { it.id == selected }?.hole
-        val state = ReviewViewModel.stateOf(d, labels, lanes, from, to, cursor, selected, hole, message)
+        val state = ReviewViewModel.stateOf(d, labels, lanes, from, to, cursor, selected, hole, message, uploaded = uploaded)
         compose.setContent { Themed { InFrame(null, SHELL, title = "Review") { m -> ReviewScreen(state, ReviewActions(), m) } } }
         compose.onRoot().captureRoboImage()
     }
@@ -111,4 +115,41 @@ class ReviewScreenshotTest {
         val wob = d.labels.spans.first { it.type == "wobble" }
         shot(d, LabelEdits.setTag(LabelEdits.setSpan(d.labels, wob, false), 1, "breakout_chipping", true))
     }
+
+    /** [d] with [l] as its labels, saved (not changed by the review). */
+    private fun saved(d: ReviewData, l: Labels) =
+        ReviewData(d.id, l, l, d.auto, false, d.lanes, d.level, d.tolDeg, d.reviewer, d.reviewStatus, d.setup)
+
+    /** Five holes in 10 s (twenty markers) on a take's signals: as crowded as a long take at full zoom. */
+    private fun dense(d: ReviewData): Labels {
+        val events = (1..5).flatMap { h ->
+            val t = d.labels.c0 + 200_000 + (h - 1) * 1_950_000L
+            listOf(
+                Marker("on$h", "motor_on", t, source = Source.AUTO, confidence = 0.9),
+                Marker("c$h", "contact", t + 350_000, h, Source.AUTO, 0.9),
+                Marker("bt$h", "breakthrough", t + 1_050_000, h, Source.AUTO, 0.9),
+                Marker("off$h", "motor_off", t + 1_400_000, source = Source.AUTO, confidence = 0.9),
+            )
+        }
+        return d.labels.copy(events = events, spans = emptyList(), holes = (1..5).map { HoleLabel.entry(it, true, emptyList()) })
+    }
+
+    /** The whole of a crowded take: a count handle where markers crowd (a tap zooms in), a handle with a leader for the rest; the lane titles over the lines. */
+    @Test
+    fun reviewDenseTake() {
+        val d = data("fx_raw897_mount")
+        shot(saved(d, dense(d)))
+    }
+
+    /** The crowded take zoomed in on two holes: a handle each, stacked where close, BT2 selected. */
+    @Test
+    fun reviewDenseTakeZoomed() {
+        val d = data("fx_raw897_mount")
+        val l = dense(d)
+        shot(saved(d, l), l, from = l.c0 + 1_900_000, to = l.c0 + 6_000_000, selected = "bt2", cursor = l.c0 + 3_200_000)
+    }
+
+    /** A review opened again, uploaded before: its state under the title, Save the main action. */
+    @Test
+    fun reviewReopenedUploaded() = shot(data("fx_drill_through", status = "reviewed"), uploaded = true)
 }

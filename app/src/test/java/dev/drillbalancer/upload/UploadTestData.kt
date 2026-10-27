@@ -1,6 +1,7 @@
 package dev.drillbalancer.upload
 
 import dev.drillbalancer.recorder.RecordingStore
+import dev.drillbalancer.recorder.export.Finalizer
 import dev.drillbalancer.recorder.export.FinalizerFixtures
 import dev.drillbalancer.recorder.label.AutoLabeler
 import dev.drillbalancer.recorder.label.LabelEdits
@@ -41,6 +42,17 @@ object UploadTestData {
         spans = emptyList(),
         holes = emptyList(),
     )
+
+    /**
+     * The dataset files of the recording folder [src] copied to [out] as the data repo has them
+     * (UploadRecord.repoPath), for the opt-in `dbdata.validate` exports.
+     */
+    fun exportToRepo(src: File, out: File) {
+        val dest = File(out, UploadRecord.repoPath(src.name))
+        dest.deleteRecursively()
+        dest.mkdirs()
+        for (f in Finalizer.DATASET_FILES) File(src, f).takeIf { it.isFile }?.copyTo(File(dest, f))
+    }
 
     /** Every file under [root] whose bytes hold [secret] (the token must be in none). */
     fun filesHolding(root: File, secret: String): List<File> {

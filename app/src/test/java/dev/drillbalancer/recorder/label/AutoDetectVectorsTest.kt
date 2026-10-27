@@ -26,9 +26,12 @@ class AutoDetectVectorsTest {
     private val fixtures = root.listFiles { f -> File(f, "expected.json").isFile }.orEmpty().map { it.name }.sorted()
 
     @Test
-    fun eightFixtures() {
+    fun everyFixtureHasATest() {
         assertEquals(
-            listOf("fx_drill_through", "fx_gap", "fx_hammer_retract", "fx_noaudio", "fx_pulled_open", "fx_raw897_mount", "fx_stuck_kick", "fx_suggestions"),
+            listOf(
+                "fx_drill_through", "fx_gap", "fx_hammer_retract", "fx_loud_free_end", "fx_noaudio", "fx_pulled_open", "fx_raw897_mount",
+                "fx_slow_spindown_end", "fx_spindown_end", "fx_stuck_kick", "fx_suggestions",
+            ),
             fixtures,
         )
     }
@@ -39,11 +42,26 @@ class AutoDetectVectorsTest {
 
     @Test fun hammerRetract() = check("fx_hammer_retract")
 
+    /**
+     * The cut 12 dB louder than the free run, the take ends in the free run after the
+     * breakthrough: no spin-down (the motor's f0 has not fallen), so no motor_off.
+     */
+    @Test fun loudFreeEnd() = check("fx_loud_free_end")
+
     @Test fun noAudio() = check("fx_noaudio")
 
     @Test fun pulledOpen() = check("fx_pulled_open")
 
     @Test fun raw897Mount() = check("fx_raw897_mount")
+
+    /**
+     * A 147 Hz motor, the take ends 0.5 s after the motor_off: the pitch has left the f0 tracker's
+     * range, so no frame of the last off_hold_ms is voiced, and that is a slowing motor too.
+     */
+    @Test fun slowSpindownEnd() = check("fx_slow_spindown_end")
+
+    /** The take ends 0.4 s after the motor_off, in the spin-down: the motor_off from the end of the data. */
+    @Test fun spindownEnd() = check("fx_spindown_end")
 
     @Test fun stuckKick() = check("fx_stuck_kick")
 

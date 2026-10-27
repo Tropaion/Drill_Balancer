@@ -36,6 +36,7 @@ import dev.drillbalancer.ui.components.TouchHeight
 import dev.drillbalancer.ui.theme.Amber
 import dev.drillbalancer.ui.theme.Blue
 import dev.drillbalancer.ui.theme.Dark
+import dev.drillbalancer.ui.theme.Green
 import dev.drillbalancer.ui.theme.Grey
 import dev.drillbalancer.ui.theme.Red
 import dev.drillbalancer.ui.training.Hint
@@ -55,6 +56,7 @@ class ReviewActions(
     val toggleSuggestion: (id: String) -> Unit = {},
     val zoomIn: () -> Unit = {},
     val zoomOut: () -> Unit = {},
+    val zoomTo: (t0Us: Long, t1Us: Long) -> Unit = { _, _ -> },
     val panBack: () -> Unit = {},
     val panForward: () -> Unit = {},
     val showAll: () -> Unit = {},
@@ -68,7 +70,8 @@ class ReviewActions(
 /**
  * The review of a recording's labels: the signals with the phases the labels give, markers to
  * drag or nudge (uncertain ones dashed amber until tapped), markers to add, tags per hole and
- * the detector's suggestions, then Accept all / Save / Discard.
+ * the detector's suggestions, then Accept all / Save / Discard. A review opened again says so
+ * (and whether it is uploaded), and Save is its main action.
  */
 @Composable
 fun ReviewScreen(state: ReviewUiState, actions: ReviewActions, modifier: Modifier = Modifier) {
@@ -95,6 +98,7 @@ private fun Body(state: ReviewUiState, actions: ReviewActions) {
     state.message?.let { MessageBanner(it, actionLabel = "OK", onAction = actions.dismissMessage) }
     if (state.title.isNotEmpty()) Text(state.title, style = MaterialTheme.typography.titleMedium)
     if (state.tool.isNotEmpty()) Hint(state.tool)
+    state.status?.let { Text(it, style = MaterialTheme.typography.bodyMedium, color = if (state.uploaded) Green else Blue) }
     SignalPlot(state, actions)
     Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
         StepButton("−", "Zoom out", state.toUs - state.fromUs < state.c1Us - state.c0Us, actions.zoomOut)
@@ -115,7 +119,7 @@ private fun Body(state: ReviewUiState, actions: ReviewActions) {
 
     val sel = state.selected
     if (sel != null) {
-        Panel(border = if (sel.marker.needsConfirm) Amber else markerColor(sel.marker.type)) {
+        Panel(border = markerColor(sel.marker)) {
             Text(sel.title, style = MaterialTheme.typography.titleMedium)
             Hint(sel.detail)
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -177,8 +181,10 @@ private fun Body(state: ReviewUiState, actions: ReviewActions) {
 private fun Bar(state: ReviewUiState, actions: ReviewActions) {
     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         ActionButton("Discard", actions.discard, Modifier.weight(1f), enabled = !state.busy, kind = ButtonKind.SECONDARY)
-        ActionButton("Save", actions.save, Modifier.weight(1f), enabled = !state.busy, kind = if (state.dirty) ButtonKind.PRIMARY else ButtonKind.SECONDARY)
-        ActionButton("Accept all", actions.acceptAll, Modifier.weight(1.2f), enabled = !state.busy, kind = if (state.dirty) ButtonKind.SECONDARY else ButtonKind.PRIMARY)
+        // a new review ends with Accept all; one changed, or reviewed before, with Save
+        val save = state.dirty || state.reviewed
+        ActionButton("Save", actions.save, Modifier.weight(1f), enabled = !state.busy, kind = if (save) ButtonKind.PRIMARY else ButtonKind.SECONDARY)
+        ActionButton("Accept all", actions.acceptAll, Modifier.weight(1.2f), enabled = !state.busy, kind = if (save) ButtonKind.SECONDARY else ButtonKind.PRIMARY)
     }
 }
 

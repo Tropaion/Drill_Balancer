@@ -55,7 +55,7 @@ data class UploadSettingsUiState(
     val tokenDialog: Boolean = false,               // Set / Replace open
     val tokenError: String? = null,
     val test: ConnectionTest = ConnectionTest.Idle,
-    val counts: UploadCounts = UploadCounts(),
+    val counts: UploadCounts? = null,               // null: not counted yet, or the count failed
     val message: UiMessage? = null,
 ) {
     val repoChanged: Boolean get() = repoText.trim() != settings.repo
@@ -63,8 +63,14 @@ data class UploadSettingsUiState(
     /** Test connection asks about the saved repository: off while the field holds another one, or without a token. */
     val canTest: Boolean get() = loaded && token.set && !repoChanged && test != ConnectionTest.Running
 
-    /** Upload now: not without a token, nor with one GitHub rejected (every upload would fail the same way). */
-    val canUploadNow: Boolean get() = loaded && token.set && !token.rejected
+    /** Nothing waits to be sent, as far as the counts know (unknown counts: not known to be nothing). */
+    val nothingToSend: Boolean get() = counts?.toSend == 0
+
+    /**
+     * Upload now: not without a token, nor with one GitHub rejected (every upload would fail the
+     * same way), nor with nothing to send.
+     */
+    val canUploadNow: Boolean get() = loaded && token.set && !token.rejected && !nothingToSend
 }
 
 /**
@@ -84,7 +90,7 @@ class UploadSettingsViewModel(
         val tokenDialog: Boolean = false,
         val tokenError: String? = null,
         val test: ConnectionTest = ConnectionTest.Idle,
-        val counts: UploadCounts = UploadCounts(),
+        val counts: UploadCounts? = null,
         val message: UiMessage? = null,
     )
 
@@ -137,7 +143,8 @@ class UploadSettingsViewModel(
                 null
             }
         }
-        if (counts != null) local.update { it.copy(counts = counts) }
+        // a failed count is unknown, not nothing to send
+        local.update { it.copy(counts = counts) }
     }
 
     fun editRepo(text: String) = local.update { it.copy(repoText = text, repoError = null) }

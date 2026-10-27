@@ -115,7 +115,7 @@ class FinalizerTest {
         )
         val review = buildJsonObject {
             put("status", "reviewed")
-            put("detector", "dbauto/1.1.0")
+            put("detector", "dbauto/1.2.0")
             put("revision", 1)
             put("edited_events", 1)
             put("reviewer", "k7q2")

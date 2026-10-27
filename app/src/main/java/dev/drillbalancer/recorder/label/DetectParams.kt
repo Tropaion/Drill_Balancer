@@ -33,7 +33,7 @@ data class DetectParams(
     val speech: SpeechParams,
     val confidence: ConfidenceParams,
 ) {
-    /** events.json detector.version and meta.review.detector: "dbauto/1.1.0". */
+    /** events.json detector.version and meta.review.detector: "dbauto/1.2.0". */
     val detector: String get() = "$DETECTOR/$version"
 
     companion object {
@@ -112,6 +112,8 @@ data class MotorParams(
     @SerialName("conf_scale_z") val confScaleZ: Double,
     @SerialName("off_f0_ms") val offF0Ms: Double,
     @SerialName("conf_ms") val confMs: Double,
+    @SerialName("end_ms") val endMs: Double,
+    @SerialName("end_conf_scale_db") val endConfScaleDb: Double,
 )
 
 @Serializable

@@ -97,7 +97,7 @@ class Spec:
     ring_kib / stall: a stream ring of that size (0: the simulator's) and a
     client that stops reading for (at_s, duration_s) from the scenario start,
     so the device drops records (a transport gap). inject: signals the
-    simulator has no model for, added to the exported files (INJECTIONS).
+    simulator has no model for, added to the exported files (INJECTIONS, LOUD_LOAD).
     drill_type / motor: meta.session.drill (None: for hammer an SDS rotary
     hammer with a masonry_sds bit, else a combi drill; a drill/driver
     otherwise; the simulator models one brushless drill).
@@ -156,6 +156,10 @@ INJECTIONS = ("wobble", "wander", "speech")
 WOBBLE_DPS, WOBBLE_HZ = 15.0, 4.0          # a radial gyro swing (board X) while cutting
 WANDER_CDEG_PER_S = 300                    # the elevation (and deviation) drift 3 deg in the first second of the hole
 SPEECH_FS, SPEECH_MOD_HZ = 0.03, 4.0       # band noise, 4 Hz syllable rate, from 1 s after motor_off
+# Not for a suggestion rule: the cut louder than the free run by more than motor.off_level_db
+# (hard material), so that a take ending in the free run after it looks like a spin-down by energy.
+LOUD_LOAD = "loud_load"
+LOUD_LOAD_DB = 12.0                        # the sound from hole 1's contact to its load end
 
 
 # Scenario sets. "eval": the auto-detector's evaluation (tests/test_autodetect.py);
@@ -217,6 +221,17 @@ SETS: dict[str, list[Spec]] = {
         # wobble, wander and speech, which the simulator has no model for, injected
         _s("fx_suggestions", seed=207, holes=1, sag=0.2, free_s=0.8, drill_s=1.8, lead_s=0.6, tail_s=3.0,
            mic_mask=1, inject=INJECTIONS),
+        # the take ends 0.4 s after the motor_off, in its spin-down: no low stretch in the data
+        _s("fx_spindown_end", seed=209, holes=1, sag=0.2, free_s=0.8, drill_s=1.5, lead_s=0.6, tail_s=-0.7,
+           mic_mask=1),
+        # a cut 12 dB louder than the free run, and the take ends 0.3 s before the motor_off, in the
+        # free run after the breakthrough: the motor still runs (no motor_off)
+        _s("fx_loud_free_end", seed=210, holes=1, sag=0.2, free_s=0.5, drill_s=3.5, lead_s=0.6, tail_s=-1.4,
+           mic_mask=1, inject=(LOUD_LOAD,)),
+        # a 147 Hz motor, the take ends 0.5 s after the motor_off: its pitch has fallen out of the
+        # f0 tracker's range, so the last off_hold_ms has no voiced frame (a slowing motor too)
+        _s("fx_slow_spindown_end", seed=211, holes=1, free_hz=147.0, sag=0.15, free_s=0.8, drill_s=1.5,
+           lead_s=0.6, tail_s=-0.6, mic_mask=1),
     ],
 }
 
@@ -389,8 +404,8 @@ def record_take(spec: Spec, state_dir: Path) -> tuple[bytes, dict]:
 
 
 def inject(folder: Path, names, events: dict, seed: int = 3) -> tuple[dict, dict]:
-    """Adds the INJECTIONS named to an exported recording (rewritten with io.write_recording,
-    derived labels recomputed) and their spans to events: (meta, events)."""
+    """Adds the INJECTIONS (and LOUD_LOAD) named to an exported recording (rewritten with
+    io.write_recording, derived labels recomputed) and their spans to events: (meta, events)."""
     import numpy as np
 
     from .io import (DEVICE_EVENTS_FILE, IMU_FILE, LEVEL_FILE, LEVEL_MODES, SYNC_FILE, read_audio,
@@ -398,7 +413,10 @@ def inject(folder: Path, names, events: dict, seed: int = 3) -> tuple[dict, dict
     from .io import SyncFit
     from .contract import read_json
 
-    bad = set(names) - set(INJECTIONS)
+    # what each injection needs: the anchors below, and the audio
+    need = {"wobble": ("contact",), "wander": ("contact",), "speech": ("motor_off", "audio"),
+            LOUD_LOAD: ("contact", "audio")}
+    bad = set(names) - need.keys()
     if bad:
         raise ValueError(f"unknown injections {sorted(bad)}")
     folder = Path(folder)
@@ -414,19 +432,21 @@ def inject(folder: Path, names, events: dict, seed: int = 3) -> tuple[dict, dict
             ev.setdefault("load_end", e["t_us"])
     if "contact" in ev:
         ev.setdefault("load_end", c1)
-    need = {"wobble": ("contact",), "wander": ("contact",), "speech": ("motor_off",)}
+    have = set(ev) | ({"audio"} if meta.get("audio") else set())
     for name in names:
-        missing = [a for a in need[name] if a not in ev]
+        missing = [a for a in need[name] if a not in have]
         if missing:
             raise ValueError(f"inject {name}: the take has no {', '.join(missing)}")
-    if "speech" in names and not meta.get("audio"):
-        raise ValueError("inject speech: the take has no audio")
     imu = read_imu_csv(folder / IMU_FILE)
     level = read_level_csv(folder / LEVEL_FILE)
-    audio = sync = None
+    audio = sync = ta = None
     if meta.get("audio"):
         audio, _ = read_audio(folder / meta["audio"]["file"])
         sync = read_sync_csv(folder / SYNC_FILE)
+        ta = SyncFit.fit(sync["frame"], sync["t_us"]).t_of(np.arange(len(audio)))   # each sample's time
+
+    def pcm16(x):
+        return np.clip(np.round(x), -32768, 32767).astype(np.int16)
     de_path = folder / DEVICE_EVENTS_FILE
     dev_ev = read_device_events_csv(de_path) if de_path.is_file() else None
     spans = events["spans"]
@@ -453,8 +473,6 @@ def inject(folder: Path, names, events: dict, seed: int = 3) -> tuple[dict, dict
         level["deviation_cdeg"] = level["deviation_cdeg"].to_numpy() + np.where(tilt, ramp, 0)
         span("wander", ev["contact"], min(ev["contact"] + 1_500_000, ev["load_end"]), hole=1)
     if "speech" in names:
-        fit = SyncFit.fit(sync["frame"], sync["t_us"])
-        ta = fit.t_of(np.arange(len(audio)))
         a = ev["motor_off"] + 1_000_000
         sel = ta >= a
         noise = np.random.default_rng(seed).normal(0.0, 1.0, len(audio))
@@ -462,8 +480,13 @@ def inject(folder: Path, names, events: dict, seed: int = 3) -> tuple[dict, dict
         env = 0.5 * (1.0 + np.sin(2 * np.pi * SPEECH_MOD_HZ * ta / 1e6))
         x = audio.astype(np.float64)
         x[sel] += (SPEECH_FS * 32768 * band * env)[sel][:, None]
-        audio = np.clip(np.round(x), -32768, 32767).astype(np.int16)
+        audio = pcm16(x)
         span("ignore", a, c1, reason="speech")
+    if LOUD_LOAD in names:
+        sel = (ta >= ev["contact"]) & (ta < ev["load_end"])
+        x = audio.astype(np.float64)
+        x[sel] *= 10.0 ** (LOUD_LOAD_DB / 20.0)
+        audio = pcm16(x)
     spans.sort(key=lambda s: s["t0_us"])     # events["spans"] itself
     for i, s in enumerate(spans):
         s["id"] = f"s{i + 1}"

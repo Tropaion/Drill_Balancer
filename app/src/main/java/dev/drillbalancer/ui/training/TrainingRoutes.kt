@@ -54,7 +54,12 @@ import dev.drillbalancer.ui.training.review.ReviewViewModel
 import dev.drillbalancer.ui.training.upload.UploadSettingsActions
 import dev.drillbalancer.ui.training.upload.UploadSettingsScreen
 import dev.drillbalancer.ui.training.upload.UploadSettingsViewModel
+import dev.drillbalancer.upload.LocalUpload
 import dev.drillbalancer.upload.UploadServices
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.emptyFlow
+import kotlinx.coroutines.flow.map
 
 /** The process-wide recorder parts the training screens use (DrillBalancerApp); [uploads] null: no upload (tests). */
 class TrainingDeps(
@@ -66,6 +71,12 @@ class TrainingDeps(
 ) {
     // a saved review goes into the upload queue
     val review = ReviewRepository(store, labeler) { id -> uploads?.queue?.saved(id) }
+
+    /** Whether [id]'s saved review is in the current data repository (the review says so). Blocking file I/O. */
+    suspend fun uploaded(id: String): Boolean = uploads?.let { LocalUpload.of(store.dir(id), it.prefs.current().repo).done } ?: false
+
+    /** Each time an upload of [id] starts or ends (the review reads [uploaded] again). */
+    fun uploadChanges(id: String): Flow<Boolean> = uploads?.queue?.active?.map { id in it }?.distinctUntilChanged() ?: emptyFlow()
 
     fun listViewModel(session: DeviceSession?) = TrainingListViewModel(store, controller, session, uploads = uploads)
 }
@@ -165,7 +176,7 @@ fun TrainingReviewRoute(vm: ReviewViewModel, onDone: () -> Unit, modifier: Modif
             delete = vm::delete, resetMarker = vm::resetMarker,
             resetAll = { if (state.dirty || state.reviewed) confirmReset = true else vm.resetAll() },
             selectHole = vm::selectHole,
-            toggleTag = vm::toggleTag, toggleSuggestion = vm::toggleSuggestion, zoomIn = vm::zoomIn, zoomOut = vm::zoomOut,
+            toggleTag = vm::toggleTag, toggleSuggestion = vm::toggleSuggestion, zoomIn = vm::zoomIn, zoomOut = vm::zoomOut, zoomTo = vm::zoomTo,
             panBack = vm::panBack, panForward = vm::panForward, showAll = vm::showAll, acceptAll = vm::acceptAll,
             save = vm::save, discard = { if (state.dirty) confirm = true else vm.discard() }, dismissMessage = vm::dismissMessage,
             retry = vm::retry,
@@ -240,7 +251,7 @@ class ReviewStores : ViewModel() {
 @Composable
 fun reviewViewModel(id: String, deps: TrainingDeps, stores: ReviewStores): ReviewViewModel {
     DisposableEffect(id, stores) { onDispose(stores.shows(id)) }
-    return viewModel(viewModelStoreOwner = remember(id, stores) { stores.owner(id) }) { ReviewViewModel(id, deps.review, deps.store) }
+    return viewModel(viewModelStoreOwner = remember(id, stores) { stores.owner(id) }) { ReviewViewModel(id, deps.review, deps.store, uploaded = deps::uploaded, uploadChanges = deps.uploadChanges(id)) }
 }
 
 /** The review of [id] (its view model in [stores], kept while the review is open). */

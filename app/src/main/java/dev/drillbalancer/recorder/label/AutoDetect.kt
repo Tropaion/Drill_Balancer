@@ -18,7 +18,7 @@ class DetHole(var through: Boolean? = null, val tags: MutableList<String> = Arra
 class Detection(val labels: Labels, val derived: Derived, val features: Features)
 
 /**
- * The auto-detector, a one-to-one port of dbdata.autodetect (detector 1.1.0): its module
+ * The auto-detector, a one-to-one port of dbdata.autodetect (detector 1.2.0): its module
  * docstring is the specification, and AutoDetectVectorsTest replays the golden fixtures
  * (firmware/tools/dataset/fixtures/autodetect). Pure and deterministic: the same inputs and
  * parameters give the same labels.
@@ -150,7 +150,10 @@ private class Rules(val inp: DetectInputs, val f: Features, val p: DetectParams)
                 }
             }
         }
-        cur?.let { runs += it }
+        cur?.let {
+            openEnd(it)
+            runs += it
+        }
         // the board is clipped to the drill: a run the IMU never confirms is sound alone
         if (ziS.any { it.isFinite() }) {
             return runs.filter { r ->
@@ -171,37 +174,91 @@ private class Rules(val inp: DetectInputs, val f: Features, val p: DetectParams)
         return !(zi.isFinite() && za.isFinite()) || (zi < on) != (za < on)
     }
 
+    /** E of section 5: med3 of the louder stream over the conf_ms before kd. */
+    fun offEnergy(run: Run, kd: Int): DoubleArray {
+        val w0 = maxOf(run.on, kd - nf(p.motor.confMs))
+        val loudAud = hasAudio && med(f[Feature.Z_AUD], w0, kd) >= med(f[Feature.Z_IMU], w0, kd)
+        return if (loudAud) eAudS else eImuS
+    }
+
+    /**
+     * A run still on when the data ends: E off_level_db below the run's level over the last
+     * end_ms, with the motor slowing ([slowsAtEnd]), means the data ends in its spin-down:
+     * off = k, and [motorOffTime] finds the knee (none when that knee would be k: the run stays
+     * open).
+     */
+    fun openEnd(run: Run) {
+        val mp = p.motor
+        val e = offEnergy(run, k)
+        val drop = med(e, run.on, k) - med(e, maxOf(run.on, k - nf(mp.endMs)), k)
+        if (drop.isFinite() && drop >= mp.offLevelDb && slowsAtEnd(run)) {
+            run.off = k
+            if (motorOffTime(run) >= k) {
+                run.off = null              // no knee in the data: an open end after all
+            } else {
+                run.offConf = sigmoid((drop - mp.offLevelDb) / mp.endConfScaleDb)
+            }
+        }
+    }
+
+    /**
+     * Whether the motor slows at the end of the data, not just runs free after a louder cut: the
+     * last voiced frame (s >= on_z, at least 3 voiced frames in the off_hold_ms before it) within
+     * off_search_ms of the end has an f0 that fell ([motorOffTime]'s f0 test failing), or no frame
+     * of the last off_hold_ms is voiced (the pitch fell out of the tracker's range); without such
+     * a frame (no audio, an unvoiced motor) the stream has fallen below on_z over the last end_ms.
+     */
+    fun slowsAtEnd(run: Run): Boolean {
+        val mp = p.motor
+        val tail = maxOf(run.on, k - nf(mp.offHoldMs))
+        var i = k - 1
+        val stop = maxOf(run.on, k - nf(mp.offSearchMs))
+        while (i >= stop) {
+            val steady = f0Steady(i)
+            if (steady != null) return !steady || (tail until k).none { voiced[it] && s[it] >= mp.onZ }
+            i--
+        }
+        return med(s, maxOf(run.on, k - nf(mp.endMs)), k) < mp.onZ
+    }
+
+    /** med of a over the off_hold_ms before frame i; NaN with fewer than 3 finite values. */
+    fun pastMed(a: DoubleArray, i: Int): Double {
+        val from = maxOf(0, i - nf(p.motor.offHoldMs))
+        var finite = 0
+        for (j in from until i) if (a[j].isFinite()) finite++
+        return if (finite >= 3) med(a, from, i) else Double.NaN
+    }
+
+    /**
+     * [motorOffTime]'s f0 test at frame i: f0(i) >= (1 - off_f0_drop) * pastMed(f0, i); null
+     * when i has no test (unvoiced, s < on_z, or fewer than 3 voiced frames before it).
+     */
+    fun f0Steady(i: Int): Boolean? {
+        val mp = p.motor
+        if (!voiced[i] || s[i] < mp.onZ) return null
+        val ref = pastMed(f0, i)
+        return if (ref.isFinite()) f0[i] >= (1.0 - mp.offF0Drop) * ref else null
+    }
+
     fun motorOffTime(run: Run): Int {
         val mp = p.motor
         val kd = run.off!!
         val lo = maxOf(run.on + 1, kd - nf(mp.offSearchMs))
-        val hold = nf(mp.offHoldMs)
-        val onZ = mp.onZ
-        val w0 = maxOf(run.on, kd - nf(mp.confMs))
-        val loudAud = hasAudio && med(f[Feature.Z_AUD], w0, kd) >= med(f[Feature.Z_IMU], w0, kd)
-        val e = if (loudAud) eAudS else eImuS
+        val e = offEnergy(run, kd)
         val level = med(e, run.on, kd) - mp.offLevelDb
         var kEn = kd
-        var i = kd
+        var i = minOf(kd, k - 1)         // kd = k: the data ends in the spin-down
         while (i >= lo) {
-            val from = maxOf(0, i - hold)
-            var finite = 0
-            for (j in from until i) if (e[j].isFinite()) finite++
-            if (s[i] >= onZ && e[i].isFinite() && e[i] >= level && finite >= 3 && e[i] >= med(e, from, i) - mp.offDropDb) {
+            if (s[i] >= mp.onZ && e[i].isFinite() && e[i] >= level && e[i] >= pastMed(e, i) - mp.offDropDb) {
                 kEn = minOf(kd, i + 1)
                 break
             }
             i--
         }
-        i = kEn
+        i = minOf(kEn, k - 1)
         val stop = maxOf(lo, kEn - nf(mp.offF0Ms))
         while (i >= stop) {
-            if (voiced[i] && s[i] >= onZ) {
-                val from = maxOf(0, i - hold)
-                var finite = 0
-                for (j in from until i) if (f0[j].isFinite()) finite++
-                if (finite >= 3 && f0[i] >= (1.0 - mp.offF0Drop) * med(f0, from, i)) return minOf(kEn, i + 1)
-            }
+            if (f0Steady(i) == true) return minOf(kEn, i + 1)
             i--
         }
         return kEn

@@ -347,7 +347,10 @@ In short, on 10 ms frames:
   features, and the motor hysteresis waits the gap out;
 - motor runs by hysteresis on the louder stream (a run the IMU never
   confirms is sound alone, e.g. speech), the motor_off walked back to where
-  the energy and then f0 start to fall;
+  the energy and then f0 start to fall (also when the take ends in the
+  spin-down, before the motor is quiet: the louder stream's last 50 ms
+  10 dB below the run, and the motor slowing: its last voiced f0 falling,
+  or without one the stream below the on threshold);
 - contact when a weighted score of f0 sag, cutting noise, IMU energy and
   thrust (or the hammer blows) holds for 200 ms; the load end when f0 and
   the cutting noise recover; a breakthrough when an impulse comes with it
@@ -379,7 +382,11 @@ Three more seed sets of the same scenarios gave motor_on 0.892, 0.892 and
 random takes around them (motor_on 0.81) and 36 takes of stalls (drill and
 hammer, a quiet slow motor) and blind holes with a small sag.
 `tests/test_autodetect.py` holds the eval set one miss below the worst of
-the four seed sets, and a holdout in a room twice as loud.
+the four seed sets, and a holdout in a room twice as loud. The eval takes
+cut every 0.1 s (2040 cuts) find every motor_off that lies 0.4 s or more
+before the cut (1054; detector 1.1.0 missed 112 of them, up to 0.82 s
+into the spin-down) and no motor_off in the 1512 cuts where the motor
+still runs (spin-up, free run, drilling, stalls).
 
 Known limits:
 - motor_on comes late when the room is loud or the drill quiet: the first

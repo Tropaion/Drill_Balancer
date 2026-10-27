@@ -38,6 +38,7 @@ import dev.drillbalancer.ui.training.TrainingListUiState
 import dev.drillbalancer.ui.training.UploadSummary
 import dev.drillbalancer.upload.FailureKind
 import dev.drillbalancer.upload.TokenState
+import dev.drillbalancer.upload.UploadCounts
 import dev.drillbalancer.upload.UploadQueue
 import dev.drillbalancer.upload.UploadStage
 import org.junit.Assert.assertEquals
@@ -178,10 +179,13 @@ class UploadScreenTest {
         compose.onNodeWithText("Token set").assertExists()
     }
 
-    /** Test connection is off while the field holds an unsaved repository (it tests the saved one); Upload now while the token is rejected. */
+    /**
+     * Test connection is off while the field holds an unsaved repository (it tests the saved
+     * one); Upload now while the token is rejected, and while nothing waits to be sent.
+     */
     @Test
     fun testAndUploadNowAreOffWhenTheyCannotWork() {
-        var state by mutableStateOf(UploadSettingsUiState(loaded = true, token = TokenState(set = true)))
+        var state by mutableStateOf(UploadSettingsUiState(loaded = true, token = TokenState(set = true), counts = UploadCounts(notQueued = 1)))
         compose.setContent { Themed { UploadSettingsScreen(state, UploadSettingsActions()) } }
         compose.onNodeWithText("Test connection").performScrollTo().assertIsEnabled()
         state = state.copy(repoText = "me/other")
@@ -191,6 +195,31 @@ class UploadScreenTest {
         state = state.copy(repoText = state.settings.repo, token = TokenState(set = true, rejected = true))
         compose.onNodeWithText("Upload now").performScrollTo().assertIsNotEnabled()
         compose.onNodeWithText("Replace the token first: GitHub rejected it.").assertExists()
+        // every reviewed recording uploaded (or uploading): nothing for Upload now to send
+        state = state.copy(token = TokenState(set = true), counts = UploadCounts(uploading = 1, done = 4, needsReview = 1))
+        compose.onNodeWithText("Upload now").performScrollTo().assertIsNotEnabled()
+        compose.onNodeWithText("Nothing waits to be sent.").assertExists()
+        for (c in listOf(UploadCounts(queued = 1), UploadCounts(failed = 1), UploadCounts(notQueued = 1))) {
+            state = state.copy(counts = c)
+            compose.onNodeWithText("Upload now").performScrollTo().assertIsEnabled()
+        }
+        // not counted yet (or the count failed): not known to be nothing, so it stays on
+        state = state.copy(counts = null)
+        compose.onNodeWithText("Upload now").performScrollTo().assertIsEnabled()
+        compose.onNodeWithText("Nothing waits to be sent.").assertDoesNotExist()
+    }
+
+    /** The token's creation steps show until a token is set (and again when GitHub rejects it). */
+    @Test
+    fun theTokenHelpGoesOnceATokenIsSet() {
+        var state by mutableStateOf(UploadSettingsUiState(loaded = true, token = TokenState()))
+        compose.setContent { Themed { UploadSettingsScreen(state, UploadSettingsActions()) } }
+        compose.onNodeWithText(TOKEN_HELP).assertExists()
+        state = state.copy(token = TokenState(set = true))
+        compose.onNodeWithText("Token set").assertExists()
+        compose.onNodeWithText(TOKEN_HELP).assertDoesNotExist()
+        state = state.copy(token = TokenState(set = true, rejected = true))
+        compose.onNodeWithText(TOKEN_HELP).assertExists()
     }
 
     /** Each option is one switch node with its title for TalkBack, and the whole row toggles it (not only the switch). */

@@ -122,7 +122,7 @@ class RecordingController(
 
     private class Connection(val socket: Socket) {
         val decoder = StreamDecoder()
-        val closed = CompletableDeferred<Throwable?>()   // null: the device ended the stream (FIN)
+        val closed = CompletableDeferred<Throwable?>()   // null: the stream closed (FIN)
         val taken = CompletableDeferred<Unit>()          // HELLO_OK: the device holds this connection
         @Volatile var expected = false                    // closed on purpose: nothing to recover
         @Volatile var lastDataMs = 0L
@@ -709,8 +709,9 @@ class RecordingController(
         conn = null
         val s = detachSink()
         if (s != null) {
+            // client_lost without an END: a FIN is the stream closed, not the device ending the take
             val note = when (cause) {
-                null -> "the device ended the stream"
+                null -> "the stream closed before the take's END"
                 is StallException -> "the stream stalled (${cause.message})"
                 else -> "the connection dropped (${cause.message})"
             }
@@ -749,7 +750,7 @@ class RecordingController(
         link = null
         val s = detachSink()
         if (s != null) {
-            withContext(NonCancellable + io) { finishTake(s, JournalState.INTERRUPTED, "client_lost", "the session ended", null, toReady = false) }
+            withContext(NonCancellable + io) { finishTake(s, JournalState.INTERRUPTED, "client_lost", "the session ended before the take's END", null, toReady = false) }
         }
     }
 

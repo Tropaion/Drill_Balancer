@@ -51,12 +51,12 @@ class AutoLabelerTest {
             assertEquals(name, listOf<String>(), eventsSchema.problems(events))
             assertEquals(name, listOf<String>(), metaSchema.problems(meta))
             val labels = Labels.fromJson(events)
-            assertEquals(DetectorInfo("dbauto/1.1.0", TestParams.loaded.sha256), labels.detector)
+            assertEquals(DetectorInfo("dbauto/1.2.0", TestParams.loaded.sha256), labels.detector)
             assertEquals(1, labels.revision)
             assertEquals(listOf<String>(), LabelCheck.errors(labels).map { it.message })
             val review = meta["review"]!!.jsonObject
             assertEquals("\"auto_only\"", review["status"].toString())
-            assertEquals("\"dbauto/1.1.0\"", review["detector"].toString())
+            assertEquals("\"dbauto/1.2.0\"", review["detector"].toString())
             assertEquals("1", review["revision"].toString())
             // meta.derived is what the labels give
             val (derived, _) = Derived.compute(RecordingFiles.readLevel(File(dir, Finalizer.LEVEL)), labels, RecordingFiles.read(dir).inputs.tolDeg)
@@ -114,8 +114,8 @@ class AutoLabelerTest {
         assertEquals(listOf<Marker>(), labels.events)
         // the review labels it then
         val data = ReviewRepository(store, labeler).load(j.recordingId)
-        assertEquals("dbauto/1.1.0", data.saved.detector?.version)
-        assertEquals("\"dbauto/1.1.0\"", json(File(dir, Finalizer.META))["review"]!!.jsonObject["detector"].toString())
+        assertEquals("dbauto/1.2.0", data.saved.detector?.version)
+        assertEquals("\"dbauto/1.2.0\"", json(File(dir, Finalizer.META))["review"]!!.jsonObject["detector"].toString())
     }
 
     /**
@@ -247,7 +247,7 @@ class AutoLabelerTest {
         assertEquals("all under the compute lock", 0, unlocked.get())
         assertFalse(compute.isLocked)
         for (id in noLanes) assertNotNull(Lanes.read(File(s.dir(id), LabelFiles.LANES)))
-        assertEquals("dbauto/1.1.0", LabelFiles.readLabels(File(s.dir(busy), Finalizer.EVENTS))!!.detector?.version)
+        assertEquals("dbauto/1.2.0", LabelFiles.readLabels(File(s.dir(busy), Finalizer.EVENTS))!!.detector?.version)
         assertEquals(listOf<Throwable>(), errors)
     }
 
@@ -300,7 +300,7 @@ class AutoLabelerTest {
             release.countDown()
             labelling.join(30_000)
             computing.join(30_000)
-            assertEquals("dbauto/1.1.0", labelledNow!!.saved.detector?.version)
+            assertEquals("dbauto/1.2.0", labelledNow!!.saved.detector?.version)
             assertTrue(lanes!!.lanes.n > 0)
         } finally {
             release.countDown()
@@ -366,9 +366,9 @@ class AutoLabelerTest {
         RecordingStore(store.root, labeler = { _, _ -> }).finalize(j.recordingId)
         val empty = LabelFiles.readLabels(File(dir, Finalizer.EVENTS))!!
         assertEquals(null, empty.detector)
-        LabelFiles.writeLabels(File(dir, LabelFiles.AUTO), empty.copy(revision = 1, detector = DetectorInfo("dbauto/1.1.0")))
+        LabelFiles.writeLabels(File(dir, LabelFiles.AUTO), empty.copy(revision = 1, detector = DetectorInfo("dbauto/1.2.0")))
         val data = ReviewRepository(store, labeler).load(j.recordingId)
-        assertEquals("dbauto/1.1.0", data.saved.detector?.version)
+        assertEquals("dbauto/1.2.0", data.saved.detector?.version)
         assertEquals(data.saved, LabelFiles.readLabels(File(dir, Finalizer.EVENTS)))
     }
 

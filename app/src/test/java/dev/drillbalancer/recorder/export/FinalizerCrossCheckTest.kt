@@ -3,6 +3,7 @@ package dev.drillbalancer.recorder.export
 import dev.drillbalancer.recorder.RecordingStage
 import dev.drillbalancer.recorder.RecordingStore
 import dev.drillbalancer.recorder.TestStream
+import dev.drillbalancer.upload.UploadTestData
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonObject
 import org.junit.Assert.assertArrayEquals
@@ -121,11 +122,7 @@ class FinalizerCrossCheckTest {
         store.create(clean, 1_000) { 0L }.use { it.append(bytes, 0, bytes.size) }
         assertTrue(store.finalize(clean.recordingId) != null)
         for (src in FinalizerFixtures.names.map { finalized(it) } + store.dir(clean.recordingId)) {
-            val id = src.name
-            val dest = File(out, "recordings/${id.substring(0, 4)}/${id.substring(0, 4)}-${id.substring(4, 6)}/$id")
-            dest.deleteRecursively()
-            dest.mkdirs()
-            for (f in Finalizer.DATASET_FILES) File(src, f).takeIf { it.isFile }?.copyTo(File(dest, f))
+            UploadTestData.exportToRepo(src, File(out))
         }
     }
 

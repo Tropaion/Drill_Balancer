@@ -283,6 +283,9 @@ class RecordingControllerTest {
         assertTrue(back.notice!!.error)
         assertEquals(JournalState.INTERRUPTED, store.read(id)!!.state)
         assertEquals("client_lost", store.read(id)!!.endReason)
+        // no END came: the note says the stream closed, not that the device ended the take
+        assertEquals("the stream closed before the take's END", store.read(id)!!.note)
+        assertEquals("interrupted: the stream closed before the take's END", back.lastTake!!.endText)
         assertEquals(2, server.hellos)
         // The next take works on the new connection.
         c.record(100)

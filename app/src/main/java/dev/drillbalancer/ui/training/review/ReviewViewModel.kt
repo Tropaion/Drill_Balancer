@@ -20,14 +20,17 @@ import dev.drillbalancer.recorder.label.Source
 import dev.drillbalancer.ui.components.UiMessage
 import dev.drillbalancer.ui.training.setupTitle
 import dev.drillbalancer.ui.training.toolLine
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
@@ -100,6 +103,8 @@ data class ReviewUiState(
     val unconfirmed: Int = 0,
     val dirty: Boolean = false,
     val reviewed: Boolean = false,         // saved as reviewed before
+    val uploaded: Boolean = false,         // that review is in the data repo
+    val status: String? = null,            // a review opened again: "Reviewed · uploaded. Save sends a label update."
     val busy: Boolean = false,
     val message: UiMessage? = null,
     val done: Boolean = false,             // saved or discarded: the screen closes
@@ -112,6 +117,8 @@ data class ReviewUiState(
  * derived labels (off angle, orientation) of the labels, computed once per labels value on [io]
  * (a drag shows the ones before until they are there). Drafts are written on [io] by a writer
  * that outlives the view model: one not written yet when it is cleared is written after.
+ * [uploaded]: whether the recording's saved review is uploaded (read on [io] once it is loaded,
+ * and again at each [uploadChanges] while the review is open: an upload that ends meanwhile).
  */
 class ReviewViewModel(
     private val id: String,
@@ -119,6 +126,8 @@ class ReviewViewModel(
     private val store: RecordingStore,
     private val io: CoroutineDispatcher = Dispatchers.IO,
     private val derive: (LevelRows?, Labels, Double) -> DerivedLabels = { level, l, tol -> Derived.compute(level, l, tol) },
+    private val uploaded: suspend (id: String) -> Boolean = { false },
+    private val uploadChanges: Flow<*> = emptyFlow<Unit>(),
 ) : ViewModel() {
     private data class Model(
         val data: ReviewData,
@@ -146,9 +155,19 @@ class ReviewViewModel(
     private var envelopeKey: Pair<Long, Long>? = null
     private var envelopes: List<LaneView> = emptyList()
     private var scales: List<Pair<Float, Float>> = emptyList()
+    private var uploadedNow = false        // [uploaded], read at the load and at each [uploadChanges]
 
     init {
         viewModelScope.launch { load() }
+        viewModelScope.launch {
+            uploadChanges.collect {
+                val u = readUploaded()
+                if (u != uploadedNow) {
+                    uploadedNow = u
+                    publish()
+                }
+            }
+        }
         // Not viewModelScope: the last draft is still written once the screen went away
         // (onCleared closes the channel, the loop ends after it).
         CoroutineScope(SupervisorJob() + io).launch {
@@ -226,12 +245,24 @@ class ReviewViewModel(
         val l = data.labels
         derived = d
         derivedOf = l
+        uploadedNow = readUploaded()
         model.value = Model(
             data, l, l.c0, l.c1, l.c0 + (l.c1 - l.c0) / 2,
             hole = l.holes.firstOrNull()?.hole,
             message = if (data.fromDraft) UiMessage("Your unsaved changes were restored.", UiMessage.Kind.INFO) else null,
         )
         publish()
+    }
+
+    /** Whether the saved review is uploaded; one whose upload state cannot be read is not. */
+    private suspend fun readUploaded(): Boolean = withContext(io) {
+        try {
+            uploaded(id)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            false
+        }
     }
 
     // ---- actions ----
@@ -275,9 +306,11 @@ class ReviewViewModel(
 
     fun setCursor(tUs: Long) = edit(remember = false) { m -> m.copy(cursorUs = tUs.coerceIn(m.labels.c0, m.labels.c1 - 1), selected = null) }
 
+    /** A new [type] marker at the cursor, selected and in the view (a pan can leave the cursor outside it). */
     fun add(type: String) = edit(remember = true) { m ->
         val (labels, newId) = LabelEdits.add(m.labels, type, m.cursorUs)
-        m.copy(labels = labels, selected = newId, hole = labels.events.first { it.id == newId }.hole ?: m.hole)
+        val e = labels.events.first { it.id == newId }
+        m.copy(labels = labels, selected = newId, hole = e.hole ?: m.hole).keepVisible(e.tUs)
     }
 
     fun delete() = edit(remember = true) { m ->
@@ -314,6 +347,16 @@ class ReviewViewModel(
         val span = maxOf(MIN_SPAN_US, (m.toUs - m.fromUs) / 2)
         val centre = m.selected?.let { s -> m.labels.events.firstOrNull { it.id == s }?.tUs }?.takeIf { it in m.fromUs until m.toUs } ?: m.cursorUs
         m.window(centre - span / 2, span)
+    }
+
+    /**
+     * Zooms in on [t0Us]..[t1Us] (a count handle's markers), with room around them; a cursor
+     * outside the new view moves to their middle, so that Add puts a marker where one looks.
+     */
+    fun zoomTo(t0Us: Long, t1Us: Long) = view { m ->
+        val span = maxOf(MIN_SPAN_US, (t1Us - t0Us) * 3 / 2)
+        val z = m.window((t0Us + t1Us) / 2 - span / 2, span)
+        if (z.cursorUs in z.fromUs until z.toUs) z else z.copy(cursorUs = (t0Us + t1Us) / 2)
     }
 
     fun zoomOut() = view { m -> m.window((m.fromUs + m.toUs) / 2 - (m.toUs - m.fromUs), 2 * (m.toUs - m.fromUs)) }
@@ -427,7 +470,7 @@ class ReviewViewModel(
             envelopeKey = key
         }
         if (m.labels !== derivedOf) toDerive.value = m.labels
-        _state.value = stateOf(m.data, m.labels, envelopes, m.fromUs, m.toUs, m.cursorUs, m.selected, m.hole, m.message, m.busy, m.done, derived)
+        _state.value = stateOf(m.data, m.labels, envelopes, m.fromUs, m.toUs, m.cursorUs, m.selected, m.hole, m.message, m.busy, m.done, derived, uploadedNow)
     }
 
     companion object {
@@ -491,6 +534,7 @@ class ReviewViewModel(
             busy: Boolean = false,
             done: Boolean = false,
             derivedLabels: DerivedLabels? = null,      // Derived.compute of labels; null: computed here
+            uploaded: Boolean = false,
         ): ReviewUiState {
             val markers = labels.events.sortedBy { it.tUs }.map { e ->
                 MarkerView(e.id, e.type, e.tUs, shortLabel(e.type, e.hole), LabelEdits.needsConfirm(e), e.source == Source.USER, e.edited)
@@ -528,6 +572,7 @@ class ReviewViewModel(
                 }
             }
             val issues: List<LabelIssue> = LabelCheck.check(labels)
+            val reviewed = data.reviewStatus != RecordingStore.AUTO_ONLY
             val bands = Phases.segments(labels).filter { it.t1Us > fromUs && it.t0Us < toUs }.map { BandView(it.t0Us, it.t1Us, it.phase) }
             return ReviewUiState(
                 loading = false,
@@ -541,7 +586,12 @@ class ReviewViewModel(
                 errors = issues.filter { it.error }.map { it.message },
                 warnings = issues.filter { !it.error }.map { it.message },
                 unconfirmed = labels.events.count { LabelEdits.needsConfirm(it) },
-                dirty = labels != data.saved, reviewed = data.reviewStatus != RecordingStore.AUTO_ONLY,
+                dirty = labels != data.saved, reviewed = reviewed, uploaded = reviewed && uploaded,
+                status = when {
+                    !reviewed -> null
+                    uploaded -> "Reviewed · uploaded. Save sends a label update."
+                    else -> "Reviewed. Save stores a new revision."
+                },
                 busy = busy, message = message, done = done,
             )
         }

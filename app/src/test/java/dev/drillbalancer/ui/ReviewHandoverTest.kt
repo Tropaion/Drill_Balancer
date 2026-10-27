@@ -55,7 +55,8 @@ import kotlin.concurrent.thread
 
 /** A review does not need the device: the Bluetooth link ending does not close it. */
 @RunWith(RobolectricTestRunner::class)
-@Config(sdk = [37])
+// the screenshots' phone: at full zoom the fixture's markers have a handle each (MarkerLayout)
+@Config(sdk = [37], qualifiers = PHONE)
 class ReviewHandoverTest {
     @get:Rule
     val compose = createAndroidComposeRule<ComponentActivity>()

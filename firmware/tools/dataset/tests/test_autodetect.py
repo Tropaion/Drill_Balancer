@@ -64,6 +64,37 @@ def totals(pairs) -> dict:
     return tot
 
 
+def cut_inputs(rec, t_us) -> A.Inputs:
+    """rec's inputs as if the take had ended at t_us."""
+    inp = A.Inputs.from_recording(rec)
+    sel = inp.t_us < t_us
+    inp.t_us, inp.counts = inp.t_us[sel], inp.counts[sel]
+    inp.audio = inp.audio[:int((t_us - inp.sync_a_us) / inp.sync_b_us)]
+    inp.level = inp.level[inp.level["t_us"] < t_us].reset_index(drop=True)
+    inp.coverage_us = (inp.coverage_us[0], t_us)
+    return inp
+
+
+def unvoiced_slow_end(folder) -> bool:
+    """Whether a fixture's data ends as a slow motor's spin-down does (slows_at_end, from its
+    features.csv.gz): the last voiced frame within off_search_ms of the end has an f0 that has not
+    fallen, and no frame of the last off_hold_ms is voiced (the pitch left the tracker's range)."""
+    import pandas as pd
+
+    mp = A.load_params()["motor"]
+    frame_us = json.loads((folder / "expected.json").read_text())["frame_us"]
+    ft = pd.read_csv(folder / "features.csv.gz")
+    f0, s, k_end = ft["f0"].to_numpy(np.float64), ft["s"].to_numpy(np.float64), len(ft)
+    hold = A.ms_frames(mp["off_hold_ms"], frame_us / 1000)
+    voiced = np.isfinite(f0) & (np.nan_to_num(s, nan=-np.inf) >= mp["on_z"])
+    for k in range(k_end - 1, max(0, k_end - A.ms_frames(mp["off_search_ms"], frame_us / 1000)) - 1, -1):
+        past = f0[max(0, k - hold):k]
+        past = past[np.isfinite(past)]
+        if voiced[k] and len(past) >= 3:
+            return bool(f0[k] >= (1.0 - mp["off_f0_drop"]) * np.median(past) and not voiced[k_end - hold:].any())
+    return False
+
+
 @unittest.skipIf(SIM, f"no simulator: {SIM}")
 class EvalSetTest(unittest.TestCase):
     @classmethod
@@ -126,6 +157,19 @@ class EvalSetTest(unittest.TestCase):
                 self.assertEqual(meta["review"]["status"], "auto_only")
                 self.assertEqual(meta["review"]["detector"], det.events["detector"]["version"])
                 self.assertEqual(meta["review"]["revision"], 2)     # synth's truth was revision 1
+
+    def test_a_slow_motor_s_spindown_the_data_ends_in(self):
+        # a 147 Hz motor's pitch leaves the f0 tracker's range as it slows: a take that ends 0.5 s
+        # into the spin-down has no voiced frame at its end, and that is a slowing motor too
+        for s, rec, _ in self.takes:
+            if s.spec.name not in ("wood_147", "metal_slow"):
+                continue
+            off = [e["t_us"] for e in rec.events["events"] if e["type"] == "motor_off"][-1]
+            for after_ms in (500, 600):
+                with self.subTest(s.spec.name, after_ms=after_ms):
+                    ev = A.detect(cut_inputs(rec, off + after_ms * 1000)).events
+                    self.assertEqual(ev["events"][-1]["type"], "motor_off")
+                    self.assertLess(abs(ev["events"][-1]["t_us"] - off), A.TOLERANCES_US["motor_off"])
 
     def test_kickback_and_stuck_tags(self):
         names = {s.spec.name: det for s, _, det in self.takes}
@@ -246,6 +290,15 @@ class FixtureTest(unittest.TestCase):
         types = [[e["type"] for e in ev["events"] if e["type"] != "kickback"] for ev in exp.values()]
         self.assertTrue(any(t.count("contact") > 1 for t in types), "several holes")
         self.assertTrue(any(t[-1] != "motor_off" for t in types), "an open end")
+        cov = {n: json.loads((p / "events.json").read_text())["coverage_us"] for n, p in FX.items()}
+        self.assertTrue(any(cov[n][1] - e["t_us"] < 500_000 for n, ev in exp.items() for e in ev["events"]
+                            if e["type"] == "motor_off"), "a motor_off in the spin-down the data ends in")
+        self.assertTrue(any(t[-1] == "motor_off" and cov[n][1] - exp[n]["events"][-1]["t_us"] < 600_000 and
+                            unvoiced_slow_end(FX[n]) for n, t in zip(exp, types)),
+                        "a spin-down the data ends in with no voiced frame in its last off_hold_ms (a slow motor)")
+        inject = {n: json.loads((p / "spec.json").read_text())["inject"] for n, p in FX.items()}
+        self.assertTrue(any(synth.LOUD_LOAD in inject[n] and t[-1] == "breakthrough" for n, t in zip(exp, types)),
+                        "a take ending in the free run after a louder cut: no spin-down")
         pulled = A.load_params()["confidence"]["restart_retract"]
         self.assertTrue(any(e["type"] == "retract" and e["confidence"] == pulled
                             for ev in exp.values() for e in ev["events"]), "pulled out with the motor off")
@@ -445,6 +498,58 @@ class RestartTest(unittest.TestCase):
         self.assertEqual(evs[4]["t_us"] - evs[3]["t_us"], 10_000)
         self.assertEqual(labels.check_grammar(det.events), [])
         self.assertEqual(det.events["holes"][0]["through"], False)
+
+
+@unittest.skipUnless("fx_drill_through" in FX, "fixtures/autodetect is missing")
+class SpindownEndTest(unittest.TestCase):
+    """A take that ends in the spin-down, before the low stretch that ends a run: the motor_off
+    from the knee at the end of the data (section 5); one that ends with the motor running has none."""
+
+    def setUp(self):
+        self.rec = read_recording(FX["fx_drill_through"])
+        self.off = next(e["t_us"] for e in self.rec.events["events"] if e["type"] == "motor_off")
+
+    def cut(self, t_us, loud=False):
+        """The take up to t_us, its cut (contact to breakthrough) synth.LOUD_LOAD_DB louder when loud."""
+        inp = cut_inputs(self.rec, t_us)
+        if loud:
+            ev = {e["type"]: e["t_us"] for e in self.rec.events["events"]}
+            ta = inp.sync_a_us + inp.sync_b_us * np.arange(len(inp.audio))
+            x = inp.audio.astype(np.float64)
+            x[(ta >= ev["contact"]) & (ta < ev["breakthrough"])] *= 10.0 ** (synth.LOUD_LOAD_DB / 20.0)
+            inp.audio = np.clip(np.round(x), -32768, 32767).astype(np.int16)
+        return A.detect(inp).events
+
+    def test_ends_in_the_spindown(self):
+        for after_ms in (300, 400, 600):
+            with self.subTest(after_ms):
+                ev = self.cut(self.off + after_ms * 1000)
+                self.assertEqual([e["type"] for e in ev["events"]], ["motor_on", "contact", "breakthrough", "motor_off"])
+                self.assertLess(abs(ev["events"][-1]["t_us"] - self.off), A.TOLERANCES_US["motor_off"])
+                self.assertGreater(ev["events"][-1]["confidence"], 0.5)
+                self.assertEqual(labels.check_grammar(ev), [])
+
+    def test_ends_with_the_motor_running(self):
+        for before_ms in (50, 300, 1500):       # free run after the breakthrough, then in the hole
+            with self.subTest(before_ms):
+                ev = self.cut(self.off - before_ms * 1000)
+                self.assertNotIn("motor_off", [e["type"] for e in ev["events"]])
+
+    def test_a_loud_cut_then_the_free_run_is_no_spindown(self):
+        # the cut LOUD_LOAD_DB (12 dB) louder than the free run after it: the end is off_level_db below the run's
+        # median, but the motor does not slow (its f0 is the free run's); the spin-down still is one
+        for before_ms in (300, 600):
+            with self.subTest(before_ms):
+                ev = self.cut(self.off - before_ms * 1000, loud=True)
+                self.assertEqual([e["type"] for e in ev["events"]], ["motor_on", "contact", "breakthrough"])
+        ev = self.cut(self.off + 300_000, loud=True)
+        self.assertEqual([e["type"] for e in ev["events"]][-1], "motor_off")
+        self.assertLess(abs(ev["events"][-1]["t_us"] - self.off), A.TOLERANCES_US["motor_off"])
+
+    def test_too_early_in_the_spindown(self):
+        # 50 ms after the motor_off the sound has not fallen off_level_db yet: an open end
+        ev = self.cut(self.off + 50_000)
+        self.assertNotIn("motor_off", [e["type"] for e in ev["events"]])
 
 
 @unittest.skipUnless("fx_drill_through" in FX, "fixtures/autodetect is missing")

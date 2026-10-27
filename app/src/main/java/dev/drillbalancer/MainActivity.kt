@@ -3,14 +3,14 @@ package dev.drillbalancer
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
-import androidx.activity.enableEdgeToEdge
 import dev.drillbalancer.ui.AppRoot
 import dev.drillbalancer.ui.theme.DrillBalancerTheme
+import dev.drillbalancer.ui.theme.enableDarkEdgeToEdge
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        enableEdgeToEdge()
+        enableDarkEdgeToEdge()
         val app = application as DrillBalancerApp
         setContent {
             DrillBalancerTheme {

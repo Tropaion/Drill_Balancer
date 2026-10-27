@@ -1,13 +1,13 @@
 package dev.drillbalancer.ui.training.review
 
 import dev.drillbalancer.recorder.RecordingStore
-import dev.drillbalancer.recorder.export.Finalizer
 import dev.drillbalancer.recorder.export.FinalizerFixtures
 import dev.drillbalancer.recorder.label.AutoLabeler
 import dev.drillbalancer.recorder.label.LabelTestData
 import dev.drillbalancer.recorder.label.ReviewRepository
 import dev.drillbalancer.recorder.label.TestParams
 import dev.drillbalancer.ui.MainDispatcherRule
+import dev.drillbalancer.upload.UploadTestData
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runTest
@@ -60,10 +60,7 @@ class ReviewValidatorExportTest {
             vm.acceptAll()
             advanceUntilIdle()
             assertTrue("$id: ${vm.state.value.message?.text}", vm.state.value.done)
-            val dest = File(out, "recordings/${id.substring(0, 4)}/${id.substring(0, 4)}-${id.substring(4, 6)}/$id")
-            dest.deleteRecursively()
-            dest.mkdirs()
-            for (f in Finalizer.DATASET_FILES) File(store.dir(id), f).takeIf { it.isFile }?.copyTo(File(dest, f))
+            UploadTestData.exportToRepo(store.dir(id), File(out))
         }
     }
 }
