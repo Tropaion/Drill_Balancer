@@ -1,0 +1,26 @@
+# The ESP-IDF subset (tools/ci/idf_subset.sh) in $RUNNER_TEMP/esp-idf, from
+# the cache when it has it, and IDF_PATH set to it for the later steps.
+name: ESP-IDF subset
+description: Fetches the ESP-IDF sources the PC builds use and sets IDF_PATH
+inputs:
+  save:
+    description: "'true': also save the cache (one job does), else only restore it"
+    default: 'false'
+runs:
+  using: composite
+  steps:
+    - if: ${{ inputs.save == 'true' }}
+      uses: actions/cache@v6
+      with:
+        path: ${{ runner.temp }}/esp-idf
+        key: idf-subset-${{ hashFiles('tools/ci/versions.sh', 'tools/ci/idf_subset.sh') }}
+    - if: ${{ inputs.save != 'true' }}
+      uses: actions/cache/restore@v6
+      with:
+        path: ${{ runner.temp }}/esp-idf
+        key: idf-subset-${{ hashFiles('tools/ci/versions.sh', 'tools/ci/idf_subset.sh') }}
+    - name: Fetch the ESP-IDF sources the C core uses
+      shell: bash
+      run: |
+        tools/ci/run_logged.sh tools/ci/idf_subset.sh "$RUNNER_TEMP/esp-idf"
+        echo "IDF_PATH=$RUNNER_TEMP/esp-idf" >> "$GITHUB_ENV"

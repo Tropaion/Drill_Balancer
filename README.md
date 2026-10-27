@@ -1,5 +1,7 @@
 # DrillBalancer
 
+[![CI](https://github.com/Tropaion/Drill_Balancer/actions/workflows/ci.yml/badge.svg)](https://github.com/Tropaion/Drill_Balancer/actions/workflows/ci.yml)
+
 A clip-on digital level for power drills. A round AMOLED board sits on the
 back of the drill, faces you, and shows whether the bit is level, plumb or at
 the angle you set. An Android app connects over Bluetooth LE for live

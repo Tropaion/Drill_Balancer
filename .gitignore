@@ -3,7 +3,6 @@ firmware/build/
 firmware/managed_components/
 firmware/sdkconfig
 firmware/sdkconfig.old
-firmware/dependencies.lock
 firmware/build-*/
 firmware/build-test*/
 

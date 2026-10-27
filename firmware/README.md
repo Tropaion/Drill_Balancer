@@ -38,6 +38,16 @@ Configuration:
   again.
 - The target (`esp32s3`) is pinned in `sdkconfig.defaults`. Without it, a
   fresh configure silently builds for the plain ESP32.
+- `dependencies.lock` is committed, as Espressif recommends, so every build
+  gets the same managed component versions. idf-component-manager 2.4.9
+  wrote it, and CI installs that version (`COMPONENT_MANAGER_VERSION` in
+  `tools/ci/versions.sh`). An older manager can resolve again and pick other
+  versions: 2.3.0 picked LVGL 9.6. Install 2.4.9 into the ESP-IDF Python
+  environment after `export.sh` with
+  `python -m pip install idf-component-manager==2.4.9`. If your build rewrites
+  the lock (another manager version, or another ESP-IDF patch release in the
+  `idf` entry), check `git diff dependencies.lock`. The firmware's commit
+  stamp then ends in `-dirty` until you restore or commit the lock.
 
 To build only some components (plus `main` and their dependencies) in your
 own build directory:
