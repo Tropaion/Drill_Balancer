@@ -427,6 +427,7 @@ class RecordingStore(
         const val JOURNAL = "take.json"
         const val META = "meta.json"
         const val AUTO_ONLY = "auto_only"
+        const val REVIEWED = "reviewed"
         const val OUT_OF_MEMORY = "the app ran out of memory finalizing it"
 
         /**

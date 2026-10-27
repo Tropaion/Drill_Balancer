@@ -20,6 +20,7 @@ import dev.drillbalancer.recorder.net.LinkException
 import dev.drillbalancer.recorder.net.StreamLinkFactory
 import dev.drillbalancer.ui.MainDispatcherRule
 import dev.drillbalancer.ui.PairingGate
+import dev.drillbalancer.upload.UploadStage
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.test.TestScope
@@ -38,7 +39,8 @@ import org.robolectric.annotation.Config
 import java.io.File
 import java.time.ZoneOffset
 
-private class MemoryPrefs(initial: SessionSetup = SessionSetup()) : SetupPrefs {
+/** SetupPrefs in memory. */
+internal class MemoryPrefs(initial: SessionSetup = SessionSetup()) : SetupPrefs {
     override val setup = MutableStateFlow(initial)
     override suspend fun save(setup: SessionSetup) {
         this.setup.value = setup
@@ -185,6 +187,6 @@ class TrainingViewModelTest {
         // every recording not being recorded opens: the review waits for its files, or says why
         // there are none (with Try again after a storage error)
         assertEquals(listOf(true, true, false, true, true, true, true), rows.map { it.canOpen })
-        assertTrue(rows.all { it.upload == UploadStage.NONE })
+        assertTrue(rows.all { it.upload == UploadStage.None })
     }
 }

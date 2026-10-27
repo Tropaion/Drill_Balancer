@@ -142,7 +142,8 @@ cd ../firmware/tools/sim && ./run.sh   # then open http://127.0.0.1:8765
 | `device` | `DeviceSession`: what the UI sees of one link (StateFlows for connection, angle, status, battery, info, settings; suspend calls for settings, commands, pairing; a cold OTA flow) and `DeviceError`. |
 | `ble` | The real implementation: `BleDeviceSession` (connect, setup, pairing probe, reconnect, OTA transport) on `DrillBalancerManager` (Nordic `BleManager`), `DeviceScanner`, permissions, GATT error mapping, `ReconnectPolicy`, `LastDeviceStore`. |
 | `recorder` | The training-data recorder, at app scope: `RecordingController` (session, takes, stop and reconnect paths), `RecordingStore` (the journals, recovery), `SessionSetup` / `Taxonomy` / `RecordingIds` (the dataset contract's labels and ids), `LivePreview`, `RecorderService` (foreground service). `recorder/stream`: the stream's constants, records, the incremental `StreamDecoder` and `StreamStats`. `recorder/net`: `StreamLink` with `ApLink` (the device's soft-AP) and `LanLink` (the simulator), `WifiPermissions`. |
-| `ui` | Compose screens and their ViewModels: connect, pairing, live, settings, calibrate, device, firmware update, training data (list, setup, record). `SessionViewModel` picks the connect screen or the tabs and owns the `PairingGate`, which pairs on the first protected action. |
+| `upload` | The upload of reviewed recordings to the data repo: `HttpGitHubApi` (Git Data API on HttpURLConnection), `DatasetUploader` (one commit per recording, `upload.json`), `UploadWorker` / `WorkUploadScheduler` (WorkManager), `UploadQueue` (stages, Upload now), `TokenVault` (Android Keystore AES-GCM) and `UploadSettingsStore`. `recorder/export/AudioMute` mutes the audio while the motor is off. |
+| `ui` | Compose screens and their ViewModels: connect, pairing, live, settings, calibrate, device, firmware update, training data (list, setup, record, review, upload settings). `SessionViewModel` picks the connect screen or the tabs and owns the `PairingGate`, which pairs on the first protected action. |
 
 `DrillBalancerApp` creates the scanner, the last-device store, one
 `BleDeviceSession` and the recorder (`RecordingController`, its store and
@@ -316,6 +317,126 @@ time); a refused one, or location services off on Android 10-12, stops
 *Start* with a button to the settings that fix it. A recording needs 500 MB
 free.
 
+### Upload
+
+A saved review is uploaded on its own to a **private GitHub repository**
+(default `Tropaion/Drill_Balancer_Data`, the dataset contract's data repo,
+already bootstrapped with its template from the PC), one commit per
+recording. Recordings that still *Need review* wait; *Upload settings*
+(the line under *New recording*) has *Upload now* for every reviewed one not
+uploaded yet. Each row shows its upload next to its local stage: *Not
+uploaded*, *Queued*, *Uploading 42 %*, *Uploaded* or *Upload failed* with the
+reason and *Retry upload* (or *Upload settings* when only they fix it: no
+token, a rejected one, a repository name that is not owner/name; upload.json
+keeps the failure's kind next to its words). Saving a review again after its upload sends only
+what changed (events.json and meta.json, plus audio.flac when muting changed
+it) as a second commit "Update labels of <id>". When the data repo's copy of
+a recording was changed since this phone uploaded it (labels edited on the
+PC, `dbdata.autodetect --write --force`), a later Save on the phone is not
+put over it: the row says so, and *Retry upload* then replaces it with the
+phone's labels (a Retry after any other failure keeps that check). An update
+removes from the folder only files this phone committed there before; a
+file added to it on the PC stays.
+
+**Token setup** (once): on GitHub *Settings > Developer settings >
+Fine-grained tokens*, a token with access to **only the data repo** and the
+permission **Contents: read and write** (nothing else; no Actions or
+Workflows permission is needed). In *Upload settings* tap *Set token* and
+paste it. The app seals it with AES-256-GCM under a key in the Android
+Keystore (DataStore "upload" holds only the ciphertext and IV); the screen
+only ever shows *Token set*, *Replace* and *Remove*, and the token appears in
+no log, message or file. *Test connection* checks that the repository exists
+and is private, that the token may write to it, that the dataset template
+(`schema/meta.v1.schema.json`) is there, and warns from 1 GB of repository
+size; it tests the saved repository (save an edited name first). GitHub
+rejecting the token (401) stops the whole queue ("Token rejected", *Upload
+now* off) until it is replaced; a new token sends the queue again, and so
+does a *Test connection* that GitHub answers again (a 401 that went away).
+A 401 for a token replaced while an upload used it does not mark the new one.
+
+**What is uploaded**: `recordings/YYYY/YYYY-MM/<id>/` with meta.json,
+events.json and the data files meta.json lists (imu.csv.gz, level.csv.gz,
+audio.flac, audio_sync.csv, device_events.csv), checked against their sha256
+in meta.json first. Never the journal, take.json or the phone-only files
+(events.auto.json, events.draft.json, lanes.bin, upload.json), never a
+dataset-level file (index.csv and stats.md are the data repo's Action's).
+A file over the dataset's 95 MB limit is refused before anything is sent.
+
+**How** (`upload/`): `HttpGitHubApi` (HttpURLConnection, the Git Data API:
+the branch's commit, blobs streamed as base64 with a fixed length, a tree
+over the commit's tree, the commit, the branch moved with `force: false`;
+when another push moved it meanwhile the tree and commit are made again on
+the new commit, up to 5 times; a branch GitHub will not move at all, such as
+a protected one, fails at once with GitHub's reason) and
+`DatasetUploader`. `upload.json` in the recording folder keeps the git blob
+sha of every file sent and the last commit, so an upload cut short sends
+only the rest; when GitHub has dropped blobs no commit held, they are sent
+again once. A recording whose meta.json
+is on the branch already with the same blob sha is marked uploaded without
+a commit. The upload runs in WorkManager (`UploadWorker`, one unique job per
+recording, exponential backoff, Wi-Fi only or any network) as foreground
+work with a progress notification (type dataSync), so uploads of tens of MB
+are not cut at 10 minutes; network, storage and server errors are retried
+(8 runs), rate limits waited out (Retry-After, x-ratelimit-reset, and a
+minute for GitHub's secondary limit). Recordings upload one at a time (the
+others show *Queued*), which keeps a backlog under GitHub's secondary rate
+limit; the settings and the token are read when an upload's turn comes, so
+a change made while it waited (mute switched on) applies to it. It takes
+the recording's folder lock while it mutes and hashes the files, so it
+never overlaps a finalize, a relabel or a Save; a Save during an upload
+does not wait for it and is uploaded right after it, also when
+that upload fails. Switching *Wi-Fi only* either way puts every queued
+upload under the new rule: one running is stopped too and resumes from
+upload.json (the blob in flight is sent again), so none goes on over mobile
+data and none waits for Wi-Fi once it is off. An upload replaced in the
+queue (by this, a Save or *Upload now*) keeps a rate-limit wait and the
+overwrite of a Retry after a conflict.
+
+**Known limit, uploads started in the background** (Android 12+): Android
+does not let a worker that starts with the app in the background start its
+foreground service, and such a worker may be stopped after a few minutes
+(a blob cut short is sent again from its start: GitHub has no resumable
+blob upload). Such a worker sends at most 24 MB (`BACKGROUND_MAX_BYTES`, a
+few minutes on a slow uplink); a larger upload shows *Queued* and goes when
+the app is next opened (`UploadQueue.appVisible` from `MainActivity.onStart`),
+with its notification. Android 14's user-initiated data transfer jobs would
+lift this but WorkManager does not offer them.
+
+**Keep local copies** (off by default): after a successful upload the take's
+raw stream (`stream.dbr`) is deleted; the dataset files stay, so the review
+can still be opened, edited and saved (and uploaded again).
+
+**Privacy, mute audio while the motor is off** (off by default): the data
+repo must stay private while recordings may hold voices (its README says
+so). With this on, the upload first silences audio.flac on the phone
+outside the motor's runs: every sample before a motor_on and after the end
+of its spin-down (the phases of the saved events, 50 ms boundary guard on
+both sides) is zero, `meta.audio.muted_spans_us` lists those spans (t_us) and
+meta.files has the new hash. The phone and the repository hold the same
+muted file; `dbdata.windows` marks windows over muted spans `audio_muted`.
+Muting cannot be undone from the file: labels moved later can mute more,
+never bring sound back. A recording whose audio cannot be muted (no usable
+sync fit, no labels, audio.flac missing) is not uploaded, and the row says
+why (no retries). Opt-in check with the validator:
+
+```sh
+DB_MUTE_OUT=/tmp/mute_out ./gradlew testDebugUnitTest --tests "*MuteValidatorExportTest" --rerun
+cd ../firmware/tools/dataset && .venv/bin/python -m dbdata.validate /tmp/mute_out
+```
+
+**Live test** (opt-in, against the real repository): with a token in
+`DB_GITHUB_TOKEN` and a new branch name in `DB_GITHUB_LIVE_BRANCH`,
+`GitHubLiveTest` makes that branch from main, uploads the small golden take
+to it, then a label change (a second commit), uploads again (no third
+commit), compares the blob shas read back and deletes the branch. It
+refuses main and a branch that exists. The token is no Gradle input (never
+stored by Gradle): run it with `--rerun`.
+
+```sh
+DB_GITHUB_TOKEN=github_pat_... DB_GITHUB_LIVE_BRANCH=upload-live-test \
+  ./gradlew testDebugUnitTest --tests "*GitHubLiveTest" --rerun
+```
+
 ## First run on real hardware
 
 None of this could be checked without a phone and a board.
@@ -388,3 +509,12 @@ None of this could be checked without a phone and a board.
     Android 17 phone: the local network permission dialog on the first
     *Start*, the stream with it granted, and what a refusal does (whether a
     network the app requested itself is exempt is not documented).
+16. **Upload**: a token set and tested, a saved review uploading on Wi-Fi
+    with the notification (and with the screen off), a 20 min take's upload
+    (tens of MB: the foreground service on Android 14+ with type dataSync,
+    whether it starts from the background: a big one waits for the app to
+    be opened, then uploads with its notification), Wi-Fi only holding
+    uploads on mobile data (switched on during an upload over mobile data:
+    it stops), a revoked token (401: the queue stops), the journal gone
+    after the upload, and the commits in the data repo (one per recording,
+    "Update labels" after a second Save).

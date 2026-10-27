@@ -20,6 +20,12 @@ import dev.drillbalancer.ui.PairingGate
 import dev.drillbalancer.ui.formatBytes
 import dev.drillbalancer.ui.formatFixed
 import dev.drillbalancer.ui.formatMinSec
+import dev.drillbalancer.upload.FailureKind
+import dev.drillbalancer.upload.LocalUpload
+import dev.drillbalancer.upload.TokenState
+import dev.drillbalancer.upload.UploadQueue
+import dev.drillbalancer.upload.UploadServices
+import dev.drillbalancer.upload.UploadStage
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -68,9 +74,27 @@ val RecordingStage.label: String
         RecordingStage.SAVED -> "Saved"
     }
 
-/** Where its upload is (milestone 7; until then every recording stays on the phone). */
-enum class UploadStage(val label: String) {
-    NONE("Not uploaded"),
+/** The list's label of where a recording's upload is. */
+val UploadStage.label: String
+    get() = when (this) {
+        UploadStage.None -> "Not uploaded"
+        UploadStage.Queued -> "Queued"
+        is UploadStage.Uploading -> pct?.let { "Uploading $it %" } ?: "Uploading"
+        UploadStage.Done -> "Uploaded"
+        is UploadStage.Failed -> "Upload failed"
+    }
+
+/** The upload line of the list: where recordings go, or what is missing. */
+data class UploadSummary(val repo: String, val tokenSet: Boolean, val tokenRejected: Boolean, val wifiOnly: Boolean) {
+    /** No token, or one GitHub rejected: the settings fix it, not Retry. */
+    val tokenProblem: Boolean get() = !tokenSet || tokenRejected
+
+    val text: String
+        get() = when {
+            !tokenSet -> "$repo · no token set"
+            tokenRejected -> "$repo · token rejected"
+            else -> "$repo · ${if (wifiOnly) "Wi-Fi only" else "any network"}"
+        }
 }
 
 data class RecordingRow(
@@ -78,7 +102,7 @@ data class RecordingRow(
     val title: String,      // "Wood · softwood 38 mm · drill"
     val detail: String,     // "26 Oct 14:30 · 0:42 · 1.9 MB"
     val stage: RecordingStage,
-    val upload: UploadStage = UploadStage.NONE,
+    val upload: UploadStage = UploadStage.None,
     val canOpen: Boolean = false,   // not being recorded: the review opens (it waits for the files, or says why there are none, with Try again)
 )
 
@@ -90,6 +114,7 @@ data class TrainingListUiState(
     val recordBlocker: String? = null,       // why "New recording" is off; null: it is on
     val session: RecordPhase = RecordPhase.IDLE,
     val error: String? = null,
+    val upload: UploadSummary? = null,        // null: no upload in this build (tests)
 )
 
 /** The list rows of [entries], times in [zone]. */
@@ -141,14 +166,32 @@ class TrainingListViewModel(
     session: DeviceSession?,                 // null: opened from the connect screen
     private val io: CoroutineDispatcher = Dispatchers.IO,
     private val zone: ZoneId = ZoneId.systemDefault(),
+    private val uploads: UploadServices? = null,
 ) : ViewModel() {
-    private data class Loaded(val rows: List<RecordingRow>, val used: Long, val free: Long?, val error: String?)
+    private data class Loaded(
+        val rows: List<RecordingRow>,
+        val used: Long,
+        val free: Long?,
+        val error: String?,
+        val review: Map<String, String?> = emptyMap(),        // meta.review.status by id
+        val local: Map<String, LocalUpload> = emptyMap(),
+    )
 
     private val loaded = MutableStateFlow<Loaded?>(null)
 
+    // The rows with their upload stages: what upload.json says, the queue, a rejected token.
+    private val withUploads = combine(
+        loaded, uploads?.queue?.active ?: flowOf(emptyMap()), uploads?.tokens?.state ?: flowOf(TokenState()),
+        uploads?.prefs?.settings ?: flowOf(null),
+    ) { l, active, token, settings ->
+        l?.copy(
+            rows = l.rows.map { row -> row.copy(upload = UploadQueue.stage(l.review[row.id], l.local[row.id], active[row.id], token.rejected)) },
+        ) to settings?.let { UploadSummary(it.repo, token.set, token.rejected, it.wifiOnly) }
+    }
+
     val state: StateFlow<TrainingListUiState> = combine(
-        loaded, controller.phase, session?.connection ?: flowOf(null), session?.recorder ?: flowOf(null),
-    ) { l, phase, c, r ->
+        withUploads, controller.phase, session?.connection ?: flowOf(null), session?.recorder ?: flowOf(null),
+    ) { (l, summary), phase, c, r ->
         TrainingListUiState(
             rows = l?.rows.orEmpty(),
             loading = l == null,
@@ -157,6 +200,7 @@ class TrainingListViewModel(
             recordBlocker = recordBlocker(c, r, phase),
             session = phase,
             error = l?.error,
+            upload = summary,
         )
     }.stateIn(viewModelScope, SharingStarted.Eagerly, TrainingListUiState())
 
@@ -169,15 +213,27 @@ class TrainingListViewModel(
 
     fun reload() {
         viewModelScope.launch {
+            val repo = uploads?.prefs?.current()?.repo
             loaded.value = withContext(io) {
                 try {
                     val entries = store.list()
-                    Loaded(recordingRows(entries, zone), entries.sumOf { it.bytes }, store.freeBytes(), null)
+                    Loaded(
+                        recordingRows(entries, zone), entries.sumOf { it.bytes }, store.freeBytes(), null,
+                        review = entries.associate { it.journal.recordingId to it.reviewStatus },
+                        local = if (uploads != null && repo != null) uploads.queue.local(entries, repo) else emptyMap(),
+                    )
                 } catch (e: IOException) {
                     Loaded(emptyList(), 0, null, "The recordings could not be read (${e.message}).")
                 }
             }
         }
+    }
+
+    /** Sends a failed upload again; over the data repo's copy only when the row's failure is a conflict (its text says Retry does that). */
+    fun retryUpload(id: String) {
+        val q = uploads?.queue ?: return
+        val overwrite = (state.value.rows.firstOrNull { it.id == id }?.upload as? UploadStage.Failed)?.kind == FailureKind.CONFLICT
+        viewModelScope.launch { q.enqueue(id, overwrite) }
     }
 }
 

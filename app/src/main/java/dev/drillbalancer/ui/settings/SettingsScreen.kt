@@ -19,8 +19,6 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Surface
-import androidx.compose.material3.Switch
-import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -45,6 +43,7 @@ import dev.drillbalancer.ui.components.ModeSelector
 import dev.drillbalancer.ui.components.Panel
 import dev.drillbalancer.ui.components.SectionTitle
 import dev.drillbalancer.ui.components.StepButton
+import dev.drillbalancer.ui.components.SwitchRow
 import dev.drillbalancer.ui.components.TouchHeight
 import dev.drillbalancer.ui.components.UiMessage
 import dev.drillbalancer.ui.theme.Amber
@@ -216,7 +215,7 @@ private fun ModeRow(mode: LevelMode, changed: Boolean, onMode: (LevelMode) -> Un
 @Composable
 private fun BleRow(enabled: Boolean, changed: Boolean, onChange: (Boolean) -> Unit) {
     Panel(border = if (changed) Amber else Dark) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
+        SwitchRow(enabled, onChange) {
             Column(Modifier.weight(1f)) {
                 Label(SettingsField.BLE.label, changed)
                 Text(
@@ -224,15 +223,6 @@ private fun BleRow(enabled: Boolean, changed: Boolean, onChange: (Boolean) -> Un
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
-            Switch(
-                enabled, onChange,
-                colors = SwitchDefaults.colors(
-                    checkedThumbColor = Color.Black,
-                    uncheckedThumbColor = Grey,
-                    uncheckedTrackColor = MaterialTheme.colorScheme.surface,
-                    uncheckedBorderColor = Grey,
-                ),
-            )
         }
         if (!enabled) {
             Text(

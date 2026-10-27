@@ -3,6 +3,7 @@ package dev.drillbalancer.ui.training
 import android.content.Intent
 import android.provider.Settings
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.LocalActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.padding
@@ -32,6 +33,7 @@ import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import dev.drillbalancer.ble.BlePermissions
+import dev.drillbalancer.device.DeviceSession
 import dev.drillbalancer.recorder.RecordPhase
 import dev.drillbalancer.recorder.RecordingController
 import dev.drillbalancer.recorder.RecordingStore
@@ -49,15 +51,23 @@ import dev.drillbalancer.ui.theme.Red
 import dev.drillbalancer.ui.training.review.ReviewActions
 import dev.drillbalancer.ui.training.review.ReviewScreen
 import dev.drillbalancer.ui.training.review.ReviewViewModel
+import dev.drillbalancer.ui.training.upload.UploadSettingsActions
+import dev.drillbalancer.ui.training.upload.UploadSettingsScreen
+import dev.drillbalancer.ui.training.upload.UploadSettingsViewModel
+import dev.drillbalancer.upload.UploadServices
 
-/** The process-wide recorder parts the training screens use (DrillBalancerApp). */
+/** The process-wide recorder parts the training screens use (DrillBalancerApp); [uploads] null: no upload (tests). */
 class TrainingDeps(
     val controller: RecordingController,
     val store: RecordingStore,
     val prefs: SetupPrefs,
     labeler: AutoLabeler? = null,
+    val uploads: UploadServices? = null,
 ) {
-    val review = ReviewRepository(store, labeler)
+    // a saved review goes into the upload queue
+    val review = ReviewRepository(store, labeler) { id -> uploads?.queue?.saved(id) }
+
+    fun listViewModel(session: DeviceSession?) = TrainingListViewModel(store, controller, session, uploads = uploads)
 }
 
 @Composable
@@ -67,6 +77,7 @@ fun TrainingListRoute(
     modifier: Modifier = Modifier,
     onNew: () -> Unit = {},
     onOpenRecording: (id: String) -> Unit = {},
+    onOpenUploadSettings: () -> Unit = {},
 ) {
     val state by vm.state.collectAsStateWithLifecycle()
     LifecycleResumeEffect(vm) {
@@ -75,7 +86,61 @@ fun TrainingListRoute(
     }
     TrainingListScreen(
         state,
-        TrainingListActions(newRecording = onNew, openSession = onOpenSession, reload = vm::reload, openRecording = onOpenRecording),
+        TrainingListActions(
+            newRecording = onNew, openSession = onOpenSession, reload = vm::reload, openRecording = onOpenRecording,
+            openUploadSettings = onOpenUploadSettings, retryUpload = vm::retryUpload,
+        ),
+        modifier,
+    )
+}
+
+/**
+ * One screen's view model store without a nav entry (OfflineTraining's upload settings): it
+ * lives in the activity's store, so a configuration change keeps it, and [ScopedUploadSettings]
+ * clears it when the screen closes (its collectors stop; the next open starts afresh).
+ */
+class ScreenStore : ViewModel() {
+    private var store: ViewModelStore? = null
+
+    val owner: ViewModelStoreOwner = object : ViewModelStoreOwner {
+        override val viewModelStore: ViewModelStore get() = store ?: ViewModelStore().also { store = it }
+    }
+
+    /** Whether a view model store is there now (tests). */
+    internal val open: Boolean get() = store != null
+
+    fun clear() {
+        store?.clear()
+        store = null
+    }
+
+    override fun onCleared() = clear()
+}
+
+/** The upload settings without a device, their view model only while they are open (or the activity is recreated). */
+@Composable
+fun ScopedUploadSettings(services: UploadServices, store: RecordingStore, modifier: Modifier = Modifier) {
+    val holder = viewModel(key = "upload-settings") { ScreenStore() }
+    val activity = LocalActivity.current
+    DisposableEffect(holder) { onDispose { if (activity?.isChangingConfigurations != true) holder.clear() } }
+    UploadSettingsRoute(viewModel(viewModelStoreOwner = holder.owner) { UploadSettingsViewModel(services, store) }, modifier)
+}
+
+/** The upload settings (Dest.TrainingUpload); the counts are read again whenever it shows. */
+@Composable
+fun UploadSettingsRoute(vm: UploadSettingsViewModel, modifier: Modifier = Modifier) {
+    val state by vm.state.collectAsStateWithLifecycle()
+    LifecycleResumeEffect(vm) {
+        vm.reload()
+        onPauseOrDispose {}
+    }
+    UploadSettingsScreen(
+        state,
+        UploadSettingsActions(
+            editRepo = vm::editRepo, saveRepo = vm::saveRepo, openTokenDialog = vm::openTokenDialog, closeTokenDialog = vm::closeTokenDialog,
+            setToken = vm::setToken, removeToken = vm::removeToken, setWifiOnly = vm::setWifiOnly, setKeepLocal = vm::setKeepLocal,
+            setMuteAudio = vm::setMuteAudio, testConnection = vm::testConnection, uploadNow = vm::uploadNow, dismissMessage = vm::dismissMessage,
+        ),
         modifier,
     )
 }
@@ -293,16 +358,20 @@ fun TrainingRecordRoute(vm: RecordViewModel, onBack: () -> Unit, modifier: Modif
 }
 
 /**
- * Which training screen shows without the device: a review over the session over the list.
- * Closing a review shows what is under it, the session it was opened from or the list.
+ * Which training screen shows without the device: a review over the session over the list, or
+ * the upload settings over the list. Closing a review shows what is under it, the session it was
+ * opened from or the list.
  */
-data class OfflineScreens(val session: Boolean = false, val review: String? = null) {
+data class OfflineScreens(val session: Boolean = false, val review: String? = null, val upload: Boolean = false) {
     fun openReview(id: String) = copy(review = id)
 
     fun closeReview() = copy(review = null)
 
     companion object {
-        val Saver = listSaver<OfflineScreens, Any?>({ listOf(it.session, it.review) }, { OfflineScreens(it[0] as Boolean, it[1] as String?) })
+        val Saver = listSaver<OfflineScreens, Any?>(
+            { listOf(it.session, it.review, it.upload) },
+            { OfflineScreens(it[0] as Boolean, it[1] as String?, it[2] as Boolean) },
+        )
     }
 }
 
@@ -327,13 +396,24 @@ fun OfflineTraining(
     val reported by rememberUpdatedState(onReview)
     LaunchedEffect(screens.review) { reported(screens.review) }
     val closeReview = { screens = screens.closeReview() }
-    // The record screen's own Back handling (finish?) runs through the dispatcher: no arrow there.
+    val closeUpload = { screens = screens.copy(upload = false) }
+    // review over session over upload settings over the list, in the title, Back and the body alike
+    val uploads = deps.uploads
+    val upload = screens.upload && uploads != null
     val title = when {
         screens.review != null -> "Review"
         screens.session -> "Recording"
+        upload -> "Upload settings"
         else -> "Training data"
     }
-    OfflineFrame(title, onBack = if (screens.review != null) closeReview else if (screens.session) null else onClose) { m ->
+    val back = when {
+        screens.review != null -> closeReview
+        // The record screen's own Back handling (finish?) runs through the dispatcher: no arrow there.
+        screens.session -> null
+        upload -> closeUpload
+        else -> onClose
+    }
+    OfflineFrame(title, onBack = back) { m ->
         val id = screens.review
         if (id != null) {
             BackHandler(onBack = closeReview)
@@ -343,11 +423,15 @@ fun OfflineTraining(
                 viewModel { RecordViewModel(deps.controller, null) }, onBack = { screens = screens.copy(session = false) }, m,
                 onReview = { screens = screens.openReview(it) },
             )
+        } else if (upload) {
+            BackHandler(onBack = closeUpload)
+            ScopedUploadSettings(uploads, deps.store, m)
         } else {
             BackHandler(onBack = onClose)
             TrainingListRoute(
-                viewModel { TrainingListViewModel(deps.store, deps.controller, null) },
+                viewModel { deps.listViewModel(null) },
                 onOpenSession = { screens = screens.copy(session = true) }, m, onOpenRecording = { screens = screens.openReview(it) },
+                onOpenUploadSettings = { screens = screens.copy(upload = true) },
             )
         }
     }

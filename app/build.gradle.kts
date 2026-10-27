@@ -45,6 +45,8 @@ android {
                 "--add-opens=java.base/java.util=ALL-UNNAMED",
                 "--add-opens=java.base/java.io=ALL-UNNAMED",
                 "--add-opens=java.base/java.net=ALL-UNNAMED",
+                // HttpGitHubApi sends PATCH on the desktop JVM's HttpURLConnection (HTTPS: the live test)
+                "--add-opens=java.base/sun.net.www.protocol.https=ALL-UNNAMED",
                 "--add-opens=java.base/java.security=ALL-UNNAMED",
                 "--add-opens=java.base/java.text=ALL-UNNAMED",
                 "--add-opens=java.base/jdk.internal.access=ALL-UNNAMED",
@@ -64,9 +66,13 @@ roborazzi {
 // back old images instead of rendering, so the unit tests always run for real.
 // The conformance tests read the firmware sources (and the stream's golden vector and the
 // dataset contract) at run time, so a change there alone must also make the tests run again.
-// DB_SIM_URL (the opt-in simulator check, README) is an input too, as are DB_FINALIZE_OUT and
-// DB_REVIEW_OUT (where FinalizerCrossCheckTest and ReviewValidatorExportTest leave recordings for
-// dbdata.validate, opt-in).
+// DB_SIM_URL (the opt-in simulator check, README) is an input too, as are DB_FINALIZE_OUT,
+// DB_REVIEW_OUT and DB_MUTE_OUT (where FinalizerCrossCheckTest, ReviewValidatorExportTest and
+// MuteValidatorExportTest leave recordings for dbdata.validate, opt-in), and DB_GITHUB_LIVE_BRANCH
+// (the opt-in GitHubLiveTest's branch). DB_GITHUB_TOKEN, the live test's token, is no input:
+// Gradle would keep an input's value in its task history and configuration cache. It is read
+// from the environment when the tests start (doFirst), never at configuration, never cached
+// (unit test tasks never are) and never written to a report; run the live test with --rerun.
 tasks.withType<Test>().configureEach {
     outputs.cacheIf { false }
     inputs.files(
@@ -78,10 +84,15 @@ tasks.withType<Test>().configureEach {
             )
         },
     ).withPathSensitivity(PathSensitivity.RELATIVE).withPropertyName("firmwareSources")
-    for (name in listOf("DB_SIM_URL", "DB_FINALIZE_OUT", "DB_REVIEW_OUT")) {
+    for (name in listOf("DB_SIM_URL", "DB_FINALIZE_OUT", "DB_REVIEW_OUT", "DB_MUTE_OUT", "DB_GITHUB_LIVE_BRANCH")) {
         val v = providers.environmentVariable(name)
         inputs.property(name, v.orElse(""))
         v.orNull?.let { environment(name, it) }
+    }
+    doFirst {
+        val test = this as Test
+        test.environment.remove("DB_GITHUB_TOKEN")      // never one from a stored configuration
+        System.getenv("DB_GITHUB_TOKEN")?.takeIf { it.isNotBlank() }?.let { test.environment("DB_GITHUB_TOKEN", it) }
     }
 }
 
@@ -99,6 +110,7 @@ dependencies {
     implementation(libs.kotlinx.coroutines.android)
     implementation(libs.kotlinx.serialization.json)
     implementation(libs.nordic.ble.ktx)
+    implementation(libs.androidx.work.runtime.ktx)
 
     debugImplementation(libs.compose.ui.test.manifest)
 
@@ -112,4 +124,6 @@ dependencies {
     testImplementation(libs.compose.ui.test.junit4)
     testImplementation(libs.roborazzi)
     testImplementation(libs.roborazzi.compose)
+    testImplementation(libs.androidx.work.testing)
+    testImplementation(libs.mockwebserver3)
 }

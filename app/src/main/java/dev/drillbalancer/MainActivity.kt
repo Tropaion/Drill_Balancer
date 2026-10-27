@@ -19,6 +19,12 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    // In view: an upload that waits for the app (too big without its foreground service) goes now.
+    override fun onStart() {
+        super.onStart()
+        (application as DrillBalancerApp).uploads.appVisible()
+    }
+
     // The session is process-wide so it outlives rotations; leaving the app ends the link.
     override fun onDestroy() {
         super.onDestroy()

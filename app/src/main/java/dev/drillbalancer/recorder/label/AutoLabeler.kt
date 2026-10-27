@@ -23,12 +23,13 @@ object LabelFiles {
     const val DRAFT = "events.draft.json"
     const val LANES = "lanes.bin"
 
-    fun readLabels(f: File): Labels? = Finalizer.readJson(f)?.let {
-        try {
-            Labels.fromJson(it)
-        } catch (_: Exception) {
-            null
-        }
+    fun readLabels(f: File): Labels? = Finalizer.readJson(f)?.let(::labelsOf)
+
+    /** [o] as labels; null when it holds none. */
+    fun labelsOf(o: JsonObject): Labels? = try {
+        Labels.fromJson(o)
+    } catch (_: Exception) {
+        null
     }
 
     /** [labels] as dbdata.io.dump_json writes it, replaced atomically. */

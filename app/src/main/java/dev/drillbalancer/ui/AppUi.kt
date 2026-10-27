@@ -87,12 +87,13 @@ import dev.drillbalancer.ui.training.OfflineTraining
 import dev.drillbalancer.ui.training.RecordViewModel
 import dev.drillbalancer.ui.training.TrainingDeps
 import dev.drillbalancer.ui.training.TrainingListRoute
-import dev.drillbalancer.ui.training.TrainingListViewModel
 import dev.drillbalancer.ui.training.TrainingRecordRoute
 import dev.drillbalancer.ui.training.ReviewStores
 import dev.drillbalancer.ui.training.TrainingReviewRoute
 import dev.drillbalancer.ui.training.TrainingSetupRoute
 import dev.drillbalancer.ui.training.TrainingSetupViewModel
+import dev.drillbalancer.ui.training.UploadSettingsRoute
+import dev.drillbalancer.ui.training.upload.UploadSettingsViewModel
 import dev.drillbalancer.ui.training.reviewViewModel
 import dev.drillbalancer.ui.theme.Green
 import kotlinx.coroutines.flow.Flow
@@ -111,6 +112,7 @@ sealed interface Dest {
     @Serializable data object TrainingSetup : Dest
     @Serializable data object TrainingRecord : Dest
     @Serializable data class TrainingReview(val id: String) : Dest
+    @Serializable data object TrainingUpload : Dest
 }
 
 /** Screens below the tabs: a back arrow and their title instead of the tab bar. */
@@ -120,6 +122,7 @@ enum class SubScreen(val route: KClass<out Dest>, val title: String) {
     TRAINING_SETUP(Dest.TrainingSetup::class, "New recording"),
     TRAINING_RECORD(Dest.TrainingRecord::class, "Recording"),
     TRAINING_REVIEW(Dest.TrainingReview::class, "Review"),
+    TRAINING_UPLOAD(Dest.TrainingUpload::class, "Upload settings"),
 }
 
 /**
@@ -289,11 +292,16 @@ private fun ConnectedApp(
             }
             composable<Dest.Training> {
                 TrainingListRoute(
-                    viewModel { TrainingListViewModel(training.store, training.controller, session) },
+                    viewModel { training.listViewModel(session) },
                     onNew = { nav.navigate(Dest.TrainingSetup) },
                     onOpenSession = { nav.navigate(Dest.TrainingRecord) { launchSingleTop = true } },
                     onOpenRecording = { nav.navigate(Dest.TrainingReview(it)) },
+                    onOpenUploadSettings = { nav.navigate(Dest.TrainingUpload) { launchSingleTop = true } },
                 )
+            }
+            composable<Dest.TrainingUpload> {
+                val uploads = training.uploads
+                if (uploads != null) UploadSettingsRoute(viewModel { UploadSettingsViewModel(uploads, training.store) })
             }
             composable<Dest.TrainingReview> { entry ->
                 val id = entry.toRoute<Dest.TrainingReview>().id

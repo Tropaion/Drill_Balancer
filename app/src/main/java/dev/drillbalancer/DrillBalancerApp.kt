@@ -22,6 +22,16 @@ import dev.drillbalancer.recorder.net.StreamLink
 import dev.drillbalancer.recorder.net.StreamLinkFactory
 import dev.drillbalancer.recorder.net.WifiPermissions
 import dev.drillbalancer.ui.training.TrainingDeps
+import dev.drillbalancer.upload.GcmCipher
+import dev.drillbalancer.upload.KeystoreKey
+import dev.drillbalancer.upload.TokenVault
+import dev.drillbalancer.upload.UploadDeps
+import dev.drillbalancer.upload.UploadQueue
+import dev.drillbalancer.upload.UploadScheduler
+import dev.drillbalancer.upload.UploadServices
+import dev.drillbalancer.upload.UploadSettingsStore
+import dev.drillbalancer.upload.WorkUploadScheduler
+import dev.drillbalancer.upload.uploadDataStore
 import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -31,7 +41,7 @@ import java.io.File
 import java.io.IOException
 
 /** Process-wide singletons live here (manual DI, no framework). */
-class DrillBalancerApp : Application() {
+class DrillBalancerApp : Application(), UploadDeps.Provider {
     val scanner: DeviceScanner by lazy { DeviceScanner(this) }
     val lastDevice: LastDeviceStore by lazy { LastDeviceStore(this) }
     val session: BleDeviceSession by lazy { BleDeviceSession(this, scanner, lastDevice) }
@@ -74,7 +84,17 @@ class DrillBalancerApp : Application() {
             RecorderService.follow(this, it, appScope)
         }
     }
-    val training: TrainingDeps by lazy { TrainingDeps(recorder, recordings, setupStore, labeler) }
+    // The upload: the token sealed under a key in the AndroidKeyStore, the settings next to it
+    // (DataStore "upload"), one WorkManager job per recording.
+    val vault: TokenVault by lazy { TokenVault(uploadDataStore, GcmCipher { KeystoreKey.get() }) }
+    val uploadSettings: UploadSettingsStore by lazy { UploadSettingsStore(uploadDataStore) }
+    private val uploadScheduler: UploadScheduler by lazy { WorkUploadScheduler(this) }
+    val uploads: UploadQueue by lazy { UploadQueue(recordings, uploadScheduler, uploadSettings, vault, appScope) }
+    override val uploadDeps: UploadDeps by lazy { UploadDeps(recordings, uploadSettings, vault, uploadScheduler) }
+
+    val training: TrainingDeps by lazy {
+        TrainingDeps(recorder, recordings, setupStore, labeler, UploadServices(uploads, uploadSettings, vault))
+    }
 
     // A take that ended gets its dataset files (a storage error leaves it to the next start's recovery).
     private fun finalizeLater(id: String) {

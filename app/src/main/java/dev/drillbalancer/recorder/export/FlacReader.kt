@@ -8,18 +8,39 @@ import java.io.InputStream
 /** One channel of a 16-bit FLAC file. */
 class FlacChannel(val sampleRate: Int, val channels: Int, val samples: ShortArray)
 
+/** A FLAC file's STREAMINFO: rate, channels, frames (0: not known). */
+class FlacInfo(val sampleRate: Int, val channels: Int, val totalFrames: Long)
+
 /**
  * Reads one channel of a 16-bit FLAC file (RFC 9639) as a stream, for the auto-detector: every
  * subframe type (CONSTANT, VERBATIM, FIXED, LPC), wasted bits, partitioned Rice with escapes,
  * every stereo decorrelation; fixed or variable block sizes. Each frame's CRC-8 and CRC-16 are
  * checked (the MD5 is not: the tests' FlacDecoder checks it). Holds the one channel only (a
- * 20-minute take: 38 MB), never the file. IOException for anything that is not such a file.
+ * 20-minute take: 38 MB), never the file; [decode] streams every channel a block at a time
+ * (AudioMute). IOException for anything that is not such a file.
  */
 object FlacReader {
     fun readChannel(file: File, channel: Int = 0): FlacChannel = file.inputStream().use { readChannel(it, channel) }
 
     fun readChannel(input: InputStream, channel: Int = 0): FlacChannel {
-        val r = Bits(input)
+        var out = ShortArray(0)
+        var count = 0
+        val info = decode(input, { info ->
+            if (channel !in 0 until info.channels) throw IOException("no channel $channel in ${info.channels}")
+            out = ShortArray(if (info.totalFrames in 1..Int.MAX_VALUE.toLong()) info.totalFrames.toInt() else 1 shl 16)
+        }) { ch, n ->
+            if (out.size < count + n) out = out.copyOf(maxOf(out.size * 2, count + n))
+            val x = ch[channel]
+            for (i in 0 until n) out[count + i] = x[i].toShort()
+            count += n
+        }
+        return FlacChannel(info.sampleRate, info.channels, if (out.size == count) out else out.copyOf(count))
+    }
+
+    /** STREAMINFO of [file], nothing else read. */
+    fun info(file: File): FlacInfo = file.inputStream().buffered().use { header(Bits(it)) }
+
+    private fun header(r: Bits): FlacInfo {
         if (r.bits(32) != 0x664C6143L) throw IOException("no fLaC marker")
         var rate = 0
         var channels = 0
@@ -49,9 +70,21 @@ object FlacReader {
             if (last) break
         }
         if (bps != 16) throw IOException("$bps-bit FLAC (16 expected)")
-        if (channel !in 0 until channels) throw IOException("no channel $channel in $channels")
-        var out = ShortArray(if (total in 1..Int.MAX_VALUE.toLong()) total.toInt() else 1 shl 16)
-        var count = 0
+        return FlacInfo(rate, channels, total)
+    }
+
+    /**
+     * Decodes [input] block by block: [onInfo] gets STREAMINFO, [each] every frame's samples per
+     * channel (stereo decorrelation undone; the arrays are reused, valid for [n] samples during
+     * the call). Holds one block, never the file. Returns STREAMINFO.
+     */
+    fun decode(input: InputStream, onInfo: (FlacInfo) -> Unit = {}, each: (channels: Array<IntArray>, n: Int) -> Unit): FlacInfo {
+        val r = Bits(input)
+        val info = header(r)
+        onInfo(info)
+        val channels = info.channels
+        val total = info.totalFrames
+        var count = 0L
         var sub = Array(channels) { IntArray(4096) }
         var resid = LongArray(4096)
         while (true) {
@@ -99,26 +132,27 @@ object FlacReader {
             r.align()
             val crc16 = r.crc16
             if (r.bits(16).toInt() != crc16) throw IOException("frame CRC-16 after $count samples")
-            if (out.size < count + n) out = out.copyOf(maxOf(out.size * 2, count + n))
-            val a = sub[0]
-            val b = if (channels > 1) sub[1] else a
-            for (i in 0 until n) {
-                val v = when (chanCode) {
-                    8 -> if (channel == 0) a[i] else a[i] - b[i]
-                    9 -> if (channel == 0) a[i] + b[i] else b[i]
-                    10 -> {
-                        val side = b[i]
-                        val mid = (a[i] shl 1) or (side and 1)
-                        if (channel == 0) (mid + side) shr 1 else (mid - side) shr 1
+            if (chanCode in 8..10) {
+                val a = sub[0]
+                val b = sub[1]
+                for (i in 0 until n) {
+                    when (chanCode) {
+                        8 -> b[i] = a[i] - b[i]                 // left/side
+                        9 -> a[i] = a[i] + b[i]                 // side/right
+                        else -> {                               // mid/side
+                            val side = b[i]
+                            val mid = (a[i] shl 1) or (side and 1)
+                            a[i] = (mid + side) shr 1
+                            b[i] = (mid - side) shr 1
+                        }
                     }
-                    else -> sub[channel][i]
                 }
-                out[count + i] = v.toShort()
             }
+            each(sub, n)
             count += n
         }
-        if (total != 0L && total != count.toLong()) throw IOException("STREAMINFO says $total frames, read $count")
-        return FlacChannel(rate, channels, if (out.size == count) out else out.copyOf(count))
+        if (total != 0L && total != count) throw IOException("STREAMINFO says $total frames, read $count")
+        return info
     }
 
     private fun subframe(r: Bits, n: Int, bpsIn: Int, x: IntArray, resid: LongArray) {

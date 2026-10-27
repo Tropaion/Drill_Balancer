@@ -18,6 +18,7 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.TextAutoSize
 import androidx.compose.material3.AlertDialog
@@ -33,8 +34,11 @@ import androidx.compose.material3.SegmentedButton
 import androidx.compose.material3.SegmentedButtonDefaults
 import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
+import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.Immutable
@@ -48,6 +52,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.TextStyle
@@ -157,6 +162,34 @@ fun PanelRow(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = horizontalArrangement,
             content = content,
+        )
+    }
+}
+
+/**
+ * A setting with its switch at the end: the whole row toggles it and is one node for TalkBack
+ * ([content]: its label; on/off from the switch).
+ */
+@Composable
+fun SwitchRow(
+    checked: Boolean,
+    onChange: (Boolean) -> Unit,
+    horizontalArrangement: Arrangement.Horizontal = Arrangement.Start,
+    content: @Composable RowScope.() -> Unit,
+) {
+    Row(
+        Modifier.fillMaxWidth().toggleable(value = checked, role = Role.Switch, onValueChange = onChange),
+        verticalAlignment = Alignment.CenterVertically, horizontalArrangement = horizontalArrangement,
+    ) {
+        content()
+        Switch(
+            checked, onCheckedChange = null, Modifier.minimumInteractiveComponentSize(),
+            colors = SwitchDefaults.colors(
+                checkedThumbColor = Color.Black,
+                uncheckedThumbColor = Grey,
+                uncheckedTrackColor = MaterialTheme.colorScheme.surface,
+                uncheckedBorderColor = Grey,
+            ),
         )
     }
 }

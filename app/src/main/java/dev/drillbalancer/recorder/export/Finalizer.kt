@@ -124,14 +124,6 @@ open class Finalizer {
         GZIPOutputStream(KeepOpen(o), 1 shl 16).bufferedWriter(Charsets.US_ASCII).use { body(it) }
     }
 
-    /** [o] for a stream that closes what it wraps: close only flushes. */
-    private class KeepOpen(private val o: OutputStream) : OutputStream() {
-        override fun write(b: Int) = o.write(b)
-        override fun write(b: ByteArray, off: Int, len: Int) = o.write(b, off, len)
-        override fun flush() = o.flush()
-        override fun close() = o.flush()
-    }
-
     private fun imuCsv(w: Appendable, imu: ImuTrack) {
         w.append("seq,t_us,ax,ay,az,gx,gy,gz,flags\n")
         val sb = StringBuilder(64)
@@ -514,11 +506,17 @@ open class Finalizer {
          * labels, meta.json the derived and review from before (its meta.review.revision is not
          * events.json's), and meta.json.tmp the new meta.json, complete and synced before either
          * rename. That is renamed into place when it is the same meta.json but for derived and
-         * review, with events.json's revision. True when it repaired the pair. Blocking.
+         * review, with events.json's revision. Else a mute stopped the same way is finished
+         * (AudioMute.finish: the muted audio.flac under the meta.json before it). True when it
+         * repaired the pair. Blocking.
          */
         fun repairLabels(dir: File): Boolean {
             val tmp = File(dir, "$META.tmp")
             if (!tmp.isFile) return false          // nothing to finish (no file read: recover() runs it on every recording)
+            return repairLabelPair(dir, tmp) || AudioMute.finish(dir)
+        }
+
+        private fun repairLabelPair(dir: File, tmp: File): Boolean {
             val events = readJson(File(dir, EVENTS)) ?: return false
             val meta = readJson(File(dir, META)) ?: return false
             val revision = events["revision"] as? JsonPrimitive ?: return false
@@ -536,6 +534,32 @@ open class Finalizer {
             if (f.isFile) Json.parseToJsonElement(f.readText()) as? JsonObject else null
         } catch (_: Exception) {
             null
+        }
+
+        /** [f] as a JSON object; null when it is missing or holds none. A read that fails is an IOException (the storage's), unlike [readJson]. */
+        internal fun readJsonStrict(f: File): JsonObject? {
+            if (!f.isFile) return null
+            val text = f.readText()
+            return try {
+                Json.parseToJsonElement(text) as? JsonObject
+            } catch (_: Exception) {
+                null
+            }
+        }
+
+        /** meta.files' entry of [name]: its sha256 and bytes (null when it lists none). */
+        internal fun fileEntry(meta: JsonObject, name: String): Pair<String, Long>? {
+            val e = (meta["files"] as? JsonObject)?.get(name) as? JsonObject ?: return null
+            val sha = (e["sha256"] as? JsonPrimitive)?.takeIf { it.isString }?.content ?: return null
+            val bytes = (e["bytes"] as? JsonPrimitive)?.longOrNull ?: return null
+            return sha to bytes
+        }
+
+        /** [f]'s sha256, hex (meta.files' sha256). */
+        internal fun sha256(f: File): String {
+            val md = MessageDigest.getInstance("SHA-256")
+            f.forEachBlock(1 shl 16) { buf, n -> md.update(buf, 0, n) }
+            return md.digest().toHex()
         }
 
         private fun takeCodePoints(s: String, n: Int): String =
@@ -607,7 +631,7 @@ private class Staged(private val dir: File) {
         val f = tmp(name)
         body(f)
         FileOutputStream(f, true).use { it.fd.sync() }
-        staged(name, f) { sha256(f) }
+        staged(name, f) { Finalizer.sha256(f) }
     }
 
     private fun staged(name: String, f: File, sha: () -> String) {
@@ -637,11 +661,12 @@ private class Staged(private val dir: File) {
         for (n in order) tmp(n).delete()
         order.clear()
     }
-
-    private fun sha256(f: File): String {
-        val md = MessageDigest.getInstance("SHA-256")
-        f.forEachBlock(1 shl 16) { buf, n -> md.update(buf, 0, n) }
-        return md.digest().toHex()
-    }
 }
 
+/** [o] for a stream that closes what it wraps: close only flushes. */
+internal class KeepOpen(private val o: OutputStream) : OutputStream() {
+    override fun write(b: Int) = o.write(b)
+    override fun write(b: ByteArray, off: Int, len: Int) = o.write(b, off, len)
+    override fun flush() = o.flush()
+    override fun close() = o.flush()
+}

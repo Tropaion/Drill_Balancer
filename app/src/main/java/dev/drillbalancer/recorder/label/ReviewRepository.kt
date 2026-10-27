@@ -41,9 +41,14 @@ sealed interface ReviewSource {
  * finalize and labeller, and do not wait for those of other recordings. Labelling it or making
  * its lanes (the heavy part, rare) waits for the app's one heavy computation at a time
  * (AutoLabeler's compute lock, taken inside the folder lock); opening a labelled recording does
- * not. Blocking file I/O.
+ * not. Blocking file I/O. [onSaved] hears each recording saved (reviewed), after its lock is
+ * released: the app's upload queue.
  */
-class ReviewRepository(private val store: RecordingStore, private val labeler: AutoLabeler?) {
+class ReviewRepository(
+    private val store: RecordingStore,
+    private val labeler: AutoLabeler?,
+    private val onSaved: (String) -> Unit = {},
+) {
     private fun dir(id: String) = store.dir(id)
 
     fun source(id: String): ReviewSource {
@@ -101,10 +106,13 @@ class ReviewRepository(private val store: RecordingStore, private val labeler: A
      * computed off angles and meta.derived recomputed, meta.review reviewed (by [data]'s
      * reviewer) with [edited] changed labels. Returns what was written.
      */
-    fun save(data: ReviewData, labels: Labels, edited: Int): Labels = store.exclusive(data.id) { saveLocked(data, labels, edited) }
+    fun save(data: ReviewData, labels: Labels, edited: Int): Labels =
+        store.exclusive(data.id) { saveLocked(data, labels, edited) }.also { onSaved(data.id) }
 
     private fun saveLocked(data: ReviewData, labels: Labels, edited: Int): Labels {
         val d = dir(data.id)
+        // a mute stopped half way since the load: its meta.json first (the Save writes over meta.json.tmp)
+        Finalizer.repairLabels(d)
         val current = LabelFiles.readLabels(File(d, Finalizer.EVENTS)) ?: data.saved
         val sorted = LabelEdits.sorted(labels, current.revision + 1)
         val (derived, holes) = Derived.compute(data.level, sorted, data.tolDeg)
@@ -112,7 +120,7 @@ class ReviewRepository(private val store: RecordingStore, private val labeler: A
         val meta = Finalizer.readJson(File(d, Finalizer.META)) ?: throw IOException("the recording is not finalized")
         val oldDetector = ((meta["review"] as? JsonObject)?.get("detector") as? JsonPrimitive)?.content ?: "none"
         val review = Finalizer.review(
-            "reviewed", out.detector?.version ?: oldDetector, out.revision, edited, data.reviewer?.takeIf { REVIEWER.matches(it) },
+            RecordingStore.REVIEWED, out.detector?.version ?: oldDetector, out.revision, edited, data.reviewer?.takeIf { REVIEWER.matches(it) },
         )
         Finalizer.writeLabels(d, out.toJson(), derived.toJson(), review)
         File(d, LabelFiles.DRAFT).delete()
