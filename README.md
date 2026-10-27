@@ -5,16 +5,23 @@
 A clip-on digital level for power drills. A round AMOLED board sits on the
 back of the drill, faces you, and shows whether the bit is level, plumb or at
 the angle you set. An Android app connects over Bluetooth LE for live
-readings, settings, calibration and firmware updates.
+readings, settings, calibration and firmware updates. It also records
+training data (raw IMU and both microphones) for a future on-device model.
 
 > [!WARNING]
 > **Status: pre-hardware.** The board has not arrived yet, and nothing in this
 > repo has run on real hardware. The firmware is written, builds and passes
 > its host tests on a PC. The Android app passes its JVM and screenshot tests
 > and has been tested end-to-end on a real phone against the
-> [PC simulator](firmware/tools/sim/README.md). Hardware bring-up will follow
-> the [checklist in firmware/README.md](firmware/README.md#bring-up-checklist-hardware).
-> Battery life, accuracy and OTA speed on the board are **not measured yet**.
+> [PC simulator](firmware/tools/sim/README.md). Takes recorded from the
+> simulator through the app's recording engine (the opt-in
+> `SimulatorEndToEndTest`) were finalized, auto-labelled, reviewed and
+> uploaded by the app in the Android emulator; recording from the app on a
+> phone (BLE control, the soft-AP join) is still to come. Hardware
+> bring-up will follow the
+> [checklist in firmware/README.md](firmware/README.md#bring-up-checklist-hardware).
+> Battery life, accuracy, OTA speed and the recorder's Wi-Fi throughput on
+> the board are **not measured yet**.
 
 <p align="center">
   <img src="docs/images/device-overview.png" alt="Device screen renders: wall, floor and angle mode, and the settings list" width="720">
@@ -47,10 +54,25 @@ readings, settings, calibration and firmware updates.
   6-digit passkey shown on the device.
 - **Firmware update over BLE** with a SHA-256 check and automatic rollback
   if the new image fails its self-test at boot.
+- **Training-data recorder**: the device records the raw IMU (448.4 Hz with
+  the on-chip low-pass off, ±4 g or ±16 g for hammer drilling; 896.8 Hz
+  experimental) and both microphones (ES7210, 16 kHz, 16-bit stereo), and
+  streams them to the phone over its own Wi-Fi soft-AP. BLE stays the
+  control link. A REC pill on the screen shows the session; the device does
+  not sleep while one is open.
 - **Android app** (Kotlin, Jetpack Compose) and a **Python BLE client**
-  (`db_client.py`) for the same protocol.
+  (`db_client.py`) for the same protocol. The app's *Training data* area
+  records takes, labels them automatically (motor on/off, contact,
+  breakthrough, retract, stalls, kickbacks), lets you review the labels and
+  uploads each reviewed take to **your own private GitHub data repo**.
+- **Dataset tools** (`firmware/tools/dataset`, Python package `dbdata`): the
+  recording format, a validator, an index and a loader of aligned IMU and
+  audio windows for training, plus a template for the data repo with a
+  GitHub Action that validates every upload.
 - **PC simulator** that runs the firmware's own C logic on Linux and appears
-  as a BLE device, so the app can be tested without the board.
+  as a BLE device, so the app can be tested without the board. It also
+  simulates the recorder, with scripted drilling sessions and their ground
+  truth.
 
 <table>
   <tr>
@@ -58,6 +80,12 @@ readings, settings, calibration and firmware updates.
     <td align="center"><img src="app/src/test/screenshots/dev.drillbalancer.ui.live.LiveScreenshotTest.floorBubbleNear.png" alt="App live view, floor bubble" width="200"><br><sub>Live, floor mode</sub></td>
     <td align="center"><img src="app/src/test/screenshots/dev.drillbalancer.ui.calibration.CalibrationScreenshotTest.overview.png" alt="App calibration overview" width="200"><br><sub>Calibrate</sub></td>
     <td align="center"><img src="app/src/test/screenshots/dev.drillbalancer.ui.firmware.FirmwareScreenshotTest.sending.png" alt="App firmware update in progress" width="200"><br><sub>Firmware update</sub></td>
+  </tr>
+  <tr>
+    <td align="center"><img src="app/src/test/screenshots/dev.drillbalancer.ui.training.TrainingScreenshotTest.recording.png" alt="App training data, a take being recorded" width="200"><br><sub>Training data, recording</sub></td>
+    <td align="center"><img src="app/src/test/screenshots/dev.drillbalancer.ui.training.review.ReviewScreenshotTest.reviewAuto.png" alt="App training data, reviewing the automatic labels" width="200"><br><sub>Training data, review</sub></td>
+    <td></td>
+    <td></td>
   </tr>
 </table>
 <sub>App screenshots are the Roborazzi test baselines in <code>app/src/test/screenshots/</code>.
@@ -77,6 +105,10 @@ flowchart LR
   UI -- "touch: zero, mode, settings" --> CTL["control task<br/>commands, power FSM, PMU"]
   BLE -- "commands, config, OTA" --> CTL
   CTL --> LVL
+  IMU -- "raw frames" --> REC["recorder<br/>session, takes, 4 MB ring"]
+  MIC["ES7210<br/>2 microphones, 16 kHz"] --> REC
+  BLE -- "rec_ctrl, rec_state" --> REC
+  REC -- "Wi-Fi soft-AP, TCP stream" --> APP
 ```
 
 - The sensor task reads the IMU FIFO, applies the sensor calibration and runs
@@ -88,6 +120,12 @@ flowchart LR
   and the settings screen store their changes through one mutex-guarded
   `settings_update()`). One control task applies the commands, reloads the
   settings after every store and runs the power state machine.
+- The recorder runs only while the app holds a recording session: it opens
+  a soft-AP, takes the sensor task's raw IMU frames and the microphones'
+  DMA blocks, and sends them with the 10 Hz level readings as framed records
+  over one TCP connection. Under a raw IMU profile the level keeps its
+  reading through a software stand-in for the chip's low-pass filters
+  (2nd-order Butterworth at the same corners).
 
 Details: [Architecture](https://github.com/Tropaion/Drill_Balancer/wiki/Architecture).
 
@@ -95,7 +133,7 @@ Details: [Architecture](https://github.com/Tropaion/Drill_Balancer/wiki/Architec
 
 | Part | Notes |
 |---|---|
-| [Waveshare ESP32-S3-Touch-AMOLED-1.75-B](https://www.waveshare.com/esp32-s3-touch-amoled-1.75.htm) | ESP32-S3R8, 16 MB flash, 8 MB PSRAM, 1.75" 466x466 CO5300 AMOLED, CST9217 touch, QMI8658 IMU, AXP2101 PMIC, USB-C |
+| [Waveshare ESP32-S3-Touch-AMOLED-1.75-B](https://www.waveshare.com/esp32-s3-touch-amoled-1.75.htm) | ESP32-S3R8, 16 MB flash, 8 MB PSRAM, 1.75" 466x466 CO5300 AMOLED, CST9217 touch, QMI8658 IMU, AXP2101 PMIC, ES7210 microphone ADC with two microphones, USB-C |
 | 1000 mAh LiPo, Sunkoo 803040 | Single cell, 2-wire (no NTC), MX1.25 (Micro JST 1.25) plug. The firmware charges it at 400 mA (cell maximum 500 mA), terminating at 25 mA / 4.2 V. |
 | USB-C cable | Flashing, serial console and charging |
 | Multimeter | To check the battery polarity before the first plug-in |
@@ -161,6 +199,7 @@ Full guide: [Getting Started](https://github.com/Tropaion/Drill_Balancer/wiki/Ge
 | Swipe left / right | Next / previous mode | Right: back |
 | Hold 1 s | Open Settings | Long press on a stepper repeats |
 | Touch while dimmed | Only wakes the screen | Only wakes the screen |
+| Touch during a recorded take | Logged in the recording, nothing else; hold the REC pill 2 s to stop the take | Same |
 
 **Modes**
 - *Wall*: number = elevation, chevron = bit points up or down, bar = left/right
@@ -185,6 +224,8 @@ Full guide: [Getting Started](https://github.com/Tropaion/Drill_Balancer/wiki/Ge
   the van turning a corner.
 - PWR key: short press = sleep, hold 1.5 s = power off. The key cannot wake
   the device from deep sleep; move it instead.
+- An open recording session keeps the device out of sleep (the screen still
+  dims). Sleep, power-off and reboot end a running take cleanly first.
 
 ## Repository layout
 
@@ -201,19 +242,25 @@ Full guide: [Getting Started](https://github.com/Tropaion/Drill_Balancer/wiki/Ge
 │   │   ├── power/           power state machine, deep sleep, power-off
 │   │   ├── ui/              LVGL screens, gestures, calibration guides
 │   │   ├── ble/             NimBLE GATT service, packet codec, pairing
-│   │   └── ota/             OTA protocol and flash writer
+│   │   ├── ota/             OTA protocol and flash writer
+│   │   └── recorder/        training-data recorder: stream format, ring,
+│   │                        session FSM, soft-AP and TCP, microphones
 │   ├── test_host/           Unity host tests and the UI preview renderer
 │   ├── tools/ble/           db_client.py, a Python BLE client (bleak)
 │   ├── tools/sim/           PC device simulator (BlueZ + web panel)
+│   ├── tools/dataset/       dbdata: dataset contract, validator, loader,
+│   │                        auto-detector, data repo template
 │   ├── partitions.csv       NVS, otadata, phy_init, two 6 MB OTA slots
 │   ├── sdkconfig.defaults   board-wide options
 │   ├── sdkconfig.d/         per-feature config fragments
 │   └── README.md
 ├── app/                     Android companion app (Kotlin, Compose, Nordic BLE)
-│   ├── src/main/java/dev/drillbalancer/   protocol, device, ble, ui
+│   ├── src/main/java/dev/drillbalancer/   protocol, device, ble, recorder, upload, ui
 │   ├── src/test/            JVM, Robolectric and screenshot tests
 │   ├── src/test/screenshots/  Roborazzi baselines
 │   └── README.md
+├── tools/ci/                CI job scripts (run the same on a PC)
+├── .github/                 workflows/ci.yml, actions/idf-subset (the ESP-IDF subset for the PC jobs)
 ├── docs/images/             device screen renders
 └── LICENSE
 ```
@@ -228,9 +275,17 @@ Everything below runs without the board.
 | UI preview (renders the device screens to PNG) | `firmware/` | `cmake --build build-test-all --target ui_preview_png` |
 | Python BLE client tests | `firmware/tools/ble/` | `python3 -m unittest test_db_client` and `python3 db_client.py --dry-run` |
 | Simulator tests | `firmware/tools/sim/` | `.venv/bin/python -m unittest discover -s tests` |
+| Dataset tools tests | `firmware/tools/dataset/` | `.venv/bin/python -m unittest discover -s tests` |
 | App unit and Robolectric tests | `app/` | `./gradlew testDebugUnitTest` |
 | App screenshot tests | `app/` | `./gradlew verifyRoborazziDebug` |
 | App lint | `app/` | `./gradlew lintDebug` |
+| Any CI job, as CI runs it | repo root | `tools/ci/<job>.sh` (`firmware_host`, `firmware_build`, `simulator`, `simulator_ota`, `dataset`, `db_client`, `app`, `test_ci`) |
+
+CI ([.github/workflows/ci.yml](.github/workflows/ci.yml)) runs these
+scripts on every push: the firmware host tests and UI preview, the firmware
+build, the simulator tests (and an OTA of the built image to the
+simulator), the dataset tools, the BLE client self-checks, the CI scripts'
+own tests and the app's tests, lint and screenshots.
 
 Firmware host tests (bash, from `firmware/`; Unity, cJSON and mbedtls come
 from the ESP-IDF tree, `idf.py` is not needed):
@@ -274,14 +329,29 @@ More: [Development and Testing](https://github.com/Tropaion/Drill_Balancer/wiki/
 - [x] App end-to-end on a real phone against the simulator: scan, pairing,
       live values, settings, both calibrations, OTA (about 100 KiB/s at
       MTU 517 with the PC's adapter) and the fault cases
+- [x] Training-data recorder: dataset contract and `dbdata` tools, the
+      firmware's recorder (raw IMU profiles, microphones, soft-AP stream,
+      REC pill), the simulator's recorder with drilling scenarios, and the
+      app's record, auto-label, review and upload to a private GitHub data
+      repo whose Action validates every recording
+- [x] Recorder end to end against the simulator: takes recorded by the
+      app's engine, then labelled, reviewed and uploaded in the Android
+      emulator
+- [x] CI on GitHub Actions
+- [ ] Recorder on a real phone against the simulator: BLE control and the
+      soft-AP join (`--rec-ap`)
 - [ ] Hardware bring-up following the
       [checklist](firmware/README.md#bring-up-checklist-hardware) (all
-      `TODO(hw)` items)
+      `TODO(hw)` items, including the recorder's: microphone order and gain,
+      the soft-AP join, throughput and Wi-Fi/BLE coexistence)
 - [ ] Measure: current per state and battery life, accuracy against a spirit
       level (target ≤ 0.2° after mount calibration), steadiness with the
       motor running (target ±0.3°), OTA throughput
+- [ ] Record real takes and check the auto-detector on them (its numbers
+      come from the simulator so far)
+- [ ] An on-device model for the drilling phases, trained on the recorded
+      data
 - [ ] Signed release APK
-- [ ] Ideas, not decided: CI, detecting the drilling state
 
 Details: [Roadmap](https://github.com/Tropaion/Drill_Balancer/wiki/Roadmap).
 
@@ -296,11 +366,14 @@ The [wiki](https://github.com/Tropaion/Drill_Balancer/wiki) has the details.
 | [Roadmap](https://github.com/Tropaion/Drill_Balancer/wiki/Roadmap) | [Calibration](https://github.com/Tropaion/Drill_Balancer/wiki/Calibration) | [Firmware Update (OTA)](https://github.com/Tropaion/Drill_Balancer/wiki/Firmware-Update-OTA) | [Simulator](https://github.com/Tropaion/Drill_Balancer/wiki/Simulator) |
 | [FAQ](https://github.com/Tropaion/Drill_Balancer/wiki/FAQ) | [Power and Sleep](https://github.com/Tropaion/Drill_Balancer/wiki/Power-and-Sleep) | | [Hardware Bring-Up](https://github.com/Tropaion/Drill_Balancer/wiki/Hardware-Bring-Up) |
 | | [Android App](https://github.com/Tropaion/Drill_Balancer/wiki/Android-App) | | |
+| | [Training Data](https://github.com/Tropaion/Drill_Balancer/wiki/Training-Data) | | |
 
 In the repo: [firmware/README.md](firmware/README.md),
-[app/README.md](app/README.md),
+[app/README.md](app/README.md) (also [Training data](app/README.md#training-data)
+and how to set up your own data repo),
 [firmware/tools/ble/README.md](firmware/tools/ble/README.md),
-[firmware/tools/sim/README.md](firmware/tools/sim/README.md).
+[firmware/tools/sim/README.md](firmware/tools/sim/README.md),
+[firmware/tools/dataset/README.md](firmware/tools/dataset/README.md).
 
 ## Contributing
 
@@ -310,9 +383,13 @@ useful thing right now; the
 says what to measure.
 
 - Run the tests for the part you change (see above).
-- The app's `FirmwareConformanceTest` parses the firmware headers. If you
-  change the protocol, a limit or a default, change the firmware first, then
-  the app, then run both test suites.
+- The app's `FirmwareConformanceTest` and `RecStreamConformanceTest` parse
+  the firmware headers. If you change the protocol, the recorder's stream
+  format, a limit or a default, change the firmware first, then the app,
+  then run both test suites.
+- The recording format is defined in `firmware/tools/dataset/dbdata/contract`;
+  the app and the data repo follow it. See
+  [Changing the contract](firmware/tools/dataset/README.md#changing-the-contract).
 - Mark anything that can only be checked on the board with `TODO(hw)` and add
   it to the bring-up checklist.
 

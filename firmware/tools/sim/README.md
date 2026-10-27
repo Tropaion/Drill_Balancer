@@ -223,6 +223,13 @@ optional `mic` 1|2).
 4. Move the sliders and watch the app follow. OTA works with a real
    `build/drillbalancer.bin`. The image is checked like `esp_ota_end()` does,
    and the sim then reboots into the new version.
+5. *Training data* records from the sim as from the board (see
+   [Recorder](#recorder)). In LAN mode the phone must be on the same network
+   as the PC and reach its TCP port 47100 (or the one given with
+   `--rec-port`); with `--rec-ap` the app joins
+   the PC's hotspot as it would join the board's soft-AP. Start a drilling
+   scenario on the panel during a take to give the auto-labeller something
+   to find.
 
 **Forget device on the phone:**
 - **After a factory reset** (device menu, panel or app): the sim removes the
@@ -284,7 +291,8 @@ session.
 **Scenarios and ground truth.** A drilling scenario (panel, or
 `DbSimDevice.start_scenario()`) drives the IMU and the microphones from one
 motor state: off, spin-up, free run (233 Hz by default), cutting (the motor
-sags 10-30 %, more broadband, the axial push), breakthrough (the speed jumps
+sags about 20 % (`sag`, 0.05..0.4, ±15 % per hole), more broadband, the axial
+push), breakthrough (the speed jumps
 back, a 1.5-2 g lunge along the bit and a wobble of the bit that swings
 back within about 0.1 s) or retract (a slow recovery, no
 impulse), spin-down and off, per hole. The hammer mode adds 5-10 g blows at
@@ -390,9 +398,12 @@ loud the room is).
     response, the reverse of the board. Android scans actively and gets
     both.
   - A disconnect made by the device arrives at the phone as 0x13.
-- **Recorder:** no Wi-Fi soft-AP (see [Recorder](#recorder)); the stream
-  ring is smaller than the board's 4 MB; the sensor clock and the host
-  clock run at exactly the nominal rates.
+- **Recorder:** no Wi-Fi soft-AP of its own: the stream is served on the
+  LAN, or on a NetworkManager hotspot with `--rec-ap` (see
+  [Recorder](#recorder)); the stream ring is smaller than the board's 4 MB;
+  the sensor clock and the host clock run at exactly the nominal rates; the
+  microphones' sound is synthetic (`core/sim_audio.c`), so the auto-detector's
+  thresholds tuned on it still need real takes.
 - **Not simulated:**
   - the post-OTA self-test and rollback;
   - the fuel gauge (the battery is what the panel says);
@@ -430,4 +441,9 @@ against the C structs independently of the simulator. One recorder test
 exports a take with `tools/dataset`'s venv (`dbdata.dbrec` and
 `dbdata.validate`, through `tests/dataset_probe.py`) and checks that the
 breakthrough shows in the IMU and in the audio within 5 ms of the ground
-truth; it is skipped without `tools/dataset/.venv`.
+truth; it is skipped without `tools/dataset/.venv`. `tools/ci/simulator.sh`
+sets that venv up and builds the core first.
+
+The app's opt-in `SimulatorEndToEndTest` records takes from a running sim
+through the panel's API, with no Bluetooth (see
+[app/README.md](../../../app/README.md#against-the-simulators-recorder-opt-in)).

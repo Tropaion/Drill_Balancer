@@ -11,7 +11,13 @@ Kotlin, Jetpack Compose (Material 3), one activity, coroutines/Flow, manual
 DI. BLE runs on Nordic's Android-BLE-Library. minSdk 26 (Android 8.0),
 target/compile SDK 37. Package `dev.drillbalancer`.
 
-> Nothing here has run on a phone yet. Work through the
+> Nothing here has run against the real board yet. The app has been tested
+> on a real phone against the [device simulator](#against-the-device-simulator)
+> (scan, pairing, live values, settings, calibrations, OTA). Takes recorded
+> from the simulator by the app's recording engine (`SimulatorEndToEndTest`)
+> were finalized, auto-labelled, reviewed and uploaded by the app in the
+> Android emulator; recording on a phone (BLE control, the soft-AP join) is
+> still to come. Work through the
 > [first-run checklist](#first-run-on-real-hardware) when you try it.
 
 ## Requirements
@@ -96,6 +102,26 @@ the device's link policy it keeps the device awake for about 10 minutes.
   keep the `Themed` wrapper from `Fixtures.kt`. It forces a redraw after the
   first frame, without which Robolectric captures screens with no animation
   as blank.
+- The recorder's checks against the Python reference read
+  `../firmware/tools/dataset/fixtures` (autodetect, finalize, labels), and
+  `RecStreamConformanceTest` reads `rec_stream.h`.
+
+`testDebugUnitTest` runs 685 tests in 75 classes. The 6 opt-in tests below
+are skipped unless their environment variables are set; run them with
+`--tests` and `--rerun` (the variables are task inputs, but the simulator's
+state, the plan file's content and the token `DB_GITHUB_TOKEN` are not, so
+an unchanged command would otherwise be up to date).
+`FirmwareImageTest.realBuildIfPresent` is also skipped without a firmware
+build (`firmware/build/drillbalancer.bin`), as in CI:
+
+| Test | Variables | What it does |
+|---|---|---|
+| `recorder/SimulatorEndToEndTest` | `DB_SIM_URL` (required), `DB_SIM_OUT` | records one take from a running simulator ([below](#against-the-simulators-recorder-opt-in)) |
+| `SimulatorEndToEndTest.recordsTheScenarioTakes` | `DB_SIM_URL`, `DB_SIM_SCENARIOS` (required), `DB_SIM_STORE_OUT`, `DB_SIM_TRUTH_OUT`, `DB_SIM_FINALIZE_OUT` | records a list of scripted takes |
+| `recorder/export/FinalizerCrossCheckTest.recordingsForTheValidator` | `DB_FINALIZE_OUT` | writes the finalized fixture takes in the data repo's layout for `dbdata.validate` |
+| `ui/training/review/ReviewValidatorExportTest` | `DB_REVIEW_OUT` | writes reviewed recordings for `dbdata.validate` ([Review](#review)) |
+| `recorder/export/MuteValidatorExportTest` | `DB_MUTE_OUT` | writes reviewed and muted recordings for `dbdata.validate` ([Upload](#upload)) |
+| `upload/GitHubLiveTest` | `DB_GITHUB_TOKEN`, `DB_GITHUB_LIVE_BRANCH` | uploads to a new branch of a real data repo ([Upload](#upload)) |
 
 ### Against the simulator's recorder (opt-in)
 
@@ -318,12 +344,12 @@ main button; a new review's is *Accept all*.
   recorded opens the review.
 
 Checks against the Python reference: `AutoDetectVectorsTest` replays the
-nine golden fixtures of `firmware/tools/dataset/fixtures/autodetect`
+11 golden fixtures of `firmware/tools/dataset/fixtures/autodetect`
 (features within 1e-6, the same events, spans and holes, times within a
 frame, confidences within 0.01; also the app's FLAC reader against the
 tests' full decoder). `PhasesCrossCheckTest` replays `fixtures/labels`:
 the phases, grammar issues and derived labels `dbdata.labels` gives for
-279 label sets, which must match exactly. Opt-in, reviewed recordings for
+285 label sets, which must match exactly. Opt-in, reviewed recordings for
 the validator:
 
 ```sh
@@ -338,25 +364,35 @@ take as interrupted and reconnects to the same session. *Stop* waits 5 s
 for the take's END, then does the same.
 
 A foreground service (type `connectedDevice`) keeps the session alive with
-the screen off; its notification shows the take time and has a *Stop*
-button. The record screen keeps the display on.
+the screen off; its notification has *Stop* during a take (with the take
+time) and *Finish* (ends the session) between takes. The record screen keeps the display on.
 
-Permissions: Android 13+ *Nearby devices* (Wi-Fi, never for location) and
-*Notifications*; Android 17+ also the local network permission
-(`ACCESS_LOCAL_NETWORK`, for the stream's TCP connection); Android 10-12
-*Location* with location services on (Android needs it to join a network);
-Android 8-9 none. *Start* asks only while a required one is missing (the
-notification permission with it, so a refusal is not asked again each
-time); a refused one, or location services off on Android 10-12, stops
-*Start* with a button to the settings that fix it. A recording needs 500 MB
-free.
+Permissions the training data adds (`AndroidManifest.xml`):
+
+| Permission | Android | Asked at run time | Why |
+|---|---|---|---|
+| `NEARBY_WIFI_DEVICES` (*Nearby devices*, `neverForLocation`) | 13+ | yes | join the device's soft-AP |
+| `ACCESS_FINE_LOCATION` (10-12), with `ACCESS_COARSE_LOCATION` on 12 (*Location*, with location services on) | 10-12 | yes | join a network (on 8-11 also the BLE scan) |
+| `POST_NOTIFICATIONS` (*Notifications*) | 13+ | yes, optional (a refusal does not stop *Start*) | the recording's and the upload's notifications |
+| `ACCESS_LOCAL_NETWORK` | 17+ | yes | the stream's TCP connection to the device or the simulator |
+| `FOREGROUND_SERVICE`, `FOREGROUND_SERVICE_CONNECTED_DEVICE` | all | no | `RecorderService`, the session with the screen off |
+| `FOREGROUND_SERVICE_DATA_SYNC` | all | no | the upload as foreground work (WorkManager) |
+| `INTERNET`, `ACCESS_NETWORK_STATE`, `CHANGE_NETWORK_STATE`, `ACCESS_WIFI_STATE`, `CHANGE_WIFI_STATE` | all | no | the network request for the soft-AP, the stream, the upload |
+
+Android 8-9 asks for nothing extra (the network is joined by hand). *Start*
+asks only while a required permission is missing (the notification
+permission with it, so its refusal is not asked again each time); a refused
+one, or location services off on Android 10-12, stops *Start* with a button
+to the settings that fix it. A recording needs 500 MB free.
 
 ### Upload
 
-A saved review is uploaded on its own to a **private GitHub repository**
-(default `Tropaion/Drill_Balancer_Data`, the dataset contract's data repo,
-already bootstrapped with its template from the PC), one commit per
-recording. Recordings that still *Need review* wait; *Upload settings*
+A saved review is uploaded on its own to a **private GitHub repository**,
+one commit per recording. The repository name the app starts with
+(`UploadSettings.DEFAULT_REPO` in `upload/UploadSettingsStore.kt`) is the project's own data repo, which
+is private: anyone else sets up a data repo of their own (below) and
+enters its `owner/name` in *Upload settings*. Recordings that still *Need
+review* wait; *Upload settings*
 (the line under *New recording*) has *Upload now* for every reviewed one not
 uploaded yet (off while none waits to be sent). Each row shows its upload next to its local stage: *Not
 uploaded*, *Queued*, *Uploading 42 %*, *Uploaded* or *Upload failed* with the
@@ -372,14 +408,27 @@ phone's labels (a Retry after any other failure keeps that check). An update
 removes from the folder only files this phone committed there before; a
 file added to it on the PC stays.
 
+**Your own data repo** (once, on a PC):
+1. Create an empty **private** repository on GitHub. Keep it private: the
+   recordings' audio can hold voices and room sound.
+2. Clone it and copy the dataset template into it: in
+   `firmware/tools/dataset`, `.venv/bin/python bootstrap_repo.py <clone>`
+   (README, taxonomy, schemas and the validate Action; see
+   [the dataset README](../firmware/tools/dataset/README.md#data-repo)),
+   then commit and push. The app's *Test connection* checks that the
+   template is there, and an upload to an empty repository fails with a
+   hint to do this.
+3. The Action checks out the validator from this public repo at the tag
+   `dataset-v1`, so it needs no secret.
+
 **Token setup** (once): on GitHub *Settings > Developer settings >
 Fine-grained tokens*, a token with access to **only the data repo** and the
-permission **Contents: read and write** (nothing else; no Actions or
-Workflows permission is needed). In *Upload settings* tap *Set token* and
-paste it. The app seals it with AES-256-GCM under a key in the Android
-Keystore (DataStore "upload" holds only the ciphertext and IV); the screen
-only ever shows *Token set*, *Replace* and *Remove*, and the token appears in
-no log, message or file. *Test connection* checks that the repository exists
+permission **Contents: Read and write**. The app needs nothing else;
+*Actions: Read* is optional and not used by the app. In *Upload settings*
+tap *Set token* and paste it. The app seals it with AES-256-GCM under a key
+in the Android Keystore (DataStore "upload" holds only the ciphertext and
+IV); the screen only ever shows *Token set*, *Replace* and *Remove*, and
+the token appears in no log, message or file. *Test connection* checks that the repository exists
 and is private, that the token may write to it, that the dataset template
 (`schema/meta.v1.schema.json`) is there, and warns from 1 GB of repository
 size; it tests the saved repository (save an edited name first). GitHub
@@ -458,13 +507,15 @@ DB_MUTE_OUT=/tmp/mute_out ./gradlew testDebugUnitTest --tests "*MuteValidatorExp
 cd ../firmware/tools/dataset && .venv/bin/python -m dbdata.validate /tmp/mute_out
 ```
 
-**Live test** (opt-in, against the real repository): with a token in
+**Live test** (opt-in, against a real repository): with a token in
 `DB_GITHUB_TOKEN` and a new branch name in `DB_GITHUB_LIVE_BRANCH`,
 `GitHubLiveTest` makes that branch from main, uploads the small golden take
 to it, then a label change (a second commit), uploads again (no third
 commit), compares the blob shas read back and deletes the branch. It
-refuses main and a branch that exists. The token is no Gradle input (never
-stored by Gradle): run it with `--rerun`.
+refuses main and a branch that exists. The repository is the project's
+data repo, named in the test (`owner` and `name`); for your own, change
+those two values. The token is no Gradle input (never stored by Gradle):
+run it with `--rerun`.
 
 ```sh
 DB_GITHUB_TOKEN=github_pat_... DB_GITHUB_LIVE_BRANCH=upload-live-test \

@@ -32,7 +32,11 @@ Configuration:
   partitions, PSRAM, caches, LVGL).
 - `sdkconfig.d/*.defaults` holds one fragment per feature (`ble`, `board`,
   `main`, `recorder`, `ui`). They are applied in name order after
-  `sdkconfig.defaults`.
+  `sdkconfig.defaults`. `recorder.defaults` sets up Wi-Fi and lwIP for the
+  recorder: their buffers in PSRAM where they can be, no Wi-Fi NVS, 8
+  static RX and 8 static TX buffers, a 23360-byte TCP send buffer, the
+  Wi-Fi library code in flash (about 27 KB of IRAM left to the heap) and
+  Wi-Fi/BLE software coexistence.
 - Defaults only apply to options that are not yet in `sdkconfig`. After you
   change a defaults file, delete `sdkconfig` (and `build/`) before you build
   again.
@@ -111,14 +115,18 @@ Linux, see [tools/ble/README.md](tools/ble/README.md).
 BLE peripheral on BlueZ, with a web panel. The panel has a live copy of the
 round screen and controls for the drill pose, calibration errors, power and
 faults. The Android app can't tell it from the board, so the app can be
-tested without hardware. See [tools/sim/README.md](tools/sim/README.md).
+tested without hardware. It also runs the recorder, serving the stream on
+the PC's LAN address (or a Wi-Fi hotspot with `--rec-ap`), with scripted
+drilling scenarios and their ground truth. See
+[tools/sim/README.md](tools/sim/README.md).
 
 ### Android app
 
 The Android companion app (live view, settings, calibration, firmware
-update) is in [../app](../app/README.md). Its conformance tests read the
-headers listed under [BLE protocol](#ble-protocol), so run them after a
-protocol change.
+update, training data) is in [../app](../app/README.md). Its conformance
+tests read the headers listed under [BLE protocol](#ble-protocol) and the
+recorder's `rec_stream.h`, so run them after a protocol or stream format
+change.
 
 ## Architecture
 
@@ -219,12 +227,21 @@ line low while nothing polls it. The register decoding is host-tested; it
 clamps the gauge to 0..100 % and treats a battery voltage below 2.5 V as no
 battery, so every consumer can use the published values as they are.
 
-**imu**: a register-level QMI8658 driver: ±4 g, ±512 dps at 448.4 Hz, on-chip
-LPF, FIFO in stream mode (the LEVEL profile). The recording profiles turn the
-LPFs off: RAW448 (±4 g), RAW448_16G (±16 g, for hammer drilling) and RAW897
-(896.8 Hz, experimental). `imu_set_profile()` reconfigures the chip (about
-180 ms, a new TIMESTAMP epoch); `imu_read_fifo_ex()` also returns a read's
-raw frames with their timestamp runs.
+**imu**: a register-level QMI8658 driver with the FIFO in stream mode. Its
+profiles (`imu_profile_info()` in `imu_frame.c`; the BLE TAKE_START names
+them with `DB_REC_PROFILE_*`):
+
+| Profile | ODR | Accel / gyro range | On-chip LPF | Used for |
+|---|---|---|---|---|
+| LEVEL | 448.4 Hz | ±4 g / ±512 dps | accel 11.9 Hz, gyro 24.2 Hz | the level; also a recording of the filtered IMU (the app does not record with it) |
+| RAW448 | 448.4 Hz | ±4 g / ±512 dps | off | recordings (the app's default) |
+| RAW448_16G | 448.4 Hz | ±16 g / ±512 dps | off | recordings in hammer mode (the app picks it) |
+| RAW897 | 896.8 Hz | ±4 g / ±512 dps | off | experimental (FIFO loss about 25 % expected) |
+
+`imu_set_profile()` reconfigures the chip (about 180 ms, a new TIMESTAMP
+epoch); `imu_read_fifo_ex()` also returns a read's raw frames with their
+timestamp runs. A take's profile is set when it starts and LEVEL comes back
+when it ends.
 - Samples lost while the FIFO is in read mode are found with the TIMESTAMP
   counter and filled in by interpolation. This keeps the fusion dt fixed.
 - The real sample rate is measured against esp_timer. A rate measured once
@@ -367,6 +384,37 @@ key. You can read the angle, status and config without pairing. Config
 writes, commands, OTA and the recorder need a bonded link. A factory reset deletes all bonds, so
 every phone or PC has to pair again afterwards. The device advertises as
 `DrillBalancer-XXXX` (the last 4 hex digits of the BT MAC).
+
+The recorder service is `0x0200` (`DB_SVC_REC`). rec_ctrl takes the ops
+OPEN, CLOSE, TAKE_START (profile, microphone mask, gain 0-37 dB, `max_s`
+up to 1200 s, 0 = 300 s, take id), STOP and MARK (code and up to 40 bytes
+of text). rec_state is an 86-byte packet: version (1), state, reason, flags,
+take, elapsed and maximum time, data sent and dropped, ring fill, profile,
+Wi-Fi channel and, while the session is reachable (WAIT_CLIENT to
+DRAINING), the address, port, SSID, passphrase (both empty with flag
+NO_AP) and stream token. Status flag bit 7 (`DB_STATUS_FLAG_RECORDING`)
+is set while a recorder session is open.
+
+Write errors besides the standard ATT codes (0x05 / 0x0F: pair first; 0x0D:
+wrong length):
+
+| Code | Name | Where |
+|---|---|---|
+| 0x80 | JSON_PARSE | config: not a JSON object |
+| 0x81 | JSON_TYPE | config: a known key has the wrong type |
+| 0x82 | JSON_RANGE | config: a value or combination is out of range |
+| 0x83 | STORE | config: saving to flash failed, nothing changed |
+| 0x84 | UNKNOWN_CMD | command, rec_ctrl: unknown opcode |
+| 0x85 | BAD_ARG | command: bad mode, or FACTORY_RESET without 0xA5; rec_ctrl: a TAKE_START or MARK argument out of range |
+| 0x86 | BUSY | command: queue full; rec_ctrl: the recorder did not take the op within 500 ms (busy or not running); a calibration start while a recording session or OTA has the device |
+| 0x87 | UNAVAILABLE | ota_ctrl, ota_data: OTA not available |
+| 0x88 | REC_STATE | rec_ctrl: not in this recorder state, or an OTA update or a calibration runs |
+| 0x89 | REC_RADIO | rec_ctrl OPEN: the stream buffer could not be allocated (a soft-AP that fails later shows as rec_state CLOSING, reason AP_FAIL) |
+| 0x8A | REC_BATTERY | rec_ctrl TAKE_START: battery below 15 % without USB |
+
+Android also uses 0x88-0x8A for its own codes (GATT_PENDING,
+GATT_AUTH_FAIL, GATT_MORE), so a client maps them for rec_ctrl writes first;
+otherwise REC_RADIO reads as a failed pairing.
 
 ## Calibration
 

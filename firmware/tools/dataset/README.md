@@ -1,8 +1,9 @@
 # dbdata: the training-data contract and its tools
 
 The DrillBalancer app records takes from the device (raw IMU, both
-microphones, the level readings), labels them and uploads each one to the
-private data repo `Tropaion/Drill_Balancer_Data`. This folder defines what
+microphones, the level readings), labels them and uploads each one to a
+private GitHub data repo (each user sets up their own, see
+[app/README.md](../../../app/README.md#upload)). This folder defines what
 such a recording looks like and holds the Python package that reads,
 checks, indexes and loads it for training:
 
@@ -125,8 +126,11 @@ file. The meta/events checks run on every recording each time, and one
 malformed recording (`E_INTERNAL`) never stops the others.
 
 Setting the repo up: create the empty private repo, clone it,
-`bootstrap_repo.py <clone>`, review, commit, push. Tag the main repo
-`dataset-v1` at a commit with this folder before the first upload.
+`bootstrap_repo.py <clone>`, review, commit, push. The workflow pins the
+validator to the tag `dataset-v1` of this public repo; that tag must name a
+commit with this folder before the first upload. The phone uploads with a
+fine-grained token limited to that repo, Contents read and write (see
+[app/README.md](../../../app/README.md#upload)).
 
 ## Format
 
@@ -327,8 +331,9 @@ derive=True)` writes a complete folder and fills `meta.files` (and
 `dbdata.autodetect` labels a recording from its signals: it writes a
 complete `events.json` (`source: auto`, a `confidence` per label,
 `detector: {version, params_sha256}`) and the derived labels. The app runs
-the same algorithm in Kotlin right after a take (milestone 6), and a
-person reviews the labels there; `--write` relabels recordings on the PC
+the same algorithm in Kotlin right after a take (see
+[app/README.md](../../../app/README.md#review)), and a person reviews the
+labels there; `--write` relabels recordings on the PC
 (`review.status` becomes `auto_only`; reviewed or edited labels need
 `--force`), and validate checks that `auto_only` labels are untouched
 (`W_REVIEW_STATUS`, `W_DETECTOR`). The algorithm, step by step, is the
@@ -404,7 +409,7 @@ Known limits:
 
   motor_off, contact, breakthrough, retract and stuck stay at 1.0 up to ×3.
   The simulator's spin-up starts gently (a smoothstep from standstill);
-  whether a real motor is found earlier is for milestone 8.
+  whether a real motor is found earlier needs real takes (the board).
 - Without audio only the motor runs are found, about 60 ms (on) and 200 ms
   (off) late (contact needs the microphone).
 - Labels inside a transport gap cannot be found; a gap within about
@@ -418,7 +423,7 @@ Known limits:
   wander is not looked for in hammered holes.
 - Every number comes from the simulator: thresholds, the noise floor
   rules, the stall levels and the hammer cue must be checked on real takes
-  (milestone 8).
+  (the end-to-end runs so far used the simulator too).
 
 ## Synthetic recordings and the golden fixtures
 
@@ -442,7 +447,7 @@ its end, a stalled stream client with a small ring for a transport gap,
 and the injected wobble / wander / speech the simulator has no model
 for); `SETS` holds the evaluation and fixture sets.
 
-`fixtures/autodetect/<name>/` are eight short takes for the app's
+`fixtures/autodetect/<name>/` are eleven short takes for the app's
 `AutoDetectVectorsTest`: the recording's files (input), `spec.json`,
 `events.json` (the truth), and the detector's expected output,
 `expected.json` and `features.csv.gz` (every frame's features). The
@@ -461,7 +466,7 @@ to the export, `.venv/bin/python fixtures/finalize/make_fixtures.py`
 rewrites them; a unit test (`--check`) fails while they are stale.
 `fixtures/finalize/README.md` says what is compared.
 
-`fixtures/labels/phases.json` holds 279 label sets (the event orders of
+`fixtures/labels/phases.json` holds 285 label sets (the event orders of
 `tests/test_labels.py`, the autodetect fixtures' truth and detector labels,
 and seeded random sequences, valid and not, each with a synthetic LEVEL
 table) and what `labels.phase_segments`, `labels.grammar_state` and
