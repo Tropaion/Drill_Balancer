@@ -393,6 +393,37 @@ class BleTest(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(self.dev.snapshot()["passkey_pending"])
         self.assertFalse(self.dev.link_trusted)
 
+    async def test_forgotten_bond_is_pointed_out(self):
+        # bluetoothd asks a bonded peer to encrypt at once; a phone without the keys
+        # does not, and shows a pairing prompt instead.
+        class Hci:
+            encrypted = False
+
+            def peripheral_link(self, addr):
+                return {"encrypted": self.encrypted}
+
+        logs = []
+        self.dev.subscribe(lambda name, data: logs.append(data["msg"]) if name == "log" else None)
+        hint = lambda: [m for m in logs if "forgotten the bond" in m]
+        old = B.BOND_UNUSED_S, B.POLL_S
+        B.BOND_UNUSED_S, B.POLL_S = 0.03, 0.005
+        self.p.hci = Hci()
+        try:
+            self.connect()                              # not paired: nothing to point out
+            await asyncio.sleep(0.06)
+            self.disconnect()
+            self.connect(Paired=True, Bonded=True)
+            await asyncio.sleep(0.06)
+            self.assertEqual(len(hint()), 1)            # once per link
+            self.assertIn(f"bluetoothctl remove {PHONE_ADDR}", hint()[0])
+            self.disconnect()
+            self.p.hci.encrypted = True                 # a phone with the keys
+            self.connect(Paired=True, Bonded=True)
+            await asyncio.sleep(0.06)
+            self.assertEqual(len(hint()), 1)
+        finally:
+            B.BOND_UNUSED_S, B.POLL_S = old
+
     async def test_factory_reset_removes_only_sim_bonds(self):
         self.p.devices["/org/bluez/hci0/dev_11_22_33_44_55_66"] = {
             "Address": "11:22:33:44:55:66", "Paired": True, "Connected": False}   # the PC's keyboard

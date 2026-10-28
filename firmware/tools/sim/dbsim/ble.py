@@ -26,6 +26,10 @@ How the board's behaviour maps onto BlueZ (5.87):
   peripheral and when it gets encrypted. Authentication is inferred: with our
   DisplayOnly agent a pairing that showed a passkey is authenticated, a bond
   keeps what its pairing was, and a protected write proves it (BlueZ checked).
+- Bonds: bluetoothd asks a bonded peer to encrypt as soon as it connects
+  ("Elevating security level since LTK is available"); NimBLE never does. A
+  phone that forgot the bond answers with Android's pairing prompt on every
+  connection, which the board would not cause: the log says how to clear it.
 - Subscriptions: BlueZ calls StartNotify/StopNotify only on changes and keeps a
   bonded peer's CCCDs across reconnects (NimBLE restores them too), so they are
   remembered per peer here and restored into the device on reconnect.
@@ -112,6 +116,9 @@ PASSKEY_TIMEOUT_S = 35
 # Without the kernel's connection list: a bonded peer counts as encrypted
 # this long after connecting (bluetoothd asks it to encrypt right away).
 ASSUME_ENCRYPTED_S = 0.3
+# A bonded peer whose link is still not encrypted this long after connecting
+# has forgotten the bond (Android encrypts at once when it has the keys).
+BOND_UNUSED_S = 3.0
 POLL_S = 0.1
 
 # Kernel HCI ioctl (include/net/bluetooth/hci.h, hci_sock.h).
@@ -793,17 +800,25 @@ class BluezPeripheral:
 
     async def _poll_link(self, path: str):
         """Watches the kernel's view of the link for encryption."""
+        paired = self.devices.get(path, {}).get("Paired")
         if self.hci is None:
-            if self.devices.get(path, {}).get("Paired"):
+            if paired:
                 await asyncio.sleep(ASSUME_ENCRYPTED_S)
                 if self.link == path and self._passkey is None:
                     self._on_encrypted()
             return
+        loop = asyncio.get_running_loop()
+        hint_at = loop.time() + BOND_UNUSED_S if paired else None
         while self.link == path and not self._encrypted:   # stays encrypted until the link goes
             conn = self.hci.peripheral_link(self._link_addr)
             if conn and conn["encrypted"]:
                 self._encrypted = True
                 self._on_encrypted()
+            elif hint_at is not None and loop.time() >= hint_at:
+                hint_at = None
+                if self._passkey is None:   # not while the phone pairs again
+                    self.log(f"{self._link_addr} is bonded here but does not encrypt: the phone has "
+                             f"probably forgotten the bond. Fix: bluetoothctl remove {self._link_addr}", "W")
             await asyncio.sleep(POLL_S)
 
     async def _disconnect(self, path: str, quiet=False):

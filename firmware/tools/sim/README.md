@@ -242,6 +242,13 @@ optional `mic` 1|2).
   it. To start clean on both sides:
   - on the PC, run `bluetoothctl remove <phone address>`;
   - on the phone, forget the device.
+- **Forgotten on the phone only:** the PC keeps its half of the bond, and
+  BlueZ asks a bonded phone to encrypt as soon as it connects. The phone
+  no longer has the keys, so Android shows "Pair with DrillBalancer-XXXX?"
+  on every connection and the app cannot reconnect (the board never asks).
+  The sim log points this out after a few seconds (not when the kernel's
+  connection list is unavailable); run `bluetoothctl remove <phone
+  address>` on the PC, then pair again from the app.
 
 ## Recorder
 
