@@ -3,8 +3,8 @@
 A clip-on drill level. The device sits on the back of the drill with its round
 screen facing you; the bit points along -Z of the board. It shows the drill's
 elevation and yaw (wall mode), a bubble (floor and ceiling mode), or the error
-against a target angle (angle mode). Over BLE it streams the angles, takes
-settings and commands, and accepts firmware updates.
+against a target angle (angle mode), all on one crosshair. Over BLE it streams
+the angles, takes settings and commands, and accepts firmware updates.
 
 Hardware: Waveshare ESP32-S3-Touch-AMOLED-1.75-B (ESP32-S3R8, 16 MB flash,
 8 MB octal PSRAM, CO5300 466x466 AMOLED, CST9217 touch, QMI8658 IMU, AXP2101

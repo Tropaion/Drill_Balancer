@@ -236,6 +236,7 @@ static void base_state(void)
     g_snap.ble_connected = true;
     g_snap.reading = wall(0.2f, LEVEL_STATUS_ON_TARGET, true, 0.1f, LEVEL_STATUS_ON_TARGET,
                           false);
+    g_snap.zero_set = true;
     ui_cfg_refresh();
 }
 
@@ -508,6 +509,7 @@ int main(int argc, char **argv)
 
     base_state();
     g_snap.reading = wall(-88.8f, LEVEL_STATUS_OFF, false, 0.0f, LEVEL_STATUS_OFF, false);
+    g_snap.zero_set = false;
     render("04_wall_no_yaw_worst_width");
 
     base_state();
@@ -524,6 +526,9 @@ int main(int argc, char **argv)
 
     base_state();
     g_snap.reading = angle_r(46.3f, 45.0f, LEVEL_STATUS_NEAR);
+    g_snap.reading.yaw_valid = true;    // zeroed: the dot also moves left/right
+    g_snap.reading.yaw_deg = -0.4f;
+    g_snap.reading.yaw_status = LEVEL_STATUS_ON_TARGET;
     render("08_angle_near");
 
     base_state();

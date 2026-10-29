@@ -211,8 +211,10 @@ class PanelTest(DeviceTest):
         self.settle(3000)
         r = self.snap()["reading"]
         self.assertTrue(r["yaw_valid"])
-        self.assertEqual(self.snap()["ui"]["yaw_tenths"], round(r["yaw"] * 10))
-        self.assertLess(self.snap()["ui"]["yaw_tenths"], -100)
+        tenths = round(abs(r["yaw"]) * 10)
+        self.assertGreater(tenths, 100)
+        self.assertEqual(self.snap()["ui"]["sub_yaw"].split("  ")[0],
+                         f"L {tenths // 10}.{tenths % 10}°")
 
     def test_state_is_json_without_nan(self):
         st = self.panel.state()

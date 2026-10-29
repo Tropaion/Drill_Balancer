@@ -80,11 +80,6 @@ function fmtFixed(v, dec, plus, suffix = "") {
 const fmtDeg = (v, plus = false) => fmtFixed(v, 1, plus, "°");
 const saneNear = (n) => (n > 0.01 ? n : 1);
 
-function yawOffset(yaw, near, halfW) {
-  if (!Number.isFinite(yaw)) return 0;
-  return Math.round(Math.max(-halfW, Math.min(halfW, (yaw * halfW) / 3 / saneNear(near))));
-}
-
 function bubbleOffset(bx, by, near, radius, bubbleR) {
   if (!Number.isFinite(bx) || !Number.isFinite(by)) return [0, 0];
   const ppd = radius / 3 / saneNear(near);
@@ -161,9 +156,9 @@ function text(str, x, y, px, color, opts = {}) {
   return w;
 }
 
-function textWidth(str, px, num = false) {
+function textWidth(str, px) {
   ctx.save();
-  ctx.font = font(px, num ? 600 : 500);
+  ctx.font = font(px);
   const w = ctx.measureText(str).width;
   ctx.restore();
   return w;
@@ -329,7 +324,6 @@ function gearIcon(cx, cy, r, color) {
 
 function drawLevel(s) {
   const cfg = s.settings, r = s.reading, ui = s.ui;
-  const mode = r.mode < 3 ? r.mode : 0;
   const [dx, dy] = burninOffset(Math.floor(s.now_ms / 180000), 4);
   ctx.save();
   ctx.translate(dx, dy);
@@ -340,61 +334,49 @@ function drawLevel(s) {
     const v = Math.round(ui.ring * 270);
     if (v > 0) arc(CX, CX, SAFE_R, 12, 135, 135 + v, statusColor(r.status));
   }
-  text(ui.mode_title, CX, 52 + 14, 24, COL.grey);
+  text(ui.title, CX, 52 + 14, 24, COL.grey);
 
   if (!s.imu_ok) {
     warnIcon(CX, CX - 10 - 30, 44, COL.amber);
     text("NO SENSOR", CX, CX - 10 + 28, 48, COL.amber);
-  } else if (mode === 1) {
-    drawFloor(r, cfg);
-  } else if (mode === 2) {
-    drawAngle(r, cfg);
   } else {
-    drawWall(r, cfg, ui);
+    drawAim(r, cfg, ui);
   }
   drawStatusBar(s);
   ctx.restore();
 }
 
-function drawWall(r, cfg, ui) {
+// ui_level.c: one crosshair for every mode. Floor: the dot is the bubble;
+// wall and angle: the aim point (ui_dot_deg).
+function drawAim(r, cfg, ui) {
   const c = statusColor(r.status);
-  const value = fmtDeg(Math.abs(r.elevation));
-  const vw = Math.min(textWidth(value, 112, true), 330);
-  const aw = ui.wall_arrow ? 44 + 14 : 0;
-  const x0 = CX - (aw + vw) / 2;
-  if (ui.wall_arrow) chevron(x0, CX - 24, ui.wall_arrow > 0, c);
-  text(value, x0 + aw + vw / 2, CX - 24, 112, c, {num: true, maxW: 330});
-
-  if (!r.yaw_valid) return;
-  const top = CX + 92 - 55;
-  const yc = statusColor(r.yaw_status);
-  pill(CX - 120, top + 15, 240, 6, "#4A4A4A");
-  pill(CX - 2, top + 5, 4, 26, COL.grey);
-  pill(CX + yawOffset(r.yaw, cfg.near, 120) - 7, top, 14, 36, yc);
-  const t = ui.yaw_tenths;
-  const deg = fmtDeg(Math.abs(r.yaw));
-  text(t === 0 ? deg : `${t > 0 ? "R" : "L"} ${deg}`, CX, top + 42 + 14, 24, yc);
-  if (r.yaw_stale) text("Yaw drifts: tap to re-zero", CX, top + 74 + 10, 16, COL.amber);
-}
-
-function drawFloor(r, cfg) {
-  const c = statusColor(r.status);
-  const vx = CX, vy = CX - 22, R = 110, BR = 18;
+  const vx = CX, vy = CX - 40, R = 100, DR = 16;
   circle(vx, vy, R - 1, "#5A5A5A", 2);
   pill(vx - (R - 4), vy - 1, 2 * R - 8, 2, COL.dark);
   pill(vx - 1, vy - (R - 4), 2, 2 * R - 8, COL.dark);
-  circle(vx, vy, Math.round(R / 3) + BR - 1, "#8A6200", 2);
+  circle(vx, vy, Math.round(R / 3) + DR - 1, "#8A6200", 2);
   const ppd = R / 3 / saneNear(cfg.near);
-  circle(vx, vy, Math.round(cfg.tol * ppd) + BR - 1, "#00873F", 2);
-  const [bx, by] = bubbleOffset(r.bubble_x, r.bubble_y, cfg.near, R, BR + 2);
-  circle(vx + bx, vy + by, BR, null, 0, c);
-  text(fmtDeg(r.deviation), CX, CX + 124, 48, c);
-}
+  circle(vx, vy, Math.round(cfg.tol * ppd) + DR - 1, "#00873F", 2);
+  const [dx, dy] = bubbleOffset(ui.dot_x, ui.dot_y, cfg.near, R, DR + 2);
+  circle(vx + dx, vy + dy, DR, null, 0, statusColor(ui.dot_status));
 
-function drawAngle(r, cfg) {
-  text(`TARGET  ${fmtDeg(cfg.target)}`, CX, CX - 112, 24, COL.grey);
-  text(fmtDeg(r.elevation), CX, CX - 24, 112, COL.white, {num: true, maxW: 360});
-  text(fmtDeg(r.deviation, true), CX, CX + 76, 48, statusColor(r.status));
+  const value = fmtDeg(Math.abs(r.deviation));
+  const vw = textWidth(value, 48);
+  const aw = ui.arrow ? 44 + 10 : 0;
+  const x0 = CX - (aw + vw) / 2;
+  if (ui.arrow) chevron(x0, CX + 92, ui.arrow > 0, c);
+  text(value, x0 + aw + vw / 2, CX + 92, 48, c);
+
+  // ui_aim_sub (ui_logic.c): the yaw, then a hint or the current angle
+  const parts = [];
+  if (ui.sub_yaw) parts.push([ui.sub_yaw, ui.sub_stale ? COL.amber : statusColor(r.yaw_status)]);
+  if (ui.sub_info) parts.push([ui.sub_info, COL.grey]);
+  const widths = parts.map(([t]) => textWidth(t, 24));
+  let x = CX - (widths.reduce((a, b) => a + b, 0) + 16 * Math.max(0, parts.length - 1)) / 2;
+  parts.forEach(([t, col], i) => {
+    text(t, x + widths[i] / 2, CX + 136, 24, col);
+    x += widths[i] + 16;
+  });
 }
 
 function drawStatusBar(s) {

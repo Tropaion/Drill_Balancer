@@ -59,19 +59,108 @@ static void test_fmt_truncates_safely(void)
     TEST_ASSERT_EQUAL('\0', small[3]);
 }
 
-static void test_wall_arrow(void)
+static void test_aim_arrow(void)
 {
-    level_reading_t r = {.elevation_deg = 3.0f, .status = LEVEL_STATUS_OFF};
-    TEST_ASSERT_EQUAL(1, ui_wall_arrow(&r));
-    r.elevation_deg = -0.6f;
+    level_reading_t r = {.deviation_deg = 3.0f, .status = LEVEL_STATUS_OFF};
+    TEST_ASSERT_EQUAL(1, ui_aim_arrow(&r));
+    r.deviation_deg = -0.6f;
     r.status = LEVEL_STATUS_NEAR;
-    TEST_ASSERT_EQUAL(-1, ui_wall_arrow(&r));
+    TEST_ASSERT_EQUAL(-1, ui_aim_arrow(&r));
     r.status = LEVEL_STATUS_ON_TARGET;
-    TEST_ASSERT_EQUAL(0, ui_wall_arrow(&r));
+    TEST_ASSERT_EQUAL(0, ui_aim_arrow(&r));
     // Off target but it would read "0.0": no arrow either (tolerance below 0.05).
     r.status = LEVEL_STATUS_NEAR;
-    r.elevation_deg = -0.04f;
-    TEST_ASSERT_EQUAL(0, ui_wall_arrow(&r));
+    r.deviation_deg = -0.04f;
+    TEST_ASSERT_EQUAL(0, ui_aim_arrow(&r));
+    // Floor: the tilt is a magnitude, the bubble shows the direction.
+    r.mode = LEVEL_MODE_FLOOR;
+    r.deviation_deg = 3.0f;
+    TEST_ASSERT_EQUAL(0, ui_aim_arrow(&r));
+}
+
+static void test_dot_is_bubble_on_floor_and_aim_point_otherwise(void)
+{
+    float x, y;
+    level_reading_t r = {.mode = LEVEL_MODE_FLOOR, .bubble_x_deg = 1.0f, .bubble_y_deg = -2.0f,
+                         .deviation_deg = 2.2f, .yaw_valid = true, .yaw_deg = 5.0f};
+    ui_dot_deg(&r, &x, &y);
+    TEST_ASSERT_EQUAL_FLOAT(1.0f, x);
+    TEST_ASSERT_EQUAL_FLOAT(-2.0f, y);
+    // Wall: up = bit too high, right = turned right since the zero.
+    r.mode = LEVEL_MODE_WALL;
+    r.deviation_deg = 1.5f;
+    ui_dot_deg(&r, &x, &y);
+    TEST_ASSERT_EQUAL_FLOAT(5.0f, x);
+    TEST_ASSERT_EQUAL_FLOAT(1.5f, y);
+    // Angle: the error against the target; no yaw without a zero.
+    r.mode = LEVEL_MODE_ANGLE;
+    r.deviation_deg = -0.8f;
+    r.yaw_valid = false;
+    ui_dot_deg(&r, &x, &y);
+    TEST_ASSERT_EQUAL_FLOAT(0.0f, x);
+    TEST_ASSERT_EQUAL_FLOAT(-0.8f, y);
+}
+
+static void test_dot_status_is_the_worse_axis(void)
+{
+    level_reading_t r = {.mode = LEVEL_MODE_WALL, .status = LEVEL_STATUS_ON_TARGET,
+                         .yaw_valid = true, .yaw_status = LEVEL_STATUS_NEAR};
+    TEST_ASSERT_EQUAL(LEVEL_STATUS_NEAR, ui_dot_status(&r));
+    r.status = LEVEL_STATUS_OFF;
+    TEST_ASSERT_EQUAL(LEVEL_STATUS_OFF, ui_dot_status(&r));
+    // A stale yaw (the line says re-zero) does not colour the dot.
+    r.status = LEVEL_STATUS_ON_TARGET;
+    r.yaw_stale = true;
+    TEST_ASSERT_EQUAL(LEVEL_STATUS_ON_TARGET, ui_dot_status(&r));
+    r.yaw_stale = false;
+    // Yaw only counts once it is valid, and never on the floor.
+    r.status = LEVEL_STATUS_ON_TARGET;
+    r.yaw_valid = false;
+    r.yaw_status = LEVEL_STATUS_OFF;
+    TEST_ASSERT_EQUAL(LEVEL_STATUS_ON_TARGET, ui_dot_status(&r));
+    r.yaw_valid = true;
+    r.mode = LEVEL_MODE_FLOOR;
+    TEST_ASSERT_EQUAL(LEVEL_STATUS_ON_TARGET, ui_dot_status(&r));
+}
+
+static void test_aim_sub_line(void)
+{
+    ui_aim_sub_t sub;
+    level_reading_t r = {.elevation_deg = 46.3f, .yaw_valid = true, .yaw_deg = 1.24f};
+    ui_aim_sub(&r, LEVEL_MODE_WALL, true, &sub);
+    TEST_ASSERT_EQUAL_STRING("R 1.2°", sub.yaw);
+    TEST_ASSERT_EQUAL_STRING("", sub.info);
+    TEST_ASSERT_FALSE(sub.yaw_stale);
+    ui_aim_sub(&r, LEVEL_MODE_ANGLE, true, &sub);
+    TEST_ASSERT_EQUAL_STRING("now 46.3°", sub.info);
+    // Stale: the warning, and no current angle next to it.
+    r.yaw_stale = true;
+    r.yaw_deg = -6.4f;
+    ui_aim_sub(&r, LEVEL_MODE_ANGLE, true, &sub);
+    TEST_ASSERT_EQUAL_STRING("L 6.4°  re-zero", sub.yaw);
+    TEST_ASSERT_EQUAL_STRING("", sub.info);
+    TEST_ASSERT_TRUE(sub.yaw_stale);
+    // No zero: the hint on the wall; nothing below the floor's number.
+    r = (level_reading_t){0};
+    ui_aim_sub(&r, LEVEL_MODE_WALL, false, &sub);
+    TEST_ASSERT_EQUAL_STRING("", sub.yaw);
+    TEST_ASSERT_EQUAL_STRING("Tap to zero for left/right", sub.info);
+    // Zeroed with the bit near vertical: yaw stays invalid, tapping again
+    // would not help, so no hint.
+    ui_aim_sub(&r, LEVEL_MODE_WALL, true, &sub);
+    TEST_ASSERT_EQUAL_STRING("", sub.info);
+    r.yaw_valid = true;
+    ui_aim_sub(&r, LEVEL_MODE_FLOOR, true, &sub);
+    TEST_ASSERT_EQUAL_STRING("", sub.yaw);
+    TEST_ASSERT_EQUAL_STRING("", sub.info);
+}
+
+static void test_level_title(void)
+{
+    ui_level_title(LEVEL_MODE_ANGLE, 45.0f, buf, sizeof(buf));
+    TEST_ASSERT_EQUAL_STRING("ANGLE  45.0°", buf);
+    ui_level_title(LEVEL_MODE_WALL, 45.0f, buf, sizeof(buf));
+    TEST_ASSERT_EQUAL_STRING("WALL", buf);
 }
 
 static void test_ring_fraction(void)
@@ -112,15 +201,6 @@ static void test_bubble_clamped_inside_view_keeping_direction(void)
     ui_bubble_offset(NAN, 1.0f, 2.0f, 120.0f, 20.0f, &x, &y);
     TEST_ASSERT_EQUAL_INT32(0, x);
     TEST_ASSERT_EQUAL_INT32(0, y);
-}
-
-static void test_yaw_offset(void)
-{
-    TEST_ASSERT_EQUAL_INT32(40, ui_yaw_offset(2.0f, 2.0f, 120));
-    TEST_ASSERT_EQUAL_INT32(-20, ui_yaw_offset(-1.0f, 2.0f, 120));
-    TEST_ASSERT_EQUAL_INT32(120, ui_yaw_offset(50.0f, 2.0f, 120));
-    TEST_ASSERT_EQUAL_INT32(-120, ui_yaw_offset(-50.0f, 2.0f, 120));
-    TEST_ASSERT_EQUAL_INT32(0, ui_yaw_offset(NAN, 2.0f, 120));
 }
 
 static void test_burnin_offsets_bounded_and_moving(void)
@@ -630,11 +710,14 @@ int main(void)
     RUN_TEST(test_fmt_deg_rounds_and_never_shows_minus_zero);
     RUN_TEST(test_fmt_fixed_decimals_saturation_and_nan);
     RUN_TEST(test_fmt_truncates_safely);
-    RUN_TEST(test_wall_arrow);
+    RUN_TEST(test_aim_arrow);
+    RUN_TEST(test_dot_is_bubble_on_floor_and_aim_point_otherwise);
+    RUN_TEST(test_dot_status_is_the_worse_axis);
+    RUN_TEST(test_aim_sub_line);
+    RUN_TEST(test_level_title);
     RUN_TEST(test_ring_fraction);
     RUN_TEST(test_bubble_scale_and_axes);
     RUN_TEST(test_bubble_clamped_inside_view_keeping_direction);
-    RUN_TEST(test_yaw_offset);
     RUN_TEST(test_burnin_offsets_bounded_and_moving);
     RUN_TEST(test_battery_level_and_banner);
     RUN_TEST(test_tolerance_steps_and_limits);

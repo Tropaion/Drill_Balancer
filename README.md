@@ -36,6 +36,8 @@ training data (raw IMU and both microphones) for a future on-device model.
     zero, for horizontal holes.
   - **Floor / ceiling**: a 2D bubble for vertical holes, bit down or bit up.
   - **Angle**: elevation against a target angle (default 45°).
+  - Every mode shows a crosshair. On wall and angle the dot is where the bit
+    points; steer it into the centre.
 - **Tolerance colours**: green within the tolerance (default 0.5°), amber
   within the near band (default 2.0°), white outside.
 - **Tap to zero** on the screen or in the app. Yaw comes from the gyro and
@@ -202,11 +204,16 @@ Full guide: [Getting Started](https://github.com/Tropaion/Drill_Balancer/wiki/Ge
 | Touch during a recorded take | Logged in the recording, nothing else; hold the REC pill 2 s to stop the take | Same |
 
 **Modes**
-- *Wall*: number = elevation, chevron = bit points up or down, bar = left/right
-  yaw. "Yaw drifts: tap to re-zero" appears 60 s after the zero.
-- *Floor / ceiling*: the bubble moves towards the higher side; the number is
-  the total tilt.
-- *Angle*: shows the target, the elevation and the signed difference.
+- *Wall*: the dot is where the bit points: above the centre when it points
+  too high, right of it when it has turned right since the zero (left/right
+  needs a zero; until then the screen says "Tap to zero for left/right").
+  Below: the error with a chevron for up or down, then the yaw; "re-zero"
+  appears 60 s after the zero.
+- *Floor / ceiling*: the dot is a bubble and moves towards the higher side;
+  the number is the total tilt.
+- *Angle*: the title shows the target. The dot and the number work as on the
+  wall, against the target; below them the yaw (after a zero) and the
+  current angle.
 
 **Calibration** ([Calibration](https://github.com/Tropaion/Drill_Balancer/wiki/Calibration))
 - Do the sensor calibration first, then the mount calibration. A new sensor

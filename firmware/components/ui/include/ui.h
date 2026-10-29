@@ -8,9 +8,12 @@
 //
 // Screens:
 // - Level: one view per mode (swipe left/right = APP_CMD_NEXT_MODE),
-//   tap = APP_CMD_ZERO, long press = settings. Big numbers, colour by status
-//   (green on target, amber near, white off), bubble for floor mode, yaw
-//   bar with stale warning for wall mode, battery %, charging and BLE icons.
+//   tap = APP_CMD_ZERO, long press = settings. One crosshair for every mode,
+//   colour by status (green on target, amber near, white off): on floor the
+//   dot is a bubble, on wall and angle it is where the bit points (up = too
+//   high, right = turned right since the zero). Below it the error, then yaw
+//   (wall, with a stale warning) or the current angle; battery %, charging
+//   and BLE icons.
 // - Settings: tolerance, target angle, brightness, auto-off times, BLE,
 //   "Calibrate mount", "Calibrate sensor", clear zero, firmware version.
 // - Calibration guides: mount (bit in a hole, Start, roll the drill +-45

@@ -26,25 +26,47 @@ void ui_fmt_deg(char *buf, size_t len, float deg, bool show_plus);
 // Elevation rounded to tenths of a degree: what the display shows.
 int32_t ui_tenths(float deg);
 
-// Wall mode arrow: +1 bit above horizontal, -1 below, 0 none (on target or
-// it would read 0.0).
-int ui_wall_arrow(const level_reading_t *r);
+// Arrow next to the wall and angle numbers: +1 the bit points too high, -1
+// too low (deviation_deg), 0 none (on target, it would read 0.0, or FLOOR).
+int ui_aim_arrow(const level_reading_t *r);
+
+// The crosshair dot in degrees on screen axes (+x right, +y up). FLOOR: the
+// bubble, which moves to the higher side. WALL and ANGLE: the aim point, up
+// when the bit points too high (deviation_deg), right when it has turned
+// right since the zero (yaw_deg; 0 while yaw is not valid).
+void ui_dot_deg(const level_reading_t *r, float *x_deg, float *y_deg);
+
+// The line under the crosshair's number. yaw: the yaw on WALL and ANGLE
+// while it is valid, "R 1.2°" / "L 1.2°" / "0.0°", plus "  re-zero" once
+// stale (then shown amber, else in yaw_status's colour). info: "Tap to zero
+// for left/right" on WALL without a zero, "now 46.3°" on ANGLE (not next to
+// a stale yaw, for width). Empty strings are not shown.
+typedef struct {
+    char yaw[32];
+    char info[32];
+    bool yaw_stale;
+} ui_aim_sub_t;
+void ui_aim_sub(const level_reading_t *r, level_mode_t mode, bool zero_set, ui_aim_sub_t *out);
+
+// The level screen's title: the mode, on ANGLE with the target ("ANGLE  45.0°").
+void ui_level_title(level_mode_t mode, float target_deg, char *buf, size_t len);
+
+// The dot's colour status: on WALL and ANGLE the worse of the elevation's
+// and the yaw's (while yaw is valid and not stale); on FLOOR the bubble's.
+level_status_t ui_dot_status(const level_reading_t *r);
 
 // Fill of the status ring: 1 at zero deviation, 0 at 3 * near_deg or more.
 float ui_ring_fraction(float deviation_deg, float near_deg);
 
-// Pixels per degree of the floor bubble: near_deg maps to a third of the
-// view radius.
+// Pixels per degree of the crosshair: near_deg maps to a third of the view
+// radius.
 float ui_bubble_ppd(float near_deg, float radius_px);
 
-// Bubble centre offset in pixels (LVGL axes: x right, y down), clamped so
-// the bubble stays inside the view of radius radius_px.
-void ui_bubble_offset(float bubble_x_deg, float bubble_y_deg, float near_deg, float radius_px,
+// Dot centre offset in pixels (LVGL axes: x right, y down) for a dot at
+// (x_deg, y_deg) on screen axes (+y up, ui_dot_deg()), clamped so the dot
+// stays inside the view of radius radius_px.
+void ui_bubble_offset(float x_deg, float y_deg, float near_deg, float radius_px,
                       float bubble_r_px, int32_t *x, int32_t *y);
-
-// Yaw marker offset from the centre of a bar of half width half_w_px;
-// near_deg maps to a third of it. Right (positive yaw) is positive.
-int32_t ui_yaw_offset(float yaw_deg, float near_deg, int32_t half_w_px);
 
 // Burn-in shift for step n (cycles through a small pattern, |d| <= amp).
 void ui_burnin_offset(uint32_t step, int32_t amp, int32_t *dx, int32_t *dy);

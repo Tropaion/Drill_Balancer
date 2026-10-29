@@ -97,7 +97,7 @@ Open <http://127.0.0.1:8765>.
 the firmware's state the way `components/ui` draws it:
 - the wall, floor and angle views, with green, amber and white from the same
   status flags;
-- the yaw bar, the battery, charging and BLE icons;
+- the crosshair's dot and the yaw line, the battery, charging and BLE icons;
 - the low-battery banner and the ZERO toast;
 - the calibration guides;
 - the pairing passkey and OTA progress overlays;

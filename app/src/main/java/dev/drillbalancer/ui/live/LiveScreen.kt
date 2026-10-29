@@ -149,7 +149,7 @@ private fun YawBar(state: LiveUiState, angle: () -> AnglePacket?) {
         val half = size.width / 2 - 8.dp.toPx()
         drawLine(Dark, Offset(center.x - half, mid), Offset(center.x + half, mid), 6.dp.toPx(), StrokeCap.Round)
         drawLine(Grey, Offset(center.x, mid - 10.dp.toPx()), Offset(center.x, mid + 10.dp.toPx()), 2.dp.toPx())
-        // ui_yaw_offset(): near maps to a third of the half width
+        // near maps to a third of the half width, as on the crosshair (ui_bubble_ppd)
         val x = (a.yawDeg * half / 3f / saneNear(state.nearDeg)).coerceIn(-half, half)
         val c = colors.of(levelStatusFor(a.yawDeg, state.toleranceDeg, state.nearDeg))
         drawLine(c, Offset(center.x + x, 2.dp.toPx()), Offset(center.x + x, size.height - 2.dp.toPx()), 10.dp.toPx(), StrokeCap.Round)

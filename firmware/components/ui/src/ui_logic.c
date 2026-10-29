@@ -69,13 +69,66 @@ int32_t ui_tenths(float deg)
     return (int32_t)lroundf(t);
 }
 
-int ui_wall_arrow(const level_reading_t *r)
+int ui_aim_arrow(const level_reading_t *r)
 {
-    if (r->status == LEVEL_STATUS_ON_TARGET) {
+    if (r->mode == LEVEL_MODE_FLOOR || r->status == LEVEL_STATUS_ON_TARGET) {
         return 0;
     }
-    int32_t t = ui_tenths(r->elevation_deg);
+    int32_t t = ui_tenths(r->deviation_deg);
     return t > 0 ? 1 : (t < 0 ? -1 : 0);
+}
+
+void ui_dot_deg(const level_reading_t *r, float *x_deg, float *y_deg)
+{
+    if (r->mode == LEVEL_MODE_FLOOR) {
+        *x_deg = r->bubble_x_deg;
+        *y_deg = r->bubble_y_deg;
+    } else {
+        *x_deg = r->yaw_valid ? r->yaw_deg : 0.0f;
+        *y_deg = r->deviation_deg;
+    }
+}
+
+void ui_aim_sub(const level_reading_t *r, level_mode_t mode, bool zero_set, ui_aim_sub_t *out)
+{
+    out->yaw[0] = '\0';
+    out->info[0] = '\0';
+    out->yaw_stale = false;
+    char deg[16];
+    bool yaw = mode != LEVEL_MODE_FLOOR && r->yaw_valid;
+    if (yaw) {
+        out->yaw_stale = r->yaw_stale;
+        ui_fmt_deg(deg, sizeof(deg), fabsf(r->yaw_deg), false);
+        int32_t t = ui_tenths(r->yaw_deg);
+        snprintf(out->yaw, sizeof(out->yaw), "%s%s%s", t > 0 ? "R " : (t < 0 ? "L " : ""), deg,
+                 r->yaw_stale ? "  re-zero" : "");
+    }
+    if (mode == LEVEL_MODE_WALL && !zero_set) {
+        snprintf(out->info, sizeof(out->info), "Tap to zero for left/right");
+    } else if (mode == LEVEL_MODE_ANGLE && !(yaw && r->yaw_stale)) {
+        ui_fmt_deg(deg, sizeof(deg), r->elevation_deg, false);
+        snprintf(out->info, sizeof(out->info), "now %s", deg);
+    }
+}
+
+void ui_level_title(level_mode_t mode, float target_deg, char *buf, size_t len)
+{
+    if (mode != LEVEL_MODE_ANGLE) {
+        snprintf(buf, len, "%s", ui_mode_title(mode));
+        return;
+    }
+    char deg[16];
+    ui_fmt_deg(deg, sizeof(deg), target_deg, false);
+    snprintf(buf, len, "%s  %s", ui_mode_title(mode), deg);
+}
+
+level_status_t ui_dot_status(const level_reading_t *r)
+{
+    if (r->mode == LEVEL_MODE_FLOOR || !r->yaw_valid || r->yaw_stale) {
+        return r->status;
+    }
+    // level_status_t is ordered ON_TARGET < NEAR < OFF: the larger is worse.
+    return r->yaw_status > r->status ? r->yaw_status : r->status;
 }
 
 static float sane_near(float near_deg)
@@ -98,18 +151,18 @@ float ui_bubble_ppd(float near_deg, float radius_px)
     return radius_px / 3.0f / sane_near(near_deg);
 }
 
-void ui_bubble_offset(float bubble_x_deg, float bubble_y_deg, float near_deg, float radius_px,
+void ui_bubble_offset(float x_deg, float y_deg, float near_deg, float radius_px,
                       float bubble_r_px, int32_t *x, int32_t *y)
 {
     *x = 0;
     *y = 0;
-    if (!isfinite(bubble_x_deg) || !isfinite(bubble_y_deg)) {
+    if (!isfinite(x_deg) || !isfinite(y_deg)) {
         return;
     }
     float ppd = ui_bubble_ppd(near_deg, radius_px);
-    float px = bubble_x_deg * ppd;
+    float px = x_deg * ppd;
     // TODO(hw): board +Y assumed to be screen up; LVGL y grows downwards.
-    float py = -bubble_y_deg * ppd;
+    float py = -y_deg * ppd;
     float lim = fmaxf(0.0f, radius_px - bubble_r_px);
     float d = hypotf(px, py);
     if (d > lim) {
@@ -120,16 +173,6 @@ void ui_bubble_offset(float bubble_x_deg, float bubble_y_deg, float near_deg, fl
     }
     *x = (int32_t)lroundf(px);
     *y = (int32_t)lroundf(py);
-}
-
-int32_t ui_yaw_offset(float yaw_deg, float near_deg, int32_t half_w_px)
-{
-    if (!isfinite(yaw_deg)) {
-        return 0;
-    }
-    float hw = (float)half_w_px;
-    float v = yaw_deg * hw / 3.0f / sane_near(near_deg);
-    return (int32_t)lroundf(fmaxf(-hw, fminf(hw, v)));
 }
 
 void ui_burnin_offset(uint32_t step, int32_t amp, int32_t *dx, int32_t *dy)
