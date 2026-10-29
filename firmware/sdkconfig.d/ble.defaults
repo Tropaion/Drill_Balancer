@@ -43,3 +43,6 @@ CONFIG_BT_NIMBLE_BAS_SERVICE=n
 CONFIG_BT_NIMBLE_SVC_GAP_DEVICE_NAME="DrillBalancer"
 # NimBLE logs warnings and errors only (INFO is very chatty)
 CONFIG_BT_NIMBLE_LOG_LEVEL_WARNING=y
+# NimBLE host allocations (mbufs, GATT and security state) in PSRAM: in
+# internal RAM they took most of what Wi-Fi needs during a recording session.
+CONFIG_BT_NIMBLE_MEM_ALLOC_MODE_EXTERNAL=y

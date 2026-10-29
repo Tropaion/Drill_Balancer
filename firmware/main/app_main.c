@@ -128,7 +128,7 @@ void app_main(void)
         ESP_LOGE(TAG, "I2C init: %s", esp_err_to_name(err));
     }
 
-    bool display_ok = bsp_display_start() != NULL;
+    bool display_ok = ui_display_start() == ESP_OK;
     if (display_ok) {
         err = power_set_brightness(settings.brightness_pct);
         if (err != ESP_OK) {

@@ -1,4 +1,4 @@
 # Boot sequence (main/app_main.c): app_main runs settings/NVS init,
-# bsp_display_start, ui_init (LVGL object creation) and nimble_port_init on
+# ui_display_start, ui_init (LVGL object creation) and nimble_port_init on
 # the main task before returning (default stack 3584).
 CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192

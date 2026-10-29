@@ -30,7 +30,12 @@
 extern "C" {
 #endif
 
-// Call once after bsp_display_start(), with the display lock NOT held.
+// Starts the display, touch and the LVGL task (bsp_display_start() with
+// small draw buffers in internal RAM, see ui_display.c). Call once, before
+// ui_init(); the BSP's display lock and brightness calls work afterwards.
+esp_err_t ui_display_start(void);
+
+// Call once after ui_display_start(), with the display lock NOT held.
 esp_err_t ui_init(void);
 
 // Stores a settings edit that is still waiting for the 1 s save debounce.

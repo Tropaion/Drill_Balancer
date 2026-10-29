@@ -1,0 +1,6 @@
+# Internal RAM is scarce and NimBLE, the display's DMA and Wi-Fi need it:
+# plain malloc() goes to PSRAM first, as in Waveshare's factory firmware for
+# this board. Safe for ISRs too: with CONFIG_SPIRAM_XIP_FROM_PSRAM
+# (sdkconfig.defaults) a flash write does not disable the cache, so PSRAM
+# stays readable meanwhile (api-guides/external-ram.rst).
+CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=0

@@ -31,12 +31,17 @@ Configuration:
 - `sdkconfig.defaults` holds the board-wide options (target, flash and
   partitions, PSRAM, caches, LVGL).
 - `sdkconfig.d/*.defaults` holds one fragment per feature (`ble`, `board`,
-  `main`, `recorder`, `ui`). They are applied in name order after
+  `main`, `memory`, `recorder`, `ui`). They are applied in name order after
   `sdkconfig.defaults`. `recorder.defaults` sets up Wi-Fi and lwIP for the
   recorder: their buffers in PSRAM where they can be, no Wi-Fi NVS, 8
   static RX and 8 static TX buffers, a 23360-byte TCP send buffer, the
   Wi-Fi library code in flash (about 27 KB of IRAM left to the heap) and
   Wi-Fi/BLE software coexistence.
+- Internal RAM is the tight resource. `memory.defaults` sends plain
+  `malloc()` to PSRAM first (as Waveshare's factory firmware does),
+  `ble.defaults` puts NimBLE's allocations there too, and the display's draw
+  buffers stay small and internal (`components/ui/src/ui_display.c` says
+  why).
 - Defaults only apply to options that are not yet in `sdkconfig`. After you
   change a defaults file, delete `sdkconfig` (and `build/`) before you build
   again.
