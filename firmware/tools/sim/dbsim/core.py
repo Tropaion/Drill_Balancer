@@ -12,6 +12,7 @@ import json
 import os
 import shutil
 import subprocess
+import time
 from array import array
 from pathlib import Path
 
@@ -138,10 +139,15 @@ def build_lib(quiet: bool = True) -> Path:
         gen = ["-G", "Ninja"] if shutil.which("ninja", path=env["PATH"]) else []
         subprocess.run([cmake, "-S", str(CORE_DIR), "-B", str(BUILD_DIR), *gen],
                        env=env, check=True, stdout=out)
+    started = time.time()
     r = subprocess.run([cmake, "--build", str(BUILD_DIR)], env=env,
                        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
     if r.returncode != 0:
         raise RuntimeError("building libdbsim.so failed:\n" + r.stdout)
+    # Current as of the build's start, also when only a file it does not
+    # compile changed (_sources() takes whole components): Ninja leaves the
+    # library alone then, and lib_is_stale() would stay true.
+    os.utime(LIB_PATH, (started, started))
     return LIB_PATH
 
 
