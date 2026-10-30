@@ -69,16 +69,17 @@ int32_t ui_tenths(float deg)
     return (int32_t)lroundf(t);
 }
 
-int ui_aim_arrow(const level_reading_t *r)
+int ui_aim_arrow(const level_reading_t *r, bool invert)
 {
     if (r->mode == LEVEL_MODE_FLOOR || r->status == LEVEL_STATUS_ON_TARGET) {
         return 0;
     }
     int32_t t = ui_tenths(r->deviation_deg);
-    return t > 0 ? 1 : (t < 0 ? -1 : 0);
+    int arrow = t > 0 ? 1 : (t < 0 ? -1 : 0);
+    return invert ? -arrow : arrow;
 }
 
-void ui_dot_deg(const level_reading_t *r, float *x_deg, float *y_deg)
+void ui_dot_deg(const level_reading_t *r, bool invert, float *x_deg, float *y_deg)
 {
     if (r->mode == LEVEL_MODE_FLOOR) {
         *x_deg = r->bubble_x_deg;
@@ -87,9 +88,14 @@ void ui_dot_deg(const level_reading_t *r, float *x_deg, float *y_deg)
         *x_deg = r->yaw_valid ? r->yaw_deg : 0.0f;
         *y_deg = r->deviation_deg;
     }
+    if (invert) {
+        *x_deg = -*x_deg;
+        *y_deg = -*y_deg;
+    }
 }
 
-void ui_aim_sub(const level_reading_t *r, level_mode_t mode, bool zero_set, ui_aim_sub_t *out)
+void ui_aim_sub(const level_reading_t *r, level_mode_t mode, bool zero_set, bool invert,
+                ui_aim_sub_t *out)
 {
     out->yaw[0] = '\0';
     out->info[0] = '\0';
@@ -99,7 +105,7 @@ void ui_aim_sub(const level_reading_t *r, level_mode_t mode, bool zero_set, ui_a
     if (yaw) {
         out->yaw_stale = r->yaw_stale;
         ui_fmt_deg(deg, sizeof(deg), fabsf(r->yaw_deg), false);
-        int32_t t = ui_tenths(r->yaw_deg);
+        int32_t t = ui_tenths(invert ? -r->yaw_deg : r->yaw_deg);
         snprintf(out->yaw, sizeof(out->yaw), "%s%s%s", t > 0 ? "R " : (t < 0 ? "L " : ""), deg,
                  r->yaw_stale ? "  re-zero" : "");
     }
@@ -322,7 +328,7 @@ static bool edited_fields_equal(const settings_t *a, const settings_t *b)
            a->target_deg == b->target_deg && a->brightness_pct == b->brightness_pct &&
            a->dim_brightness_pct == b->dim_brightness_pct && a->dim_after_s == b->dim_after_s &&
            a->sleep_after_s == b->sleep_after_s && a->off_after_min == b->off_after_min &&
-           a->ble_enabled == b->ble_enabled;
+           a->ble_enabled == b->ble_enabled && a->dot_invert == b->dot_invert;
 }
 
 bool ui_settings_step(settings_t *s, ui_field_t f, int dir)
@@ -443,6 +449,7 @@ void ui_settings_merge(settings_t *cur, const settings_t *base, const settings_t
     MERGE_FIELD(sleep_after_s);
     MERGE_FIELD(off_after_min);
     MERGE_FIELD(ble_enabled);
+    MERGE_FIELD(dot_invert);
     settings_fixup(cur);
 }
 

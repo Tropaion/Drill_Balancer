@@ -7,7 +7,7 @@ from simtest import DeviceTest
 
 DEFAULTS = {"tol": 0.5, "near": 2, "target": 45, "mode": "wall", "bright": 100,
             "dim_bright": 20, "dim_s": 30, "sleep_s": 120, "off_min": 60, "ble": True,
-            "stale_s": 60, "cal": {"mount": False, "accel": False}, "ver": 1}
+            "stale_s": 60, "dot_inv": False, "cal": {"mount": False, "accel": False}, "ver": 1}
 
 
 class ConfigTest(DeviceTest):
@@ -16,7 +16,8 @@ class ConfigTest(DeviceTest):
 
     def test_round_trip_and_persistence(self):
         upd = {"tol": 0.2, "near": 1.5, "target": -12.5, "mode": "floor", "bright": 80,
-               "dim_bright": 10, "dim_s": 15, "sleep_s": 300, "off_min": 0, "stale_s": 120}
+               "dim_bright": 10, "dim_s": 15, "sleep_s": 300, "off_min": 0, "stale_s": 120,
+               "dot_inv": True}
         self.assertEqual(self.write_config(**upd), 0)
         cfg = self.config()
         for k, v in upd.items():
@@ -42,6 +43,7 @@ class ConfigTest(DeviceTest):
             (b'{"tol":0.2} x', 0x80),                  # trailing garbage
             (b'{"tol":"a"}', 0x81),
             (b'{"ble":1}', 0x81),
+            (b'{"dot_inv":"yes"}', 0x81),
             (b'{"bright":50.5}', 0x81),
             (b'{"mode":2}', 0x81),
             (b'{"tol":9}', 0x82),

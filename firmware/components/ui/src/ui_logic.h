@@ -28,13 +28,16 @@ int32_t ui_tenths(float deg);
 
 // Arrow next to the wall and angle numbers: +1 the bit points too high, -1
 // too low (deviation_deg), 0 none (on target, it would read 0.0, or FLOOR).
-int ui_aim_arrow(const level_reading_t *r);
+// invert (settings dot_invert) flips it with the dot.
+int ui_aim_arrow(const level_reading_t *r, bool invert);
 
 // The crosshair dot in degrees on screen axes (+x right, +y up). FLOOR: the
 // bubble, which moves to the higher side. WALL and ANGLE: the aim point, up
 // when the bit points too high (deviation_deg), right when it has turned
 // right since the zero (yaw_deg; 0 while yaw is not valid).
-void ui_dot_deg(const level_reading_t *r, float *x_deg, float *y_deg);
+// invert (settings dot_invert) mirrors both: the bubble then moves to the
+// lower side, the aim point shows which way to correct.
+void ui_dot_deg(const level_reading_t *r, bool invert, float *x_deg, float *y_deg);
 
 // The line under the crosshair's number. yaw: the yaw on WALL and ANGLE
 // while it is valid, "R 1.2°" / "L 1.2°" / "0.0°", plus "  re-zero" once
@@ -46,7 +49,9 @@ typedef struct {
     char info[32];
     bool yaw_stale;
 } ui_aim_sub_t;
-void ui_aim_sub(const level_reading_t *r, level_mode_t mode, bool zero_set, ui_aim_sub_t *out);
+// invert (settings dot_invert) swaps R and L like the dot: the way to turn.
+void ui_aim_sub(const level_reading_t *r, level_mode_t mode, bool zero_set, bool invert,
+                ui_aim_sub_t *out);
 
 // The level screen's title: the mode, on ANGLE with the target ("ANGLE  45.0°").
 void ui_level_title(level_mode_t mode, float target_deg, char *buf, size_t len);

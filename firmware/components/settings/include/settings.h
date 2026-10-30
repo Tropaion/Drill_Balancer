@@ -17,6 +17,7 @@
 //   "off_min"    int    min   0 .. 1440      deep sleep before power-off (0 = never)
 //   "ble"        bool                        BLE on/off
 //   "stale_s"    int    s     10 .. 600      yaw stale warning
+//   "dot_inv"    bool                        crosshair dot flipped in x and y
 // Read-only on output (ignored on write):
 //   "cal": {"mount": bool, "accel": bool}
 //   "ver": int  settings schema version
@@ -69,6 +70,10 @@ typedef struct {
     uint16_t sleep_after_s;
     uint16_t off_after_min;
     bool ble_enabled;
+    // In the padding byte after ble_enabled, so the schema version and blob
+    // size stay as they were (static assert in settings.c). Older firmware
+    // stored that byte unset: settings_store.c reads only 1 as on.
+    bool dot_invert;
     uint16_t yaw_stale_s;
 
     bool mount_cal_valid;

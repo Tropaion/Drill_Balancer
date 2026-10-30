@@ -262,6 +262,7 @@ class FirmwareConformanceTest {
         assertEquals(v["off_after_min"]!!.toInt(), d.offAfterMin)
         assertEquals(v["ble_enabled"]!!.toBoolean(), d.bleEnabled)
         assertEquals(v["yaw_stale_s"]!!.toInt(), d.yawStaleS)
+        assertEquals(v["dot_invert"]!!.toBoolean(), d.dotInvert)
         assertEquals(v["mount_cal_valid"]!!.toBoolean(), d.cal.mount)
         assertEquals(v["accel_cal_valid"]!!.toBoolean(), d.cal.accel)
         assertTrue(d.isValid)

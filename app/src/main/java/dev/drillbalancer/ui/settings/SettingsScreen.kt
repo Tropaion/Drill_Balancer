@@ -57,6 +57,7 @@ class SettingsActions(
     val set: (SettingsField, Float) -> Unit = { _, _ -> },
     val setMode: (LevelMode) -> Unit = {},
     val setBle: (Boolean) -> Unit = {},
+    val setDotInvert: (Boolean) -> Unit = {},
     val save: () -> Unit = {},
     val discard: () -> Unit = {},
     val reload: () -> Unit = {},
@@ -88,6 +89,7 @@ fun SettingsScreen(state: SettingsUiState, actions: SettingsActions, modifier: M
             }
             ModeRow(s.mode, SettingsField.MODE in state.changed, actions.setMode)
             NumberRow(SettingsField.STALE_S, s, state, actions) { entry = SettingsField.STALE_S }
+            SwitchFieldRow(SettingsField.DOT_INV, s.dotInvert, SettingsField.DOT_INV in state.changed, actions.setDotInvert)
 
             SectionTitle("Display and power")
             for (f in listOf(
@@ -212,18 +214,29 @@ private fun ModeRow(mode: LevelMode, changed: Boolean, onMode: (LevelMode) -> Un
     }
 }
 
+/** A switch [field] with its label and help, marked when [changed]; [below] goes under it. */
 @Composable
-private fun BleRow(enabled: Boolean, changed: Boolean, onChange: (Boolean) -> Unit) {
+private fun SwitchFieldRow(
+    field: SettingsField,
+    on: Boolean,
+    changed: Boolean,
+    onChange: (Boolean) -> Unit,
+    below: @Composable () -> Unit = {},
+) {
     Panel(border = if (changed) Amber else Dark) {
-        SwitchRow(enabled, onChange) {
+        SwitchRow(on, onChange) {
             Column(Modifier.weight(1f)) {
-                Label(SettingsField.BLE.label, changed)
-                Text(
-                    "Lets this app connect.", style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
+                Label(field.label, changed)
+                Text(field.help, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         }
+        below()
+    }
+}
+
+@Composable
+private fun BleRow(enabled: Boolean, changed: Boolean, onChange: (Boolean) -> Unit) {
+    SwitchFieldRow(SettingsField.BLE, enabled, changed, onChange) {
         if (!enabled) {
             Text(
                 "Saving this disconnects the app. To connect again, turn Bluetooth on in the device's own settings.",

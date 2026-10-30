@@ -413,7 +413,7 @@ function drawSettings(s, view) {
   const rows = [
     {h: 27, kind: "title"}, {h: 19, kind: "hint"},
     ...FIELDS.map((label, i) => ({h: 92, kind: "step", label, i, nominal: 330, min: 240})),
-    {h: 72, kind: "ble", nominal: 330, min: 280},
+    {h: 72, kind: "switch", str: "Bluetooth", key: "ble", icon: true, color: COL.blue, nominal: 330, min: 280},
     {h: 66, kind: "act", id: "set_mount", str: "Calibrate mount", nominal: 300, min: 240},
     {h: 66, kind: "act", id: "set_sensor", str: "Calibrate sensor", nominal: 300, min: 240},
     {h: 66, kind: "act", id: "set_clear_zero", str: "Clear zero", nominal: 300, min: 240},
@@ -421,6 +421,8 @@ function drawSettings(s, view) {
     {h: 19, kind: "ver"},
     {h: 66, kind: "act", id: "set_back", str: "Back", back: true, color: COL.green, nominal: 300, min: 240},
   ];
+  // ui_settings.c: the dot switch follows the target stepper
+  rows.splice(2 + 3, 0, {h: 72, kind: "switch", str: "Invert dot", key: "dot_inv", color: COL.green, nominal: 330, min: 280});
   let y = 70;
   for (const row of rows) { row.y = y; y += row.h + 30; }
   settingsContentH = y - 30 + 150;
@@ -447,11 +449,12 @@ function drawSettings(s, view) {
       button(null, CX + w / 2 - 32, by, 64, 64, "+", {alpha: opa});
       text(s.ui.settings_text[row.i], CX, by, 24, COL.white);
       regions.push({id: "stepper", x: CX - w / 2, y: by - 32, w, h: 64, enabled: true});
-    } else if (row.kind === "ble") {
-      btIcon(CX - w / 2 + 16, cy, COL.white, 1);
-      text("Bluetooth", CX - w / 2 + 44, cy, 24, COL.white, {align: "left"});
-      const on = cfg.ble;
-      pill(CX + w / 2 - 8 - 96, cy - 26, 96, 52, on ? COL.blue : COL.dark);
+    } else if (row.kind === "switch") {
+      // ui_settings.c switch_row_new()
+      if (row.icon) btIcon(CX - w / 2 + 16, cy, COL.white, 1);
+      text(row.str, CX - w / 2 + (row.icon ? 44 : 16), cy, 24, COL.white, {align: "left"});
+      const on = cfg[row.key];
+      pill(CX + w / 2 - 8 - 96, cy - 26, 96, 52, on ? row.color : COL.dark);
       circle(on ? CX + w / 2 - 8 - 26 : CX + w / 2 - 8 - 70, cy, 31, null, 0, "#fff");
       regions.push({id: "stepper", x: CX - w / 2, y: top, w, h: row.h, enabled: true});
     } else if (row.kind === "ver") {

@@ -50,7 +50,8 @@ training data (raw IMU and both microphones) for a future on-device model.
   running drill held still keeps the screen on, for up to 3 min after the
   last touch or movement.
 - **On-device settings** (hold 1 s) for tolerance, near band, target angle,
-  brightness, timeouts and Bluetooth.
+  the crosshair's direction (*Invert dot*), brightness, timeouts and
+  Bluetooth.
 - **Bluetooth LE**: live angle and status notifications, settings as JSON,
   commands. Changes need a bonded link with LE Secure Connections and a
   6-digit passkey shown on the device.

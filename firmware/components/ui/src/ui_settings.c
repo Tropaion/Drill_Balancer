@@ -12,9 +12,9 @@ static const char *TAG = "ui_settings";
 #define LIST_PAD_V 150     // lets the first and last rows scroll to the centre
 // Round list (ui_round_row()): the narrowest a row may get before it fades
 // instead. Steppers keep both buttons and the value text apart, the BLE
-// row its label and switch, the action buttons their text.
+// and dot rows their label and switch, the action buttons their text.
 #define STEPPER_MIN_W 240
-#define BLE_ROW_MIN_W 280
+#define SWITCH_ROW_MIN_W 280
 #define ACTION_W (ROW_W - 30)
 #define ACTION_MIN_W 240
 // Nominal and minimum width of a list child, packed into its user data
@@ -36,6 +36,7 @@ static struct {
     lv_obj_t *list;
     lv_obj_t *values[UI_FIELD_COUNT];
     lv_obj_t *ble_sw;
+    lv_obj_t *dot_sw;
     lv_obj_t *confirm;
     lv_timer_t *save_timer;
     settings_t base;        // what edit was loaded from (three-way merge)
@@ -90,6 +91,7 @@ static void refresh_values(void)
         ui_set_text(s.values[f], buf);
     }
     lv_obj_set_state(s.ble_sw, LV_STATE_CHECKED, s.edit.ble_enabled);
+    lv_obj_set_state(s.dot_sw, LV_STATE_CHECKED, s.edit.dot_invert);
 }
 
 // Shows the cached settings, dropping any unsaved edit.
@@ -162,10 +164,12 @@ static void step_cb(lv_event_t *e)
     }
 }
 
-static void ble_cb(lv_event_t *e)
+// The switch rows: user data is the settings_t bool they edit.
+static void switch_cb(lv_event_t *e)
 {
     lv_obj_t *sw = lv_event_get_target_obj(e);
-    s.edit.ble_enabled = lv_obj_has_state(sw, LV_STATE_CHECKED);
+    bool *field = lv_event_get_user_data(e);
+    *field = lv_obj_has_state(sw, LV_STATE_CHECKED);
     mark_dirty();
 }
 
@@ -262,30 +266,31 @@ static void stepper_new(ui_field_t f)
     lv_obj_align(s.values[f], LV_ALIGN_BOTTOM_MID, 0, -19);
 }
 
-static void ble_row_new(void)
+// A label and a switch that edits *field (in s.edit), checked in color.
+static lv_obj_t *switch_row_new(const char *text, bool *field, uint32_t color)
 {
-    lv_obj_t *row = row_new(72, BLE_ROW_MIN_W);
+    lv_obj_t *row = row_new(72, SWITCH_ROW_MIN_W);
     lv_obj_t *l = ui_label_new(row, &lv_font_montserrat_24, UI_C_WHITE);
-    lv_label_set_text_static(l, LV_SYMBOL_BLUETOOTH "  Bluetooth");
+    lv_label_set_text_static(l, text);
     lv_obj_align(l, LV_ALIGN_LEFT_MID, 16, 0);
 
-    s.ble_sw = lv_switch_create(row);
-    lv_obj_remove_style_all(s.ble_sw);
-    lv_obj_set_size(s.ble_sw, 96, 52);
-    lv_obj_align(s.ble_sw, LV_ALIGN_RIGHT_MID, -8, 0);
-    lv_obj_set_style_radius(s.ble_sw, LV_RADIUS_CIRCLE, LV_PART_MAIN);
-    lv_obj_set_style_bg_opa(s.ble_sw, LV_OPA_COVER, LV_PART_MAIN);
-    lv_obj_set_style_bg_color(s.ble_sw, lv_color_hex(UI_C_DARK), LV_PART_MAIN);
-    lv_obj_set_style_radius(s.ble_sw, LV_RADIUS_CIRCLE, LV_PART_INDICATOR);
-    lv_obj_set_style_bg_opa(s.ble_sw, LV_OPA_TRANSP, LV_PART_INDICATOR);
-    lv_obj_set_style_bg_opa(s.ble_sw, LV_OPA_COVER, LV_PART_INDICATOR | LV_STATE_CHECKED);
-    lv_obj_set_style_bg_color(s.ble_sw, lv_color_hex(UI_C_BLUE),
-                              LV_PART_INDICATOR | LV_STATE_CHECKED);
-    lv_obj_set_style_radius(s.ble_sw, LV_RADIUS_CIRCLE, LV_PART_KNOB);
-    lv_obj_set_style_bg_opa(s.ble_sw, LV_OPA_COVER, LV_PART_KNOB);
-    lv_obj_set_style_bg_color(s.ble_sw, lv_color_white(), LV_PART_KNOB);
-    lv_obj_set_style_pad_all(s.ble_sw, -5, LV_PART_KNOB);
-    lv_obj_add_event_cb(s.ble_sw, ble_cb, LV_EVENT_VALUE_CHANGED, NULL);
+    lv_obj_t *sw = lv_switch_create(row);
+    lv_obj_remove_style_all(sw);
+    lv_obj_set_size(sw, 96, 52);
+    lv_obj_align(sw, LV_ALIGN_RIGHT_MID, -8, 0);
+    lv_obj_set_style_radius(sw, LV_RADIUS_CIRCLE, LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(sw, LV_OPA_COVER, LV_PART_MAIN);
+    lv_obj_set_style_bg_color(sw, lv_color_hex(UI_C_DARK), LV_PART_MAIN);
+    lv_obj_set_style_radius(sw, LV_RADIUS_CIRCLE, LV_PART_INDICATOR);
+    lv_obj_set_style_bg_opa(sw, LV_OPA_TRANSP, LV_PART_INDICATOR);
+    lv_obj_set_style_bg_opa(sw, LV_OPA_COVER, LV_PART_INDICATOR | LV_STATE_CHECKED);
+    lv_obj_set_style_bg_color(sw, lv_color_hex(color), LV_PART_INDICATOR | LV_STATE_CHECKED);
+    lv_obj_set_style_radius(sw, LV_RADIUS_CIRCLE, LV_PART_KNOB);
+    lv_obj_set_style_bg_opa(sw, LV_OPA_COVER, LV_PART_KNOB);
+    lv_obj_set_style_bg_color(sw, lv_color_white(), LV_PART_KNOB);
+    lv_obj_set_style_pad_all(sw, -5, LV_PART_KNOB);
+    lv_obj_add_event_cb(sw, switch_cb, LV_EVENT_VALUE_CHANGED, field);
+    return sw;
 }
 
 static lv_obj_t *action_new(const char *text, lv_event_cb_t cb, uint32_t color)
@@ -346,11 +351,12 @@ lv_obj_t *ui_settings_create(void)
     stepper_new(UI_FIELD_TOLERANCE);
     stepper_new(UI_FIELD_NEAR);
     stepper_new(UI_FIELD_TARGET);
+    s.dot_sw = switch_row_new("Invert dot", &s.edit.dot_invert, UI_C_GREEN);
     stepper_new(UI_FIELD_BRIGHTNESS);
     stepper_new(UI_FIELD_DIM_S);
     stepper_new(UI_FIELD_SLEEP_S);
     stepper_new(UI_FIELD_OFF_MIN);
-    ble_row_new();
+    s.ble_sw = switch_row_new(LV_SYMBOL_BLUETOOTH "  Bluetooth", &s.edit.ble_enabled, UI_C_BLUE);
     action_new("Calibrate mount", mount_cal_cb, UI_C_WHITE);
     action_new("Calibrate sensor", sensor_cal_cb, UI_C_WHITE);
     action_new("Clear zero", clear_zero_cb, UI_C_WHITE);

@@ -62,20 +62,21 @@ static void test_fmt_truncates_safely(void)
 static void test_aim_arrow(void)
 {
     level_reading_t r = {.deviation_deg = 3.0f, .status = LEVEL_STATUS_OFF};
-    TEST_ASSERT_EQUAL(1, ui_aim_arrow(&r));
+    TEST_ASSERT_EQUAL(1, ui_aim_arrow(&r, false));
+    TEST_ASSERT_EQUAL(-1, ui_aim_arrow(&r, true));   // flips with an inverted dot
     r.deviation_deg = -0.6f;
     r.status = LEVEL_STATUS_NEAR;
-    TEST_ASSERT_EQUAL(-1, ui_aim_arrow(&r));
+    TEST_ASSERT_EQUAL(-1, ui_aim_arrow(&r, false));
     r.status = LEVEL_STATUS_ON_TARGET;
-    TEST_ASSERT_EQUAL(0, ui_aim_arrow(&r));
+    TEST_ASSERT_EQUAL(0, ui_aim_arrow(&r, false));
     // Off target but it would read "0.0": no arrow either (tolerance below 0.05).
     r.status = LEVEL_STATUS_NEAR;
     r.deviation_deg = -0.04f;
-    TEST_ASSERT_EQUAL(0, ui_aim_arrow(&r));
+    TEST_ASSERT_EQUAL(0, ui_aim_arrow(&r, false));
     // Floor: the tilt is a magnitude, the bubble shows the direction.
     r.mode = LEVEL_MODE_FLOOR;
     r.deviation_deg = 3.0f;
-    TEST_ASSERT_EQUAL(0, ui_aim_arrow(&r));
+    TEST_ASSERT_EQUAL(0, ui_aim_arrow(&r, false));
 }
 
 static void test_dot_is_bubble_on_floor_and_aim_point_otherwise(void)
@@ -83,22 +84,31 @@ static void test_dot_is_bubble_on_floor_and_aim_point_otherwise(void)
     float x, y;
     level_reading_t r = {.mode = LEVEL_MODE_FLOOR, .bubble_x_deg = 1.0f, .bubble_y_deg = -2.0f,
                          .deviation_deg = 2.2f, .yaw_valid = true, .yaw_deg = 5.0f};
-    ui_dot_deg(&r, &x, &y);
+    ui_dot_deg(&r, false, &x, &y);
     TEST_ASSERT_EQUAL_FLOAT(1.0f, x);
     TEST_ASSERT_EQUAL_FLOAT(-2.0f, y);
     // Wall: up = bit too high, right = turned right since the zero.
     r.mode = LEVEL_MODE_WALL;
     r.deviation_deg = 1.5f;
-    ui_dot_deg(&r, &x, &y);
+    ui_dot_deg(&r, false, &x, &y);
     TEST_ASSERT_EQUAL_FLOAT(5.0f, x);
     TEST_ASSERT_EQUAL_FLOAT(1.5f, y);
     // Angle: the error against the target; no yaw without a zero.
     r.mode = LEVEL_MODE_ANGLE;
     r.deviation_deg = -0.8f;
     r.yaw_valid = false;
-    ui_dot_deg(&r, &x, &y);
+    ui_dot_deg(&r, false, &x, &y);
     TEST_ASSERT_EQUAL_FLOAT(0.0f, x);
     TEST_ASSERT_EQUAL_FLOAT(-0.8f, y);
+    // Inverted (settings dot_invert): mirrored on both axes, the floor too.
+    r.yaw_valid = true;
+    ui_dot_deg(&r, true, &x, &y);
+    TEST_ASSERT_EQUAL_FLOAT(-5.0f, x);
+    TEST_ASSERT_EQUAL_FLOAT(0.8f, y);
+    r.mode = LEVEL_MODE_FLOOR;
+    ui_dot_deg(&r, true, &x, &y);
+    TEST_ASSERT_EQUAL_FLOAT(-1.0f, x);
+    TEST_ASSERT_EQUAL_FLOAT(2.0f, y);
 }
 
 static void test_dot_status_is_the_worse_axis(void)
@@ -127,30 +137,33 @@ static void test_aim_sub_line(void)
 {
     ui_aim_sub_t sub;
     level_reading_t r = {.elevation_deg = 46.3f, .yaw_valid = true, .yaw_deg = 1.24f};
-    ui_aim_sub(&r, LEVEL_MODE_WALL, true, &sub);
+    ui_aim_sub(&r, LEVEL_MODE_WALL, true, false, &sub);
     TEST_ASSERT_EQUAL_STRING("R 1.2°", sub.yaw);
     TEST_ASSERT_EQUAL_STRING("", sub.info);
     TEST_ASSERT_FALSE(sub.yaw_stale);
-    ui_aim_sub(&r, LEVEL_MODE_ANGLE, true, &sub);
+    ui_aim_sub(&r, LEVEL_MODE_ANGLE, true, false, &sub);
     TEST_ASSERT_EQUAL_STRING("now 46.3°", sub.info);
+    // Inverted: the way to turn, like the dot.
+    ui_aim_sub(&r, LEVEL_MODE_WALL, true, true, &sub);
+    TEST_ASSERT_EQUAL_STRING("L 1.2°", sub.yaw);
     // Stale: the warning, and no current angle next to it.
     r.yaw_stale = true;
     r.yaw_deg = -6.4f;
-    ui_aim_sub(&r, LEVEL_MODE_ANGLE, true, &sub);
+    ui_aim_sub(&r, LEVEL_MODE_ANGLE, true, false, &sub);
     TEST_ASSERT_EQUAL_STRING("L 6.4°  re-zero", sub.yaw);
     TEST_ASSERT_EQUAL_STRING("", sub.info);
     TEST_ASSERT_TRUE(sub.yaw_stale);
     // No zero: the hint on the wall; nothing below the floor's number.
     r = (level_reading_t){0};
-    ui_aim_sub(&r, LEVEL_MODE_WALL, false, &sub);
+    ui_aim_sub(&r, LEVEL_MODE_WALL, false, false, &sub);
     TEST_ASSERT_EQUAL_STRING("", sub.yaw);
     TEST_ASSERT_EQUAL_STRING("Tap to zero for left/right", sub.info);
     // Zeroed with the bit near vertical: yaw stays invalid, tapping again
     // would not help, so no hint.
-    ui_aim_sub(&r, LEVEL_MODE_WALL, true, &sub);
+    ui_aim_sub(&r, LEVEL_MODE_WALL, true, false, &sub);
     TEST_ASSERT_EQUAL_STRING("", sub.info);
     r.yaw_valid = true;
-    ui_aim_sub(&r, LEVEL_MODE_FLOOR, true, &sub);
+    ui_aim_sub(&r, LEVEL_MODE_FLOOR, true, false, &sub);
     TEST_ASSERT_EQUAL_STRING("", sub.yaw);
     TEST_ASSERT_EQUAL_STRING("", sub.info);
 }

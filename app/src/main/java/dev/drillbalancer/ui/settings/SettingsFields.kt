@@ -34,6 +34,7 @@ val SettingsField.label: String
         SettingsField.OFF_MIN -> "Power off after sleep"
         SettingsField.BLE -> "Bluetooth"
         SettingsField.STALE_S -> "Yaw drift warning after"
+        SettingsField.DOT_INV -> "Invert dot"
     }
 
 val SettingsField.help: String
@@ -47,8 +48,9 @@ val SettingsField.help: String
         SettingsField.DIM_S -> "Without touch or movement."
         SettingsField.SLEEP_S -> "At least the dim time. Movement wakes the device."
         SettingsField.OFF_MIN -> "Time asleep before it powers off."
-        SettingsField.BLE -> ""
+        SettingsField.BLE -> "Lets this app connect."
         SettingsField.STALE_S -> "After a zero the yaw slowly drifts; the level then asks to re-zero."
+        SettingsField.DOT_INV -> "Mirrors the device's crosshair: the dot and arrows show which way to move, not where the bit points; on the floor the bubble moves to the lower side."
     }
 
 /** Whether the field holds whole numbers (all but the angles). */
@@ -62,7 +64,7 @@ val SettingsField.unit: String
         SettingsField.BRIGHT, SettingsField.DIM_BRIGHT -> "%"
         SettingsField.DIM_S, SettingsField.SLEEP_S, SettingsField.STALE_S -> "s"
         SettingsField.OFF_MIN -> "min"
-        SettingsField.MODE, SettingsField.BLE -> ""
+        SettingsField.MODE, SettingsField.BLE, SettingsField.DOT_INV -> ""
     }
 
 /** The value as the device's settings screen shows it, e.g. "0.50°", "30 s", "Never". */
@@ -78,6 +80,7 @@ fun DeviceSettings.display(field: SettingsField): String = when (field) {
     SettingsField.STALE_S -> formatDuration(yawStaleS)
     SettingsField.MODE -> mode.key
     SettingsField.BLE -> if (bleEnabled) "On" else "Off"
+    SettingsField.DOT_INV -> if (dotInvert) "On" else "Off"
 }
 
 /** The plain number for the text field ("0.5", "30"). */
@@ -91,7 +94,7 @@ fun DeviceSettings.rawValue(field: SettingsField): Float = when (field) {
     SettingsField.SLEEP_S -> sleepAfterS.toFloat()
     SettingsField.OFF_MIN -> offAfterMin.toFloat()
     SettingsField.STALE_S -> yawStaleS.toFloat()
-    SettingsField.MODE, SettingsField.BLE -> 0f
+    SettingsField.MODE, SettingsField.BLE, SettingsField.DOT_INV -> 0f
 }
 
 /**
@@ -110,7 +113,7 @@ fun DeviceSettings.range(field: SettingsField): ClosedFloatingPointRange<Float> 
         SettingsField.SLEEP_S -> dimAfterS.toFloat()..SLEEP_MAX_S.toFloat()
         SettingsField.OFF_MIN -> 0f..OFF_MAX_MIN.toFloat()
         SettingsField.STALE_S -> STALE_MIN_S.toFloat()..STALE_MAX_S.toFloat()
-        SettingsField.MODE, SettingsField.BLE -> 0f..0f
+        SettingsField.MODE, SettingsField.BLE, SettingsField.DOT_INV -> 0f..0f
     }
 }
 
@@ -139,7 +142,7 @@ fun DeviceSettings.with(field: SettingsField, v: Float): DeviceSettings = when (
     SettingsField.SLEEP_S -> copy(sleepAfterS = v.roundToInt())
     SettingsField.OFF_MIN -> copy(offAfterMin = v.roundToInt())
     SettingsField.STALE_S -> copy(yawStaleS = v.roundToInt())
-    SettingsField.MODE, SettingsField.BLE -> this
+    SettingsField.MODE, SettingsField.BLE, SettingsField.DOT_INV -> this
 }.fixup()
 
 /** The text a typed value is checked against; null if it is fine. */
@@ -204,7 +207,7 @@ fun DeviceSettings.step(field: SettingsField, dir: Int): DeviceSettings = with(S
         SettingsField.SLEEP_S -> copy(sleepAfterS = presetStep(SLEEP_PRESETS_S, sleepAfterS, up, dimAfterS, SLEEP_MAX_S))
         SettingsField.OFF_MIN -> copy(offAfterMin = presetStep(OFF_PRESETS_MIN, offAfterMin, up, 0, OFF_MAX_MIN))
         SettingsField.STALE_S -> copy(yawStaleS = presetStep(STALE_PRESETS_S, yawStaleS, up, STALE_MIN_S, STALE_MAX_S))
-        SettingsField.MODE, SettingsField.BLE -> this@step
+        SettingsField.MODE, SettingsField.BLE, SettingsField.DOT_INV -> this@step
     }.fixup()
 }
 

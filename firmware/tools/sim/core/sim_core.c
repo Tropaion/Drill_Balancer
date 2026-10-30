@@ -3275,18 +3275,18 @@ int sim_snapshot_json(char *buf, int cap)
     put(&o, "\"ui\":{");
     put_float(&o, "ring", ui_ring_fraction(r->deviation_deg, s_current.near_deg));
     float dot_x, dot_y;
-    ui_dot_deg(r, &dot_x, &dot_y);
+    ui_dot_deg(r, s_current.dot_invert, &dot_x, &dot_y);
     put_float(&o, "dot_x", dot_x);
     put_float(&o, "dot_y", dot_y);
     put(&o, "\"dot_status\":%d,\"arrow\":%d,\"battery_level\":%d,\"low_battery\":%s,",
-        (int)ui_dot_status(r), ui_aim_arrow(r),
+        (int)ui_dot_status(r), ui_aim_arrow(r, s_current.dot_invert),
         ui_battery_level(s->battery.percent), B(ui_low_battery(&s->battery)));
     put_str(&o, "mode_title", ui_mode_title(r->mode));
     char title[32];
     ui_level_title(r->mode, s_current.target_deg, title, sizeof(title));
     put_str(&o, "title", title);
     ui_aim_sub_t sub;
-    ui_aim_sub(r, r->mode, s->zero_set, &sub);
+    ui_aim_sub(r, r->mode, s->zero_set, s_current.dot_invert, &sub);
     put_str(&o, "sub_yaw", sub.yaw);
     put_str(&o, "sub_info", sub.info);
     put(&o, "\"sub_stale\":%s,", B(sub.yaw_stale));

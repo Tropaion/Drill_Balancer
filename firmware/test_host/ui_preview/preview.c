@@ -535,6 +535,14 @@ int main(int argc, char **argv)
     g_snap.reading = angle_r(-12.0f, 45.0f, LEVEL_STATUS_OFF);
     render("09_angle_off");
 
+    // The same as 02, with the dot inverted (settings dot_invert): it and
+    // the arrow show which way to correct.
+    base_state();
+    g_settings.dot_invert = true;
+    ui_cfg_refresh();
+    g_snap.reading = wall(-1.4f, LEVEL_STATUS_NEAR, true, 1.2f, LEVEL_STATUS_NEAR, false);
+    render("09b_wall_near_inverted");
+
     base_state();
     g_snap.imu_ok = false;
     render("10_no_sensor");

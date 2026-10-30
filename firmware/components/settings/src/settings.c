@@ -1,10 +1,16 @@
 #include <float.h>
 #include <math.h>
+#include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include "cJSON.h"
 #include "settings.h"
+
+_Static_assert(offsetof(settings_t, dot_invert) == offsetof(settings_t, ble_enabled) + 1,
+               "dot_invert must stay in the padding after ble_enabled");
+_Static_assert(offsetof(settings_t, yaw_stale_s) == offsetof(settings_t, ble_enabled) + 2,
+               "adding dot_invert must not move the stored layout");
 
 // Mount calibration may correct at most this much: more means the device is
 // not seated on the drill properly. Shared with level_mount_cal_solve().
@@ -30,6 +36,7 @@ settings_t settings_defaults(void)
         .sleep_after_s = 120,
         .off_after_min = 60,
         .ble_enabled = true,
+        .dot_invert = false,
         .yaw_stale_s = 60,
         .mount_cal_valid = false,
         .drill_axis = level_default_config().drill_axis,   // nominal -Z
@@ -102,7 +109,8 @@ bool settings_equal(const settings_t *a, const settings_t *b)
            a->brightness_pct == b->brightness_pct &&
            a->dim_brightness_pct == b->dim_brightness_pct && a->dim_after_s == b->dim_after_s &&
            a->sleep_after_s == b->sleep_after_s && a->off_after_min == b->off_after_min &&
-           a->ble_enabled == b->ble_enabled && a->yaw_stale_s == b->yaw_stale_s &&
+           a->ble_enabled == b->ble_enabled && a->dot_invert == b->dot_invert &&
+           a->yaw_stale_s == b->yaw_stale_s &&
            a->mount_cal_valid == b->mount_cal_valid && vec3_equal(a->drill_axis, b->drill_axis) &&
            a->accel_cal_valid == b->accel_cal_valid &&
            accel_cal_equal(&a->accel_cal, &b->accel_cal);
@@ -162,13 +170,13 @@ int settings_to_json(const settings_t *s, char *buf, size_t buf_len)
     int n = snprintf(buf, buf_len,
                      "{\"tol\":%s,\"near\":%s,\"target\":%s,\"mode\":\"%s\","
                      "\"bright\":%u,\"dim_bright\":%u,\"dim_s\":%u,\"sleep_s\":%u,"
-                     "\"off_min\":%u,\"ble\":%s,\"stale_s\":%u,"
+                     "\"off_min\":%u,\"ble\":%s,\"stale_s\":%u,\"dot_inv\":%s,"
                      "\"cal\":{\"mount\":%s,\"accel\":%s},\"ver\":%d}",
                      tol, near, target, mode,
                      (unsigned)s->brightness_pct, (unsigned)s->dim_brightness_pct,
                      (unsigned)s->dim_after_s, (unsigned)s->sleep_after_s,
                      (unsigned)s->off_after_min, s->ble_enabled ? "true" : "false",
-                     (unsigned)s->yaw_stale_s,
+                     (unsigned)s->yaw_stale_s, s->dot_invert ? "true" : "false",
                      s->mount_cal_valid ? "true" : "false",
                      s->accel_cal_valid ? "true" : "false",
                      SETTINGS_SCHEMA_VERSION);
@@ -330,6 +338,7 @@ static settings_json_result_t apply_object(settings_t *t, const cJSON *o)
     READ(read_u16(o, "off_min", &t->off_after_min));
     READ(read_bool(o, "ble", &t->ble_enabled));
     READ(read_u16(o, "stale_s", &t->yaw_stale_s));
+    READ(read_bool(o, "dot_inv", &t->dot_invert));
 #undef READ
     return settings_validate(t) ? SETTINGS_JSON_OK : SETTINGS_JSON_RANGE_ERROR;
 }

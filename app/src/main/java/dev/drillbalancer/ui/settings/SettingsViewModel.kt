@@ -53,6 +53,7 @@ class SettingsViewModel(private val session: DeviceSession, private val gate: Pa
     fun setMode(mode: LevelMode) = edit { it.copy(mode = mode) }
 
     fun setBle(enabled: Boolean) = edit { it.copy(bleEnabled = enabled) }
+    fun setDotInvert(inverted: Boolean) = edit { it.copy(dotInvert = inverted) }
 
     fun discard() = _state.update { it.copy(edited = it.base, message = null) }
 

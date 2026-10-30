@@ -282,6 +282,16 @@ class SettingsViewModelTest {
     }
 
     @Test
+    fun invertingTheDotSavesOnlyThatKey() = runTest(main.dispatcher) {
+        val (fake, _, vm) = setUp()
+        vm.setDotInvert(true)
+        assertEquals(setOf(SettingsField.DOT_INV), vm.state.value.changed)
+        vm.save()
+        assertEquals("""{"dot_inv":true}""", fake.updates.single().toJson())
+        assertEquals(true, vm.state.value.base!!.dotInvert)
+    }
+
+    @Test
     fun turningBleOffSavesThenTheLinkDrops() = runTest(main.dispatcher) {
         val (fake, _, vm) = setUp()
         vm.setBle(false)

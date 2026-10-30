@@ -90,6 +90,11 @@ static void load(settings_t *out)
         ESP_LOGW(TAG, "stored settings out of range, using defaults");
         return;
     }
+    // dot_invert sits in what was padding before it existed (settings.h):
+    // stored by older firmware it may hold any byte, and only 1 means on.
+    uint8_t dot_invert_raw;
+    memcpy(&dot_invert_raw, &blob.settings.dot_invert, 1);
+    blob.settings.dot_invert = dot_invert_raw == 1;
     *out = blob.settings;
     ESP_LOGI(TAG, "settings loaded (mount cal %s, accel cal %s)",
              out->mount_cal_valid ? "yes" : "no", out->accel_cal_valid ? "yes" : "no");

@@ -40,6 +40,7 @@ static void test_defaults(void)
     TEST_ASSERT_EQUAL_UINT16(120, s.sleep_after_s);
     TEST_ASSERT_EQUAL_UINT16(60, s.off_after_min);
     TEST_ASSERT_TRUE(s.ble_enabled);
+    TEST_ASSERT_FALSE(s.dot_invert);
     TEST_ASSERT_EQUAL_UINT16(60, s.yaw_stale_s);
     TEST_ASSERT_FALSE(s.mount_cal_valid);
     TEST_ASSERT_EQUAL_FLOAT(0.0f, s.drill_axis.x);
@@ -193,8 +194,8 @@ static void test_to_json_defaults(void)
     TEST_ASSERT_EQUAL_INT((int)strlen(buf), n);
     TEST_ASSERT_EQUAL_STRING("{\"tol\":0.5,\"near\":2,\"target\":45,\"mode\":\"wall\",\"bright\":100,"
                              "\"dim_bright\":20,\"dim_s\":30,\"sleep_s\":120,\"off_min\":60,"
-                             "\"ble\":true,\"stale_s\":60,\"cal\":{\"mount\":false,\"accel\":false},"
-                             "\"ver\":1}",
+                             "\"ble\":true,\"stale_s\":60,\"dot_inv\":false,"
+                             "\"cal\":{\"mount\":false,\"accel\":false},\"ver\":1}",
                              buf);
 }
 
@@ -223,6 +224,7 @@ static void test_worst_case_json_fits(void)
     s.mount_cal_valid = true;
     s.accel_cal_valid = true;
     s.ble_enabled = false;
+    s.dot_invert = true;
     TEST_ASSERT_TRUE(settings_validate(&s));
     char buf[SETTINGS_JSON_MAX];
     TEST_ASSERT_GREATER_THAN(0, settings_to_json(&s, buf, sizeof(buf)));
@@ -291,6 +293,7 @@ static void test_round_trip(void)
     s.sleep_after_s = 900;
     s.off_after_min = 0;
     s.ble_enabled = false;
+    s.dot_invert = true;
     s.yaw_stale_s = 120;
     char buf[SETTINGS_JSON_MAX];
     int n = settings_to_json(&s, buf, sizeof(buf));
@@ -310,6 +313,7 @@ static void test_round_trip(void)
     TEST_ASSERT_EQUAL_UINT16(want.sleep_after_s, s.sleep_after_s);
     TEST_ASSERT_EQUAL_UINT16(want.off_after_min, s.off_after_min);
     TEST_ASSERT_EQUAL(want.ble_enabled, s.ble_enabled);
+    TEST_ASSERT_EQUAL(want.dot_invert, s.dot_invert);
     TEST_ASSERT_EQUAL_UINT16(want.yaw_stale_s, s.yaw_stale_s);
 }
 
@@ -387,6 +391,8 @@ static void test_type_errors_leave_settings_unchanged(void)
     expect_rejected(SETTINGS_JSON_TYPE_ERROR, "{\"ble\":1}");
     expect_rejected(SETTINGS_JSON_TYPE_ERROR, "{\"ble\":\"true\"}");
     expect_rejected(SETTINGS_JSON_TYPE_ERROR, "{\"stale_s\":[60]}");
+    expect_rejected(SETTINGS_JSON_TYPE_ERROR, "{\"dot_inv\":1}");
+    expect_rejected(SETTINGS_JSON_TYPE_ERROR, "{\"dot_inv\":\"true\"}");
     // Overflows to infinity when parsed.
     expect_rejected(SETTINGS_JSON_TYPE_ERROR, "{\"target\":1e999}");
     expect_rejected(SETTINGS_JSON_TYPE_ERROR, "{\"dim_s\":-1e999}");
@@ -469,6 +475,7 @@ static settings_t copy_fields_over_garbage(const settings_t *src)
     d.sleep_after_s = src->sleep_after_s;
     d.off_after_min = src->off_after_min;
     d.ble_enabled = src->ble_enabled;
+    d.dot_invert = src->dot_invert;
     d.yaw_stale_s = src->yaw_stale_s;
     d.mount_cal_valid = src->mount_cal_valid;
     d.drill_axis = src->drill_axis;
@@ -505,6 +512,7 @@ static void test_equal_sees_every_field(void)
     CHECK_FIELD(b.sleep_after_s++);
     CHECK_FIELD(b.off_after_min++);
     CHECK_FIELD(b.ble_enabled = !b.ble_enabled);
+    CHECK_FIELD(b.dot_invert = !b.dot_invert);
     CHECK_FIELD(b.yaw_stale_s++);
     CHECK_FIELD(b.mount_cal_valid = !b.mount_cal_valid);
     CHECK_FIELD(b.drill_axis.x = 0.01f);

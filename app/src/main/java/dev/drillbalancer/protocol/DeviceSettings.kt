@@ -39,6 +39,7 @@ enum class SettingsField(val key: String) {
     OFF_MIN("off_min"),
     BLE("ble"),
     STALE_S("stale_s"),
+    DOT_INV("dot_inv"),
 }
 
 /** Calibrations the device has stored (read-only "cal" object). */
@@ -62,6 +63,8 @@ data class DeviceSettings(
     @SerialName("off_min") val offAfterMin: Int,
     @SerialName("ble") val bleEnabled: Boolean,
     @SerialName("stale_s") val yawStaleS: Int,
+    // Older firmware omits it; those devices never invert.
+    @SerialName("dot_inv") val dotInvert: Boolean = false,
     @SerialName("cal") val cal: CalState = CalState(),
     @SerialName("ver") val schemaVersion: Int = SettingsLimits.SCHEMA_VERSION,
 ) {
@@ -110,6 +113,7 @@ data class DeviceSettings(
             offAfterMin = 60,
             bleEnabled = true,
             yawStaleS = 60,
+            dotInvert = false,
         )
 
         private val json = Json { ignoreUnknownKeys = true }
@@ -170,6 +174,7 @@ private fun SettingsField.differs(a: DeviceSettings, b: DeviceSettings): Boolean
     SettingsField.OFF_MIN -> a.offAfterMin != b.offAfterMin
     SettingsField.BLE -> a.bleEnabled != b.bleEnabled
     SettingsField.STALE_S -> a.yawStaleS != b.yawStaleS
+    SettingsField.DOT_INV -> a.dotInvert != b.dotInvert
 }
 
 private fun SettingsField.json(s: DeviceSettings): String = when (this) {
@@ -184,6 +189,7 @@ private fun SettingsField.json(s: DeviceSettings): String = when (this) {
     SettingsField.OFF_MIN -> s.offAfterMin.toString()
     SettingsField.BLE -> s.bleEnabled.toString()
     SettingsField.STALE_S -> s.yawStaleS.toString()
+    SettingsField.DOT_INV -> s.dotInvert.toString()
 }
 
 private fun SettingsField.copy(from: DeviceSettings, to: DeviceSettings): DeviceSettings = when (this) {
@@ -198,6 +204,7 @@ private fun SettingsField.copy(from: DeviceSettings, to: DeviceSettings): Device
     SettingsField.OFF_MIN -> to.copy(offAfterMin = from.offAfterMin)
     SettingsField.BLE -> to.copy(bleEnabled = from.bleEnabled)
     SettingsField.STALE_S -> to.copy(yawStaleS = from.yawStaleS)
+    SettingsField.DOT_INV -> to.copy(dotInvert = from.dotInvert)
 }
 
 /**

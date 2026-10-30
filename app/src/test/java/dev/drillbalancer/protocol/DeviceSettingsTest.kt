@@ -10,7 +10,7 @@ class DeviceSettingsTest {
     // settings_to_json(settings_defaults()), as test_settings.c expects it.
     private val defaultsJson =
         "{\"tol\":0.5,\"near\":2,\"target\":45,\"mode\":\"wall\",\"bright\":100,\"dim_bright\":20," +
-            "\"dim_s\":30,\"sleep_s\":120,\"off_min\":60,\"ble\":true,\"stale_s\":60," +
+            "\"dim_s\":30,\"sleep_s\":120,\"off_min\":60,\"ble\":true,\"stale_s\":60,\"dot_inv\":false," +
             "\"cal\":{\"mount\":false,\"accel\":false},\"ver\":1}"
 
     private val d = DeviceSettings.DEFAULTS
@@ -30,7 +30,7 @@ class DeviceSettingsTest {
         // %.6g / %.9g output of settings_to_json, calibrations stored
         val json = "{\"tol\":0.0512345678,\"near\":19.987654,\"target\":-89.5,\"mode\":\"angle\",\"bright\":10," +
             "\"dim_bright\":1,\"dim_s\":600,\"sleep_s\":3600,\"off_min\":0,\"ble\":false,\"stale_s\":600," +
-            "\"cal\":{\"mount\":true,\"accel\":true},\"ver\":1}"
+            "\"dot_inv\":true,\"cal\":{\"mount\":true,\"accel\":true},\"ver\":1}"
         val s = parse(json)
         assertEquals(0.0512345678f, s.toleranceDeg)
         assertEquals(19.987654f, s.nearDeg)
@@ -38,6 +38,7 @@ class DeviceSettingsTest {
         assertEquals(LevelMode.ANGLE, s.mode)
         assertEquals(CalState(mount = true, accel = true), s.cal)
         assertFalse(s.bleEnabled)
+        assertTrue(s.dotInvert)
         assertEquals(0, s.offAfterMin)
         assertTrue(s.isValid)
     }
@@ -46,6 +47,11 @@ class DeviceSettingsTest {
     fun ignoresUnknownKeysAndTrailingNul() {
         val json = defaultsJson.removeSuffix("}") + ",\"future\":[1,2],\"x\":{\"y\":1}}\u0000"
         assertEquals(d, parse(json))
+    }
+
+    @Test
+    fun olderFirmwareWithoutDotInvParses() {
+        assertEquals(d, parse(defaultsJson.replace("\"dot_inv\":false,", "")))
     }
 
     @Test
@@ -161,10 +167,11 @@ class DeviceSettingsTest {
         val edited = d.copy(
             toleranceDeg = 1.25f, nearDeg = 7.5f, targetDeg = -30f, mode = LevelMode.ANGLE, brightnessPct = 80,
             dimBrightnessPct = 5, dimAfterS = 45, sleepAfterS = 300, offAfterMin = 0, bleEnabled = false, yawStaleS = 120,
+            dotInvert = true,
         )
         assertEquals(
             "{\"tol\":1.25,\"near\":7.5,\"target\":-30,\"mode\":\"angle\",\"bright\":80,\"dim_bright\":5," +
-                "\"dim_s\":45,\"sleep_s\":300,\"off_min\":0,\"ble\":false,\"stale_s\":120}",
+                "\"dim_s\":45,\"sleep_s\":300,\"off_min\":0,\"ble\":false,\"stale_s\":120,\"dot_inv\":true}",
             SettingsUpdate.diff(d, edited).toJson(),
         )
         // The update parses back onto the defaults as the edit (what the device stores).

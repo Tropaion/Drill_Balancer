@@ -210,10 +210,10 @@ static void size_tol_ring(const settings_t *cfg)
 }
 
 // The line below the number (ui_aim_sub()).
-static void update_sub(const level_reading_t *r, level_mode_t mode, bool zero_set)
+static void update_sub(const level_reading_t *r, level_mode_t mode, bool zero_set, bool invert)
 {
     ui_aim_sub_t sub;
-    ui_aim_sub(r, mode, zero_set, &sub);
+    ui_aim_sub(r, mode, zero_set, invert, &sub);
     ui_set_text(s.sub_yaw, sub.yaw);
     ui_set_text_color(s.sub_yaw, sub.yaw_stale ? lv_color_hex(UI_C_AMBER)
                                                : ui_status_color(r->yaw_status));
@@ -230,20 +230,20 @@ static void update_aim(const level_reading_t *r, level_mode_t mode, bool zero_se
     size_tol_ring(cfg);
 
     float xd, yd;
-    ui_dot_deg(r, &xd, &yd);
+    ui_dot_deg(r, cfg->dot_invert, &xd, &yd);
     int32_t x, y;
     ui_bubble_offset(xd, yd, cfg->near_deg, (float)VIEW_R, (float)DOT_R + 2.0f, &x, &y);
     lv_obj_set_pos(s.dot, x, y);
     ui_set_bg_color(s.dot, ui_status_color(ui_dot_status(r)));
 
-    int arrow = ui_aim_arrow(r);
+    int arrow = ui_aim_arrow(r, cfg->dot_invert);
     ui_set_text(s.arrow, arrow > 0 ? LV_SYMBOL_UP : (arrow < 0 ? LV_SYMBOL_DOWN : ""));
     lv_obj_set_flag(s.arrow, LV_OBJ_FLAG_HIDDEN, arrow == 0);
     ui_set_text_color(s.arrow, c);
     ui_fmt_deg(buf, sizeof(buf), fabsf(r->deviation_deg), false);
     ui_set_text(s.value, buf);
     ui_set_text_color(s.value, c);
-    update_sub(r, mode, zero_set);
+    update_sub(r, mode, zero_set, cfg->dot_invert);
 }
 
 static void update_status_bar(const app_snapshot_t *snap)

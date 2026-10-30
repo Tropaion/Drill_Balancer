@@ -40,11 +40,11 @@ class SettingsScreenshotTest {
         compose.onRoot().captureRoboImage()
     }
 
-    // Tall window: every field at once, with three edits pending
+    // Tall window: every field at once, with four edits pending
     @Test
     @Config(qualifiers = "w360dp-h2300dp-xhdpi")
     fun allFieldsEdited() {
-        show(SettingsUiState(base = device, edited = device.copy(toleranceDeg = 0.25f, sleepAfterS = 300, bleEnabled = false)))
+        show(SettingsUiState(base = device, edited = device.copy(toleranceDeg = 0.25f, sleepAfterS = 300, bleEnabled = false, dotInvert = true)))
         compose.onRoot().captureRoboImage()
     }
 

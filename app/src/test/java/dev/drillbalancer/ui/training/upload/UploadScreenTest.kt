@@ -30,6 +30,7 @@ import dev.drillbalancer.ui.Themed
 import dev.drillbalancer.ui.settings.SettingsActions
 import dev.drillbalancer.ui.settings.SettingsScreen
 import dev.drillbalancer.ui.settings.SettingsUiState
+import dev.drillbalancer.ui.settings.help
 import dev.drillbalancer.ui.settings.label
 import dev.drillbalancer.ui.training.RecordingRow
 import dev.drillbalancer.ui.training.TrainingListActions
@@ -243,16 +244,28 @@ class UploadScreenTest {
         assertEquals(3, compose.onAllNodes(isToggleable()).fetchSemanticsNodes().size)
     }
 
-    /** The device settings' Bluetooth row the same way. */
+    /** The device settings' switch rows (invert dot, Bluetooth) the same way. */
     @Test
-    fun theBluetoothSwitchIsALabelledRow() {
-        val set = ArrayList<Boolean>()
+    fun theSettingsSwitchesAreLabelledRows() {
+        val ble = ArrayList<Boolean>()
+        val dot = ArrayList<Boolean>()
         val d = DeviceSettings.DEFAULTS
-        compose.setContent { Themed { SettingsScreen(SettingsUiState(base = d, edited = d), SettingsActions(setBle = { set += it })) } }
+        compose.setContent {
+            Themed {
+                SettingsScreen(
+                    SettingsUiState(base = d, edited = d),
+                    SettingsActions(setBle = { ble += it }, setDotInvert = { dot += it }),
+                )
+            }
+        }
+        compose.onNode(isToggleable() and hasText(SettingsField.DOT_INV.label, substring = true))
+            .performScrollTo().assertIsOff()
+        compose.onNodeWithText(SettingsField.DOT_INV.help).performClick()
+        assertEquals(listOf(true), dot)
         val row = compose.onNode(isToggleable() and hasText(SettingsField.BLE.label, substring = true))
         row.performScrollTo().assertIsOn()
         compose.onNodeWithText("Lets this app connect.").performClick()
-        assertEquals(listOf(false), set)
-        assertEquals(1, compose.onAllNodes(isToggleable()).fetchSemanticsNodes().size)
+        assertEquals(listOf(false), ble)
+        assertEquals(2, compose.onAllNodes(isToggleable()).fetchSemanticsNodes().size)
     }
 }

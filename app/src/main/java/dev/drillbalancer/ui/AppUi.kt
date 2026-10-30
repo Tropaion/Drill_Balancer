@@ -258,6 +258,7 @@ private fun ConnectedApp(
                     state,
                     SettingsActions(
                         step = vm::step, set = vm::set, setMode = vm::setMode, setBle = vm::setBle,
+                        setDotInvert = vm::setDotInvert,
                         save = vm::save, discard = vm::discard, reload = vm::reload, dismissMessage = vm::dismissMessage,
                     ),
                 )
