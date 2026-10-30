@@ -48,6 +48,33 @@ const imu_profile_info_t *imu_profile_info(imu_profile_t p)
     return (unsigned)p < IMU_PROFILE_COUNT ? &PROFILES[p] : NULL;
 }
 
+// Chip axes -> board frame (X right, Y up along the screen, Z towards the
+// user), measured on the board: at rest the chip reads -1 g on Z with the
+// screen up, +1 g on X standing on the bottom edge (top edge up) and +1 g on
+// Y lying on the left edge (right edge up). The QMI8658 sits turned by 90
+// degrees and upside down. imu_init() rejects mirror maps.
+static const imu_axis_map_t AXIS_MAP = {
+    .x = {1, 1},
+    .y = {0, 1},
+    .z = {2, -1},
+};
+
+const imu_axis_map_t *imu_axis_map(void)
+{
+    return &AXIS_MAP;
+}
+
+vec3_t imu_board_to_chip(const imu_axis_map_t *map, vec3_t board)
+{
+    const imu_axis_t axes[3] = {map->x, map->y, map->z};
+    const float b[3] = {board.x, board.y, board.z};
+    float c[3] = {0.0f, 0.0f, 0.0f};
+    for (int i = 0; i < 3; i++) {
+        c[axes[i].src] = (float)axes[i].sign * b[i];
+    }
+    return (vec3_t){c[0], c[1], c[2]};
+}
+
 bool imu_axis_map_valid(const imu_axis_map_t *map)
 {
     const imu_axis_t axes[3] = {map->x, map->y, map->z};

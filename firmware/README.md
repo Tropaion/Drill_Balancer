@@ -581,10 +581,12 @@ Every `TODO(hw)` in the tree is covered below (36 steps), with its file. Grep fo
    samples must read about 1 g at rest.
 10. **Data registers with the FIFO running** (`imu.c`, `imu_read`). The
     self-test must pass while the FIFO streams.
-11. **Axis mapping** (`imu.c`, IMU_AXIS_MAP; also
+11. **Axis mapping** (`imu_frame.c`, imu_axis_map(); also
     `components/ui/src/ui_logic.c`, the tile labels and bubble direction):
     - Accel: screen up gives +Z = +1 g, top edge up gives +Y = +1 g, right
-      edge up gives +X = +1 g.
+      edge up gives +X = +1 g. Done for the accel on 2026-10-29: the chip
+      sits turned by 90 degrees and upside down (X = chip Y, Y = chip X,
+      Z = -chip Z).
     - Gyro: turning the device counterclockwise (seen from the front) gives
       a positive gyro Z.
     - UI: in floor mode, lowering the right edge must move the bubble to the

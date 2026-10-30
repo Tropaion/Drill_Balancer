@@ -101,17 +101,6 @@ static const char *TAG = "imu";
 #define SELF_TEST_READS   8
 #define SELF_TEST_TOL_G   0.15f
 
-// Chip axes -> board frame (X right, Y up along the screen, Z towards the
-// user). TODO(hw): identity until checked on the real board. With the device
-// at rest, imu_read() must give +1 g on +Z with the screen facing up, +1 g on
-// +Y standing on its bottom edge (top edge up), +1 g on +X lying on its left
-// edge (right edge up). Fix wrong axes here; imu_init() rejects mirror maps.
-static const imu_axis_map_t IMU_AXIS_MAP = {
-    .x = {0, 1},
-    .y = {1, 1},
-    .z = {2, 1},
-};
-
 static i2c_master_dev_handle_t s_dev;
 static SemaphoreHandle_t s_lock;
 static StaticSemaphore_t s_lock_buf;
@@ -247,8 +236,8 @@ esp_err_t imu_init(i2c_master_bus_handle_t bus, imu_profile_t p)
 {
     ESP_RETURN_ON_FALSE(bus, ESP_ERR_INVALID_ARG, TAG, "no I2C bus");
     ESP_RETURN_ON_FALSE(imu_profile_info(p), ESP_ERR_INVALID_ARG, TAG, "profile %d", (int)p);
-    ESP_RETURN_ON_FALSE(imu_axis_map_valid(&IMU_AXIS_MAP), ESP_ERR_INVALID_STATE, TAG,
-                        "IMU_AXIS_MAP is not a rotation");
+    ESP_RETURN_ON_FALSE(imu_axis_map_valid(imu_axis_map()), ESP_ERR_INVALID_STATE, TAG,
+                        "the axis map is not a rotation");
     if (!s_lock) {
         s_lock = xSemaphoreCreateMutexStatic(&s_lock_buf);
     }
@@ -294,11 +283,6 @@ esp_err_t imu_set_profile(imu_profile_t p)
         ESP_LOGI(TAG, "profile %s, %.1f Hz", profile()->name, (double)odr_hz());
     }
     return err;
-}
-
-const imu_axis_map_t *imu_axis_map(void)
-{
-    return &IMU_AXIS_MAP;
 }
 
 imu_profile_t imu_get_profile(void)
@@ -397,7 +381,7 @@ static esp_err_t read_fifo_locked(imu_sample_t *out, size_t max, size_t *n_out,
         imu_raw_runs(&plan, raw->run);
         raw->frames = s_fifo_buf;
         raw->n = (uint16_t)n;
-        raw->map = &IMU_AXIS_MAP;
+        raw->map = imu_axis_map();
         raw->chip_ts = ts;
         raw->host_us = now_us;
         raw->epoch = s_epoch;
@@ -407,7 +391,7 @@ static esp_err_t read_fifo_locked(imu_sample_t *out, size_t max, size_t *n_out,
     size_t o = 0;
     for (size_t i = 0; i < n; i++) {
         imu_sample_t s;
-        imu_decode_frame(&IMU_AXIS_MAP, p, &s_fifo_buf[i * IMU_FRAME_BYTES], &s);
+        imu_decode_frame(imu_axis_map(), p, &s_fifo_buf[i * IMU_FRAME_BYTES], &s);
         if (i == plan.insert_at && fill > 0) {
             imu_fill_gap(s_have_last ? &s_last : &s, &s, fill, &out[o]);
             o += fill;
@@ -462,7 +446,7 @@ esp_err_t imu_read(imu_sample_t *out)
     esp_err_t err = rd(REG_AX_L, buf, sizeof(buf));
     unlock();
     ESP_RETURN_ON_ERROR(err, TAG, "data read");
-    imu_decode_frame(&IMU_AXIS_MAP, profile(), buf, out);
+    imu_decode_frame(imu_axis_map(), profile(), buf, out);
     return ESP_OK;
 }
 

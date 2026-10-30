@@ -513,10 +513,6 @@ static bool s_have_last;
 static uint32_t s_epoch;          // configure() runs (imu_raw_info_t.epoch)
 static uint8_t s_fifo_buf[IMU_FIFO_MAX_FRAMES * IMU_FRAME_BYTES];
 
-// imu.c IMU_AXIS_MAP (identity until checked on the board, so the chip
-// frame below is the board frame).
-static const imu_axis_map_t IMU_AXIS_MAP = {.x = {0, 1}, .y = {1, 1}, .z = {2, 1}};
-
 static const imu_profile_info_t *profile(void)
 {
     return imu_profile_info(s_chip.profile);
@@ -576,8 +572,9 @@ static void chip_feed(const float *v, int n)
         if (s_chip.busy) {
             continue;           // the FIFO is reset when configure() ends
         }
-        vec3_t a = {v[0], v[1], v[2]};
-        vec3_t g = {v[3], v[4], v[5]};
+        // The board's motion as the chip, mounted turned, reads it.
+        vec3_t a = imu_board_to_chip(imu_axis_map(), (vec3_t){v[0], v[1], v[2]});
+        vec3_t g = imu_board_to_chip(imu_axis_map(), (vec3_t){v[3], v[4], v[5]});
         if (lpf) {
             lpf_imu_step(&s_chip.lpf, &a, &g);   // every sample, also those read mode loses
         }
@@ -629,7 +626,7 @@ static void drv_read_fifo(imu_sample_t *out, size_t max, size_t *n_out, imu_raw_
     imu_raw_runs(&plan, raw->run);
     raw->frames = s_fifo_buf;
     raw->n = (uint16_t)n;
-    raw->map = &IMU_AXIS_MAP;
+    raw->map = imu_axis_map();
     raw->chip_ts = ts;
     raw->host_us = now_us;
     raw->epoch = s_epoch;
@@ -638,7 +635,7 @@ static void drv_read_fifo(imu_sample_t *out, size_t max, size_t *n_out, imu_raw_
     size_t o = 0;
     for (size_t i = 0; i < n; i++) {
         imu_sample_t s;
-        imu_decode_frame(&IMU_AXIS_MAP, p, &s_fifo_buf[i * IMU_FRAME_BYTES], &s);
+        imu_decode_frame(imu_axis_map(), p, &s_fifo_buf[i * IMU_FRAME_BYTES], &s);
         if (i == plan.insert_at && fill > 0) {
             imu_fill_gap(s_have_last ? &s_last : &s, &s, fill, &out[o]);
             o += fill;
@@ -2065,6 +2062,7 @@ static void act_emit_session(void)
 {
     const rec_fsm_t *f = &s_rec.fsm;
     const imu_profile_info_t *p = imu_profile_info((imu_profile_t)f->profile);
+    const imu_axis_map_t *map = imu_axis_map();
     uint8_t ch = rec_audio_channels(f->mic_mask);
     rec_session_t s = {
         .take_id = f->take_id,
@@ -2076,9 +2074,7 @@ static void act_emit_session(void)
         .odr_mhz = p->odr_mhz,
         .accel_lsb_per_g = p->accel_lsb_per_g,
         .gyro_lsb_per_dps = p->gyro_lsb_per_dps,
-        .axis = {{IMU_AXIS_MAP.x.src, IMU_AXIS_MAP.x.sign},
-                 {IMU_AXIS_MAP.y.src, IMU_AXIS_MAP.y.sign},
-                 {IMU_AXIS_MAP.z.src, IMU_AXIS_MAP.z.sign}},
+        .axis = {{map->x.src, map->x.sign}, {map->y.src, map->y.sign}, {map->z.src, map->z.sign}},
         .audio_rate_hz = ch ? SIM_AUDIO_RATE : 0u,
         .audio_channels = ch,
         .audio_bits = REC_AUDIO_BITS,

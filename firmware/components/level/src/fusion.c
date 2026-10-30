@@ -12,7 +12,10 @@ fusion_config_t fusion_default_config(void)
         .accel_trust_g = 0.05f,
         .accel_reject_g = 0.25f,
         .still_gyro_rad_s = 0.02f,
-        .still_gyro_initial_rad_s = 0.1f,
+        .steady_tau_s = 0.25f,
+        .bias_max_rad_s = 0.4f,
+        .bias_match_rad_s = 0.035f,
+        .relearn_after_s = 20.0f,
         .still_accel_g = 0.03f,
         .still_time_s = 0.5f,
         .bias_tau_s = 5.0f,
@@ -55,22 +58,56 @@ bool fusion_bias_valid(const fusion_t *f)
     return f->bias_learn_s >= BIAS_VALID_AFTER_S;
 }
 
-static void update_bias(fusion_t *f, vec3_t gyro, float accel_dev_g, float dt)
+// Still means steady: gyro and accel stay near their own recent means
+// (whatever the gyro offset; a tilt faster than about 7 deg/s moves the
+// accel too far), |a| is near 1 g and |gyro| below bias_max_rad_s. Once a
+// bias is learned the gyro's recent mean must also match it within
+// bias_match_rad_s, so a slow, even turn about the vertical is not learned;
+// steady but off it for relearn_after_s (a bias learned from such a turn at
+// power-up), the bias is learned anew.
+static void update_bias(fusion_t *f, vec3_t gyro, vec3_t accel, float accel_dev_g, float dt)
 {
     const fusion_config_t *cfg = &f->cfg;
-    float limit = fusion_bias_valid(f) ? cfg->still_gyro_rad_s : cfg->still_gyro_initial_rad_s;
+    // Squared: no sqrt in the 448 Hz path for threshold tests.
+    float lim2 = cfg->still_gyro_rad_s * cfg->still_gyro_rad_s;
+    float alim2 = cfg->still_accel_g * cfg->still_accel_g;
+    if (!f->primed) {
+        f->gyro_mean = gyro;
+        f->accel_mean = accel;
+        f->primed = true;
+    }
+    float k = level_rc_alpha(cfg->steady_tau_s, dt);
+    vec3_t dm = vec3_sub(gyro, f->gyro_mean);
+    vec3_t da = vec3_sub(accel, f->accel_mean);
+    f->gyro_mean = vec3_add(f->gyro_mean, vec3_scale(dm, k));
+    f->accel_mean = vec3_add(f->accel_mean, vec3_scale(da, k));
+    bool steady = vec3_dot(dm, dm) < lim2 && accel_dev_g < cfg->still_accel_g &&
+                  vec3_dot(da, da) < alim2 &&
+                  vec3_dot(gyro, gyro) < cfg->bias_max_rad_s * cfg->bias_max_rad_s;
+    f->steady_s = steady ? f->steady_s + dt : 0.0f;
+
     vec3_t d = vec3_sub(gyro, f->gyro_bias);
-    // Squared: no sqrt in the 448 Hz path for a threshold test.
-    bool still = vec3_dot(d, d) < limit * limit && accel_dev_g < cfg->still_accel_g;
+    vec3_t dmean = vec3_sub(f->gyro_mean, f->gyro_bias);
+    bool matches = vec3_dot(dmean, dmean) < cfg->bias_match_rad_s * cfg->bias_match_rad_s;
+    bool valid = fusion_bias_valid(f);
+    if (!matches && valid && f->steady_s >= cfg->relearn_after_s) {
+        f->bias_learn_s = 0.0f;
+        valid = false;
+    }
+    bool still = steady && (matches || !valid);
 
     f->still_s = still ? f->still_s + dt : 0.0f;
     if (f->still_s < cfg->still_time_s) {
         return;
     }
 
-    // Running mean at first, then an exponential average with bias_tau_s.
+    // A running mean over this still period, then an exponential average with
+    // bias_tau_s. Restarting the mean with every still period follows the
+    // bias within about a second after the device was moved: on the board it
+    // differs by 0.016 rad/s between lying flat and standing upright.
     f->bias_learn_s += dt;
-    float alpha = dt / fminf(f->bias_learn_s, cfg->bias_tau_s);
+    float period_s = f->still_s - cfg->still_time_s + dt;
+    float alpha = dt / fminf(fminf(f->bias_learn_s, period_s), cfg->bias_tau_s);
     f->gyro_bias = vec3_add(f->gyro_bias, vec3_scale(d, alpha));
 }
 
@@ -79,7 +116,7 @@ float fusion_update(fusion_t *f, vec3_t gyro_rad_s, vec3_t accel_g, float dt_s)
     float a_norm = vec3_norm(accel_g);
     float dev = fabsf(a_norm - 1.0f);
 
-    update_bias(f, gyro_rad_s, dev, dt_s);
+    update_bias(f, gyro_rad_s, accel_g, dev, dt_s);
     vec3_t w = vec3_sub(gyro_rad_s, f->gyro_bias);
     float gyro_rate = vec3_norm(w);
 

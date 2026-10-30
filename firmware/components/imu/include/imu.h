@@ -4,8 +4,7 @@
 //
 // All vectors are in the board frame used by the level code: X right, Y up
 // along the screen, Z out of the screen towards the user. The chip-to-board
-// axis mapping lives in imu.c (IMU_AXIS_MAP) and must be checked on the real
-// board.
+// axis map is imu_axis_map() (imu_frame.c, measured on the board).
 
 #include <stdbool.h>
 #include <stddef.h>
@@ -97,8 +96,8 @@ esp_err_t imu_init(i2c_master_bus_handle_t bus, imu_profile_t p);
 esp_err_t imu_set_profile(imu_profile_t p);
 imu_profile_t imu_get_profile(void);
 
-// The chip-to-board axis map (IMU_AXIS_MAP in imu.c), e.g. for the
-// recorder's SESSION record.
+// The chip-to-board axis map (imu_frame.c), e.g. for the recorder's SESSION
+// record.
 const imu_axis_map_t *imu_axis_map(void);
 
 // Sample period of the configured ODR (seconds), for the fusion dt.

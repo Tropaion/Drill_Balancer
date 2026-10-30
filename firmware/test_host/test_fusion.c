@@ -137,6 +137,96 @@ static void test_slow_turn_is_not_learned_as_bias(void)
     TEST_ASSERT_FLOAT_WITHIN(0.5f, 50.0f, wrap_deg(body_x_heading_deg() - start));
 }
 
+static void test_learns_a_large_bias(void)
+{
+    // The QMI8658 on the board read about this at rest, far above any
+    // threshold on |gyro| itself.
+    const vec3_t bias = {0.27f, 0.11f, -0.02f};
+    quat_t truth = rot_deg(AXIS_X, 30.0f);
+    fusion_init(&f, &cfg, accel_at_rest(truth));
+    for (int i = 0; i < SAMPLES(3.0f); i++) {
+        fusion_update(&f, vec3_add(bias, test_gauss_vec3(0.002f)), accel_at_rest(truth), DT);
+    }
+    TEST_ASSERT_TRUE(fusion_bias_valid(&f));
+    assert_vec3_within(0.003f, bias, f.gyro_bias);
+
+    // Neither the heading drifts nor the tilt settles off by bias / kp.
+    float heading = body_x_heading_deg();
+    for (int i = 0; i < SAMPLES(10.0f); i++) {
+        fusion_update(&f, vec3_add(bias, test_gauss_vec3(0.002f)), accel_at_rest(truth), DT);
+    }
+    TEST_ASSERT_FLOAT_WITHIN(0.5f, heading, body_x_heading_deg());
+    TEST_ASSERT_FLOAT_WITHIN(0.3f, 0.0f, tilt_error_deg(truth));
+}
+
+static void test_bias_follows_a_change_between_still_periods(void)
+{
+    // The QMI8658's bias shifts with orientation (lying flat vs upright).
+    const vec3_t flat = {0.112f, 0.266f, 0.021f};
+    const vec3_t upright = {0.128f, 0.266f, 0.021f};
+    fusion_init(&f, &cfg, AXIS_Z);
+    for (int i = 0; i < SAMPLES(10.0f); i++) {
+        fusion_update(&f, vec3_add(flat, test_gauss_vec3(0.002f)), AXIS_Z, DT);
+    }
+    assert_vec3_within(0.001f, flat, f.gyro_bias);
+
+    // Picked up (not steady), set down again.
+    for (int i = 0; i < SAMPLES(0.5f); i++) {
+        fusion_update(&f, (vec3_t){1.0f, 0, 0}, AXIS_Z, DT);
+    }
+    // About a second for the recent mean to settle after the motion, then
+    // still_time_s, then about a second of learning.
+    for (int i = 0; i < SAMPLES(cfg.still_time_s + 2.5f); i++) {
+        fusion_update(&f, vec3_add(upright, test_gauss_vec3(0.002f)), AXIS_Z, DT);
+    }
+    assert_vec3_within(0.001f, upright, f.gyro_bias);
+}
+
+static void test_bias_from_a_turn_is_learned_anew(void)
+{
+    // An even turn right after power-up looks like a bias...
+    fusion_init(&f, &cfg, AXIS_Z);
+    const vec3_t turn = {0, 0, LEVEL_DEG2RAD(5.0f)};
+    for (int i = 0; i < SAMPLES(2.0f); i++) {
+        fusion_update(&f, turn, AXIS_Z, DT);
+    }
+    TEST_ASSERT_TRUE(fusion_bias_valid(&f));
+    assert_vec3_within(0.001f, turn, f.gyro_bias);
+
+    // ... until the device lies steady but off it for relearn_after_s.
+    for (int i = 0; i < SAMPLES(cfg.relearn_after_s + 3.0f); i++) {
+        fusion_update(&f, (vec3_t){0}, AXIS_Z, DT);
+    }
+    TEST_ASSERT_TRUE(fusion_bias_valid(&f));
+    assert_vec3_within(0.001f, (vec3_t){0}, f.gyro_bias);
+    TEST_ASSERT_TRUE(fusion_is_still(&f));
+}
+
+static void test_even_tilt_at_power_up_is_no_bias(void)
+{
+    // Tilting at an even 10 deg/s keeps |a| at 1 g, but the accel turns.
+    fusion_init(&f, &cfg, AXIS_Z);
+    quat_t truth = quat_identity();
+    const float rate = LEVEL_DEG2RAD(10.0f);
+    for (int i = 0; i < SAMPLES(3.0f); i++) {
+        truth = quat_normalize(quat_mul(truth, quat_from_axis_angle(AXIS_X, rate * DT)));
+        fusion_update(&f, (vec3_t){rate, 0, 0}, accel_at_rest(truth), DT);
+    }
+    TEST_ASSERT_FALSE(fusion_bias_valid(&f));
+    assert_vec3_within(1e-6f, (vec3_t){0}, f.gyro_bias);
+}
+
+static void test_fast_even_turn_is_never_a_bias(void)
+{
+    fusion_init(&f, &cfg, AXIS_Z);
+    for (int i = 0; i < SAMPLES(3.0f); i++) {
+        fusion_update(&f, (vec3_t){0, 0, 2.0f * cfg.bias_max_rad_s}, AXIS_Z, DT);
+    }
+    TEST_ASSERT_FALSE(fusion_bias_valid(&f));
+    TEST_ASSERT_FALSE(fusion_is_still(&f));
+    assert_vec3_within(1e-6f, (vec3_t){0}, f.gyro_bias);
+}
+
 static void test_still_needs_still_time(void)
 {
     fusion_init(&f, &cfg, AXIS_Z);
@@ -160,6 +250,11 @@ int main(void)
     RUN_TEST(test_vibration_averages_out);
     RUN_TEST(test_learns_gyro_bias_when_still);
     RUN_TEST(test_slow_turn_is_not_learned_as_bias);
+    RUN_TEST(test_learns_a_large_bias);
+    RUN_TEST(test_bias_follows_a_change_between_still_periods);
+    RUN_TEST(test_bias_from_a_turn_is_learned_anew);
+    RUN_TEST(test_even_tilt_at_power_up_is_no_bias);
+    RUN_TEST(test_fast_even_turn_is_never_a_bias);
     RUN_TEST(test_still_needs_still_time);
     return UNITY_END();
 }

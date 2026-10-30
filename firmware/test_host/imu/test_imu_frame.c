@@ -35,6 +35,24 @@ static imu_gap_plan_t plan(const imu_gap_t *g, uint32_t ts, size_t frames)
     return imu_gap_plan(g, ts, frames, true, BATCH);
 }
 
+static void test_board_axis_map(void)
+{
+    // Measured on the board (imu_frame.c): screen up the chip reads -1 g on
+    // Z, top edge up +1 g on X, right edge up +1 g on Y.
+    const imu_axis_map_t *m = imu_axis_map();
+    TEST_ASSERT_TRUE(imu_axis_map_valid(m));
+    const struct {
+        vec3_t board, chip;
+    } poses[] = {
+        {{0, 0, 1}, {0, 0, -1}},
+        {{0, 1, 0}, {1, 0, 0}},
+        {{1, 0, 0}, {0, 1, 0}},
+    };
+    for (size_t i = 0; i < sizeof(poses) / sizeof(poses[0]); i++) {
+        assert_vec3_within(1e-6f, poses[i].chip, imu_board_to_chip(m, poses[i].board));
+    }
+}
+
 static void test_axis_map_validation(void)
 {
     TEST_ASSERT_TRUE(imu_axis_map_valid(&IDENTITY));
@@ -711,6 +729,7 @@ int main(void)
     RUN_TEST(test_raw_runs_across_timestamp_wrap);
     RUN_TEST(test_raw_runs_follow_a_lossy_fifo);
     RUN_TEST(test_axis_map_validation);
+    RUN_TEST(test_board_axis_map);
     RUN_TEST(test_decode_is_little_endian_and_scaled);
     RUN_TEST(test_decode_full_scale_extremes);
     RUN_TEST(test_decode_applies_axis_map_to_both_sensors);

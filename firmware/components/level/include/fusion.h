@@ -16,9 +16,13 @@ typedef struct {
     float kp;                 // accelerometer correction gain
     float accel_trust_g;      // full accel trust while ||a| - 1| is below this
     float accel_reject_g;     // no accel correction above this
-    float still_gyro_rad_s;   // max |gyro - bias| that counts as still
-    float still_gyro_initial_rad_s;  // the same before the first bias estimate
-    float still_accel_g;      // max ||a| - 1| that counts as still
+    float still_gyro_rad_s;   // max |gyro - its recent mean| when still
+    float bias_match_rad_s;   // max |recent mean - bias| once a bias is learned
+                              // (the board's bias moves 0.016 between poses)
+    float steady_tau_s;       // time constant of the gyro's and accel's recent means
+    float bias_max_rad_s;     // a steady gyro above this is a turn, never a bias
+    float relearn_after_s;    // steady this long but off the bias: learn anew
+    float still_accel_g;      // max ||a| - 1| and |a - its recent mean| when still
     float still_time_s;       // stillness needed before bias learning starts
     float bias_tau_s;         // time constant of the bias average
 } fusion_config_t;
@@ -29,6 +33,10 @@ typedef struct {
     vec3_t gyro_bias;         // rad/s
     float bias_learn_s;       // total time spent learning the bias
     float still_s;            // how long the device has been still
+    vec3_t gyro_mean;         // recent mean of the raw gyro (steady_tau_s)
+    vec3_t accel_mean;        // recent mean of the accel (steady_tau_s)
+    bool primed;              // the means hold the first sample
+    float steady_s;           // how long the device has been steady (fusion.c)
 } fusion_t;
 
 fusion_config_t fusion_default_config(void);

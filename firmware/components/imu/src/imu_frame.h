@@ -19,6 +19,10 @@ extern "C" {
 // rotation (determinant +1): both frames are right-handed.
 bool imu_axis_map_valid(const imu_axis_map_t *map);
 
+// The inverse of the map: a board-frame vector in chip axes (what the chip
+// reads for it). The simulator's chip model writes its frames with it.
+vec3_t imu_board_to_chip(const imu_axis_map_t *map, vec3_t board);
+
 // Decodes with the scales of profile p.
 void imu_decode_frame(const imu_axis_map_t *map, const imu_profile_info_t *p,
                       const uint8_t frame[IMU_FRAME_BYTES], imu_sample_t *out);
