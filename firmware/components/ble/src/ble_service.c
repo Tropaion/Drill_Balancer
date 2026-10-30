@@ -970,12 +970,6 @@ static void on_connect(uint16_t conn)
         ESP_LOGW(TAG, "2M PHY request: %d", rc);
     }
 #endif
-    // Full 251-byte LL packets so a 247-byte MTU is not split into 27-byte
-    // fragments.
-    if (ble_gap_set_data_len(conn, 251, 2120) != 0) {
-        ESP_LOGW(TAG, "data length request failed");
-    }
-
     s_tick_reset = true;
     esp_timer_stop(s_notify_timer);
     esp_timer_start_periodic(s_notify_timer, NOTIFY_PERIOD_US);
@@ -1180,6 +1174,11 @@ static int gap_event(struct ble_gap_event *event, void *arg)
         }
         return 0;
 
+    case BLE_GAP_EVENT_DATA_LEN_CHG:
+        ESP_LOGI(TAG, "data length tx %u rx %u", event->data_len_chg.max_tx_octets,
+                 event->data_len_chg.max_rx_octets);
+        return 0;
+
     case BLE_GAP_EVENT_PHY_UPDATE_COMPLETE:
         ESP_LOGI(TAG, "PHY tx %u rx %u", event->phy_updated.tx_phy, event->phy_updated.rx_phy);
         return 0;
@@ -1206,6 +1205,13 @@ static void on_sync(void)
     if (rc != 0) {
         ESP_LOGE(TAG, "no usable address: %d", rc);
         return;
+    }
+    // Full 251-byte LL packets so a 247-byte MTU is not split into 27-byte
+    // fragments. The controller default, not per link: the S3 controller never
+    // answered an LE Set Data Length sent from the connect event.
+    rc = ble_gap_write_sugg_def_data_len(251, 2120);
+    if (rc != 0) {
+        ESP_LOGW(TAG, "default data length: %d", rc);
     }
     s_synced = true;
     adv_start(true);
