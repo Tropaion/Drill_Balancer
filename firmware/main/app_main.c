@@ -16,8 +16,10 @@
 #include "ble_service.h"
 #include "bsp/esp-bsp.h"
 #include "control.h"
+#include "driver/gpio.h"
 #include "esp_app_desc.h"
 #include "esp_log.h"
+#include "esp_rom_sys.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "imu.h"
@@ -31,12 +33,54 @@
 
 static const char *TAG = "main";
 
+// A reset (not a power cycle) in the middle of a read leaves the IMU or PMU
+// driving SDA (about one boot in 15), and the first transfer after boot is
+// NACKed; IDF 5.5.1 then waits for the bus without a timeout (i2c_master.c
+// s_i2c_send_commands) and boot hangs. The hardware bus clear does not free
+// it. Nine SCL pulses with SDA released let any slave finish its byte; the
+// STOP ends the transfer.
+static void i2c_recover_bus(void)
+{
+    const gpio_config_t io = {
+        .pin_bit_mask = BIT64(BSP_I2C_SCL) | BIT64(BSP_I2C_SDA),
+        .mode = GPIO_MODE_INPUT_OUTPUT_OD,
+        .pull_up_en = GPIO_PULLUP_ENABLE,   // besides the board's own
+    };
+    gpio_set_level(BSP_I2C_SCL, 1);
+    gpio_set_level(BSP_I2C_SDA, 1);
+    gpio_config(&io);
+    // 5 us half periods (100 kHz), also before the first pulse: without it
+    // the bus stayed held in 3 of 100 boots.
+    esp_rom_delay_us(5);
+    for (int round = 0; round < 3; round++) {
+        for (int i = 0; i < 9; i++) {
+            gpio_set_level(BSP_I2C_SCL, 0);
+            esp_rom_delay_us(5);
+            gpio_set_level(BSP_I2C_SCL, 1);
+            esp_rom_delay_us(5);
+        }
+        gpio_set_level(BSP_I2C_SCL, 0);
+        esp_rom_delay_us(5);
+        gpio_set_level(BSP_I2C_SDA, 0);
+        esp_rom_delay_us(5);
+        gpio_set_level(BSP_I2C_SCL, 1);
+        esp_rom_delay_us(5);
+        gpio_set_level(BSP_I2C_SDA, 1);   // STOP
+        esp_rom_delay_us(5);
+        if (gpio_get_level(BSP_I2C_SDA) && gpio_get_level(BSP_I2C_SCL)) {
+            return;
+        }
+    }
+    ESP_LOGW(TAG, "I2C bus still held low");
+}
+
 // Woken by the deep-sleep timer: only bring up what power_off() needs. The
 // IMU is set up too, so power_off()'s deep-sleep fallback (PMU did not cut
 // the power, e.g. on USB) can still wake on motion.
 static void off_timer_boot(void)
 {
     ESP_LOGI(TAG, "off timer expired");
+    i2c_recover_bus();
     esp_err_t err = bsp_i2c_init();
     if (err == ESP_OK) {
         i2c_master_bus_handle_t bus = bsp_i2c_get_handle();
@@ -117,6 +161,7 @@ void app_main(void)
     // The charger is configured first so a cold start on USB never charges
     // the 1000 mAh cell with the AXP2101 defaults for long.
     i2c_master_bus_handle_t bus = NULL;
+    i2c_recover_bus();
     err = bsp_i2c_init();
     if (err == ESP_OK) {
         bus = bsp_i2c_get_handle();

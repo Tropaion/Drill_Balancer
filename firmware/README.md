@@ -165,6 +165,8 @@ early), the display and brightness, the IMU, the sensor task, the UI, BLE
 (which also creates OTA), and the control task. The recorder starts before
 the sensor task, which reports the IMU to it from its first pass. If the
 image is new after an OTA update, it runs the OTA self-test last.
+Before the I2C bus is set up it clocks it free (`i2c_recover_bus()`), so a
+reset in the middle of a read cannot hang the boot.
 `sensor_task.c` and `control.c` are described above.
 
 **level**: pure C, host-tested.
