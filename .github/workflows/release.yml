@@ -32,20 +32,25 @@ jobs:
           fetch-depth: 0    # the check below looks for the commit on main
       - id: tag
         run: tools/ci/release_check.sh "$GITHUB_REF_NAME"
+      # An annotated tag's GITHUB_SHA is the tag object: both checks need the commit.
       - name: The commit is on main
+        id: commit
         run: |
-          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
-            echo "::error::$GITHUB_SHA is not on main"
+          sha=$(git rev-parse "$GITHUB_SHA^{commit}")
+          if ! git merge-base --is-ancestor "$sha" origin/main; then
+            echo "::error::$sha is not on main"
             exit 1
           fi
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
       - name: CI is green on this commit
         id: ci
         env:
           GH_TOKEN: ${{ github.token }}
+          SHA: ${{ steps.commit.outputs.sha }}
         run: |
-          run=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs?head_sha=$GITHUB_SHA&status=success&per_page=1" --jq '.workflow_runs[0].id // empty')
+          run=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs?head_sha=$SHA&status=success&per_page=1" --jq '.workflow_runs[0].id // empty')
           if [ -z "$run" ]; then
-            echo "::error::CI has not passed on $GITHUB_SHA"
+            echo "::error::CI has not passed on $SHA"
             exit 1
           fi
           echo "run=$run" >> "$GITHUB_OUTPUT"
@@ -104,5 +109,11 @@ jobs:
           gh run download "$CI_RUN" --repo "$GITHUB_REPOSITORY" --name firmware --dir ci
           # The artifact's root is firmware/ (the common folder of its files).
           mv ci/build-ci/drillbalancer.bin "drillbalancer-$VERSION.bin"
-          gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --title "$GITHUB_REF_NAME" \
-            --generate-notes "drillbalancer-$VERSION.bin" "drillbalancer-$VERSION.apk"
+          assets=("drillbalancer-$VERSION.bin" "drillbalancer-$VERSION.apk")
+          # A re-run after a failed upload finishes the release it left.
+          if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --clobber "${assets[@]}"
+          else
+            gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --title "$GITHUB_REF_NAME" \
+              --generate-notes "${assets[@]}"
+          fi
