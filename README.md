@@ -40,7 +40,7 @@ training data (raw IMU and both microphones) for a future on-device model.
     points; steer it into the centre.
 - **Tolerance colours**: green within the tolerance (default 0.5°), amber
   within the near band (default 2.0°), white outside.
-- **Tap to zero** on the screen or in the app. Yaw comes from the gyro and
+- **Hold 1 s to zero** on the screen, or use the app. Yaw comes from the gyro and
   drifts, so the screen warns you to re-zero after 60 s (adjustable).
 - **Two calibrations**: a 6-position sensor (accelerometer) calibration and a
   mount calibration that finds the drill axis while you roll the drill with
@@ -49,7 +49,7 @@ training data (raw IMU and both microphones) for a future on-device model.
   optional power-off after a time in sleep; power-off at low battery. A
   running drill held still keeps the screen on, for up to 3 min after the
   last touch or movement.
-- **On-device settings** (hold 1 s) for tolerance, near band, target angle,
+- **On-device settings** (BOOT button) for tolerance, near band, target angle,
   the crosshair's direction (*Invert dot*), brightness, timeouts and
   Bluetooth.
 - **Bluetooth LE**: live angle and status notifications, settings as JSON,
@@ -167,7 +167,8 @@ for `DrillBalancer v...`, `QMI8658 6DOF 448.4 Hz` and `boot done` in the log.
 
 ### 2. Build and install the app
 
-There is no release APK yet; build it from source. Needs the Android SDK
+Install the APK from [Releases](https://github.com/Tropaion/Drill_Balancer/releases/latest),
+or build it from source. That needs the Android SDK
 (platform `android-37`, build-tools 36) and any JDK 17+. Set `sdk.dir` in
 `app/local.properties` or set `ANDROID_HOME`. Enable USB debugging on the
 phone; `adb devices` must list it.
@@ -180,12 +181,12 @@ cd app
 ### 3. First use
 
 1. Fix the board to the back of the drill, screen towards you.
-2. **Sensor calibration**: hold the screen for 1 s to open Settings, tap
+2. **Sensor calibration**: press the BOOT button to open Settings, tap
    *Calibrate sensor*, hold the device still on each of its six sides, then
    tap *Finish*.
 3. **Mount calibration**: put the bit in a hole, tap *Calibrate mount*,
    *Start*, roll the drill slowly at least 45° each way, then *Finish*.
-4. Hold the drill on your mark and **tap the screen to zero**. Swipe to
+4. Hold the drill on your mark and **hold the screen for 1 s to zero**. Swipe to
    change the mode.
 5. In the app, tap your `DrillBalancer-XXXX`. On the first change it asks
    you to pair: enter the 6-digit code shown on the device.
@@ -198,16 +199,17 @@ Full guide: [Getting Started](https://github.com/Tropaion/Drill_Balancer/wiki/Ge
 
 | Gesture | Level screen | Settings |
 |---|---|---|
-| Tap | Zero (shows "ZERO") | Press a button |
+| Hold 1 s | Zero (shows "ZERO") | Long press on a stepper repeats |
 | Swipe left / right | Next / previous mode | Right: back |
-| Hold 1 s | Open Settings | Long press on a stepper repeats |
-| Touch while dimmed | Only wakes the screen | Only wakes the screen |
+| Tap | Nothing | Press a button |
+| BOOT button | Open Settings | Back |
+| Touch or BOOT while dimmed | Only wakes the screen | Only wakes the screen |
 | Touch during a recorded take | Logged in the recording, nothing else; hold the REC pill 2 s to stop the take | Same |
 
 **Modes**
 - *Wall*: the dot is where the bit points: above the centre when it points
   too high, right of it when it has turned right since the zero (left/right
-  needs a zero; until then the screen says "Tap to zero for left/right").
+  needs a zero; until then the screen says "Hold to zero for left/right").
   Below: the error with a chevron for up or down, then the yaw; "re-zero"
   appears 60 s after the zero.
 - *Floor / ceiling*: the dot is a bubble and moves towards the higher side;
@@ -359,7 +361,6 @@ More: [Development and Testing](https://github.com/Tropaion/Drill_Balancer/wiki/
       come from the simulator so far)
 - [ ] An on-device model for the drilling phases, trained on the recorded
       data
-- [ ] Signed release APK
 
 Details: [Roadmap](https://github.com/Tropaion/Drill_Balancer/wiki/Roadmap).
 

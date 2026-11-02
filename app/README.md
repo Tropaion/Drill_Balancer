@@ -50,12 +50,50 @@ lint's "newer Gradle available" warning is expected.
 ```sh
 ./gradlew assembleDebug          # build/outputs/apk/debug/DrillBalancer-debug.apk
 ./gradlew installDebug           # build and install on a phone with USB debugging on
-./gradlew assembleRelease        # unsigned release APK (no signing config yet)
+./gradlew assembleRelease        # release APK, unsigned without the release key
 ./gradlew lintDebug
 ```
 
 For `installDebug`, enable *Developer options → USB debugging* on the
 phone, connect it and accept the RSA prompt. `adb devices` must list it.
+
+## Updates from GitHub
+
+The app asks GitHub for the latest release when it opens or comes back, and
+when a device connects (`update/`). The request has no login, and the data
+repo's token never reaches it. The answer is kept for 10 minutes. Offline or
+rate limited, nothing shows.
+
+- **Firmware:** after connecting, a notice on Live and Device says when the
+  release is newer than the board. *Download* fetches the image and opens the
+  Firmware screen with it loaded; the update starts from there as usual.
+- **App:** a notice on Connect and Device says when the release is newer than
+  the app. *Download* fetches the APK and opens Android's installer, which
+  asks first. The first time, Android sends you to *Install unknown apps*.
+  Debug builds never show this notice: their signature cannot update a
+  release install.
+- *Dismiss* hides a version until a newer one is out. Nothing starts without
+  a tap, and nothing interrupts a recording session.
+
+## Releases
+
+Versions live in `../VERSION`, for the firmware and the app. To release:
+
+1. Change `VERSION`, push to `main` and wait for CI.
+2. Tag that commit: `git tag vMAJOR.MINOR.PATCH && git push origin vMAJOR.MINOR.PATCH`.
+
+`.github/workflows/release.yml` then publishes `drillbalancer-<version>.bin`,
+the image CI built and tested for that commit, and a signed
+`drillbalancer-<version>.apk`. It refuses a tag that differs from `VERSION`, a
+commit that is not on `main`, and a commit without green CI. MINOR and PATCH
+stay below 100, because `versionCode` is `MAJOR * 10000 + MINOR * 100 + PATCH`.
+
+The signing key is four Actions secrets: `DB_RELEASE_KEYSTORE_B64`,
+`DB_RELEASE_STORE_PASSWORD`, `DB_RELEASE_KEY_ALIAS` and
+`DB_RELEASE_KEY_PASSWORD`. A signed build on a PC goes through
+`tools/ci/release_apk.sh` with the same names, or `DB_RELEASE_KEYSTORE` as a
+path, because that script keeps the passwords out of Gradle's caches. A lost
+key means every later update needs an uninstall.
 
 ## First connection and pairing
 

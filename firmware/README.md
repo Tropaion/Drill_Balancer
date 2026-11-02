@@ -94,8 +94,8 @@ All test code builds with `-Wall -Wextra -Werror -Wdouble-promotion -Wshadow`.
 ### UI preview
 
 `test_host/ui_preview` renders every screen to a PNG with the real UI
-sources, then runs touch and flow checks: tap, swipe, long press, wake
-taps on a dimmed screen, the settings debounce, the calibration flows, and
+sources, then runs touch and flow checks: tap, swipe, the hold to zero, the
+BOOT key, wake taps on a dimmed screen, the settings debounce, the calibration flows, and
 the REC pill (touches during a take, the 2 s hold that stops it).
 
 ```sh
@@ -274,8 +274,11 @@ when it ends.
   optional power-off timer. Power-off goes through the AXP2101.
 
 **ui**: LVGL 9.
-- The level screen has one view per mode. Tap zeroes, a swipe changes the
-  mode, and a 1 s hold opens the settings.
+- The level screen has one view per mode. A 1 s hold zeroes, a swipe changes
+  the mode, and a tap does nothing, so handling the drill cannot move the zero.
+- The BOOT button (GPIO0) opens the settings and leaves them. It does nothing
+  on the calibration guides, under an overlay or during a take, and it does
+  not wake deep sleep.
 - The other screens are the settings list and the two calibration guides.
   The settings list scrolls from anywhere on it; rows above and below the
   centred one narrow and fade so nothing is cut by the round panel.
