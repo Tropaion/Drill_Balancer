@@ -563,7 +563,7 @@ class RecorderTest(DeviceTest):
         # none: START and STOP alternate.
         self.open_session()
         self.dev.start_scenario(seed=3, holes=1, free_s=3.0, drill_s=3.0, lead_s=0)
-        self.run_ms(1500)
+        self.run_ms(1000)     # the detector needs about 1.5 s: its START falls in the take
         self.buf = bytearray()
         # LEVEL, so the detector sees the motor (test_events).
         self.assertEqual(self.ctrl("take-start", take_id=10, mic_mask=0, profile=0), 0)

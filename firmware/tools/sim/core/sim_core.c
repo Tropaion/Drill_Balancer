@@ -510,6 +510,7 @@ static imu_gap_t s_gap;
 static imu_rate_t s_rate;
 static imu_sample_t s_last;
 static bool s_have_last;
+static int64_t s_batch_us;        // the last read with samples (configure())
 static uint32_t s_epoch;          // configure() runs (imu_raw_info_t.epoch)
 static uint8_t s_fifo_buf[IMU_FIFO_MAX_FRAMES * IMU_FRAME_BYTES];
 
@@ -544,13 +545,8 @@ static void configure(uint32_t now, bool wait)
     s_gap = (imu_gap_t){0};
     imu_rate_restart(&s_rate, 1.0f / odr_hz());   // a period measured before stays
     s_have_last = false;
+    s_batch_us = IMU_BATCH_NO_TIME;
     s_epoch++;
-}
-
-// imu_sample_period_s() (imu.h declares the driver's own).
-static float drv_sample_period_s(void)
-{
-    return s_rate.period_s;
 }
 
 // The chip's ADC: one value in LSB, rounded and clipped to 16 bits.
@@ -647,6 +643,7 @@ static void drv_read_fifo(imu_sample_t *out, size_t max, size_t *n_out, imu_raw_
         s_have_last = true;
     }
     imu_gap_commit(&s_gap, ts, frames, n);
+    raw->sample_period_s = imu_batch_step(&s_batch_us, now_us, o, frames - n, s_rate.period_s);
     *n_out = o;
 }
 
@@ -836,7 +833,7 @@ static void sensor_start(const settings_t *s, bool imu_ok)
 
 void sim_sensor_pass(uint32_t now_ms, const float *samples, int n, float dt, int imu_present)
 {
-    (void)dt;   // the driver measures the period (imu_sample_period_s())
+    (void)dt;   // the driver measures it (imu_raw_info_t.sample_period_s)
     if (!running(now_ms) || !s_sensor_running) {
         return;
     }
@@ -912,7 +909,7 @@ void sim_sensor_pass(uint32_t now_ms, const float *samples, int n, float dt, int
     }
 
     const imu_sample_t *smp = level_samples(got);
-    float dt_s = drv_sample_period_s();
+    float dt_s = raw.sample_period_s;
     level_reading_t reading = {0};
     quat_t q = quat_identity();
     bool still = false;

@@ -240,7 +240,7 @@ them with `DB_REC_PROFILE_*`):
 
 | Profile | ODR | Accel / gyro range | On-chip LPF | Used for |
 |---|---|---|---|---|
-| LEVEL | 448.4 Hz | ±4 g / ±512 dps | accel 11.9 Hz, gyro 24.2 Hz | the level; also a recording of the filtered IMU (the app does not record with it) |
+| LEVEL | 448.4 Hz | ±4 g / ±2048 dps | accel 11.9 Hz, gyro 24.2 Hz | the level; also a recording of the filtered IMU (the app does not record with it) |
 | RAW448 | 448.4 Hz | ±4 g / ±512 dps | off | recordings (the app's default) |
 | RAW448_16G | 448.4 Hz | ±16 g / ±512 dps | off | recordings in hammer mode (the app picks it) |
 | RAW897 | 896.8 Hz | ±4 g / ±512 dps | off | experimental (FIFO loss about 25 % expected) |
@@ -249,9 +249,19 @@ them with `DB_REC_PROFILE_*`):
 epoch); `imu_read_fifo_ex()` also returns a read's raw frames with their
 timestamp runs. A take's profile is set when it starts and LEVEL comes back
 when it ends.
-- Samples lost while the FIFO is in read mode are found with the TIMESTAMP
-  counter and filled in by interpolation. This keeps the fusion dt fixed.
-- The real sample rate is measured against esp_timer. A rate measured once
+- The board's TIMESTAMP registers read 0, so a gap in the FIFO cannot be seen
+  and nothing is filled in. Samples arrive at about 444 Hz, and about 14 % are
+  lost while the FIFO is in read mode. Fusion therefore shares the time since
+  the last batch among the batch's samples (`imu_batch_step()`); a fixed step
+  made every rotation about 14 % too small.
+- LEVEL runs the gyro at ±2048 dps because a hard shake reaches 2000 dps, and
+  a clipped sample turns the estimate by too little. The RAW profiles stay at
+  ±512 dps, so a recording of a hard shake clips, and so does the level during
+  that take.
+- On a chip whose TIMESTAMP counts, lost samples are found with it and filled
+  in by interpolation.
+- Where TIMESTAMP counts, the real sample rate is measured against esp_timer
+  (not on the board, whose rate stays the nominal one). A rate measured once
   stays in use across a profile switch or a re-init (scaled to the new ODR),
   so FIFO losses are filled at once instead of after a new 2 s baseline.
 - If leaving FIFO read mode fails, the next read retries it first. If no new
@@ -596,10 +606,12 @@ Every `TODO(hw)` in the tree is covered below (36 steps), with its file. Grep fo
       a positive gyro Z.
     - UI: in floor mode, lowering the right edge must move the bubble to the
       left. The calibration tiles must name the edge that is really up.
-12. **FIFO gap filling** (`imu.c`, TIMESTAMP counting in read mode). Compare
-    the logged count of interpolated samples with the samples read; expect
-    about 10 %. Check that the measured rate is accepted, within 10 % of
-    448.4 Hz. In normal running the log must never show `IMU lost: no new
+12. **FIFO loss** (`imu.c`). Done on the board: TIMESTAMP reads 0, so no gap
+    is filled and no rate is measured. Samples arrive at about 444 Hz and about
+    384 per second reach the 20 ms read. One full turn must read 360° (it read
+    359.5°; the fixed step gave 307°). A hard shake must not reach the gyro's
+    ±2048 dps for long (peak 2047 dps, 9 samples in one of four shakes). In
+    normal running the log must never show `IMU lost: no new
     samples` (`main/sensor_task.c`, IMU_LOST_MS) or `FIFO read mode left on
     retry` (`imu.c`).
 13. **Partial FIFO read** (`imu.c`). Check that the samples left unread stay
@@ -756,6 +768,8 @@ Use `tools/ble/db_client.py rec open`, `rec start`, `rec stop`, `rec pull`
       scale)? If not, RAW448_16G is not needed.
     - RAW897: measure the FIFO loss (STATS imu_lost against imu_frames,
       about 25 % expected) and decide whether the profile stays.
+    - Does the gyro bias differ between ±2048 dps (LEVEL) and ±512 dps (RAW)?
+      Fusion keeps its bias through a profile switch.
     - After a profile switch TIMESTAMP must restart from 0 (the first IMU
       record of the new epoch).
     - The STATS imu_period_ns of a RAW897 take is half that of a RAW448

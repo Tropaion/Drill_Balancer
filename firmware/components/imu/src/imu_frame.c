@@ -2,13 +2,14 @@
 #include "imu_frame.h"
 
 // CTRL2/CTRL3 (Table 22): full scale <<4 | ODR. aFS 001 = +-4 g, 011 =
-// +-16 g; gFS 101 = +-512 dps. ODR 0100 = 448.4 Hz in 6DOF mode, the
+// +-16 g; gFS 101 = +-512 dps, 111 = +-2048 dps. ODR 0100 = 448.4 Hz in 6DOF mode, the
 // closest to 470 Hz; 0011 = 896.8 Hz. In 6DOF the accelerometer runs at the
 // gyro-derived rate, and the FIFO needs both at the same ODR (Table 22 note
 // 13, 8.2).
 #define FS_A4G   (0x1 << 4)
 #define FS_A16G  (0x3 << 4)
 #define FS_G512  (0x5 << 4)
+#define FS_G2048 (0x7 << 4)
 #define ODR_448  0x4
 #define ODR_897  0x3
 
@@ -31,9 +32,13 @@
 // RAW897 doubles the FIFO traffic; at 400 kHz I2C the read-mode loss is
 // expected around 25 %. TODO(hw): measure the loss and decide whether it
 // stays.
+//
+// LEVEL gets the wide gyro range: a flick of the hand passes 512 dps on the
+// board, and rotation beyond the range is lost to the orientation. A heading
+// error stays until the next zero, nothing corrects it.
 static const imu_profile_info_t PROFILES[IMU_PROFILE_COUNT] = {
-    [IMU_PROFILE_LEVEL] = {"LEVEL", FS_A4G | ODR_448, FS_G512 | ODR_448, CTRL5_LEVEL, 448400,
-                           SCALES(8192, 64)},
+    [IMU_PROFILE_LEVEL] = {"LEVEL", FS_A4G | ODR_448, FS_G2048 | ODR_448, CTRL5_LEVEL, 448400,
+                           SCALES(8192, 16)},
     [IMU_PROFILE_RAW448] = {"RAW448", FS_A4G | ODR_448, FS_G512 | ODR_448, CTRL5_RAW, 448400,
                             SCALES(8192, 64)},
     // TODO(hw): check whether hammer drilling clips at +-4 g at all.
@@ -254,6 +259,24 @@ void imu_fill_gap(const imu_sample_t *a, const imu_sample_t *b, size_t n, imu_sa
         out[i].accel_g = lerp3(a->accel_g, b->accel_g, t);
         out[i].gyro_rad_s = lerp3(a->gyro_rad_s, b->gyro_rad_s, t);
     }
+}
+
+float imu_batch_step(int64_t *prev_us, int64_t now_us, size_t n, size_t unread, float fallback_s)
+{
+    if (n == 0) {
+        return fallback_s;
+    }
+    float dt = fallback_s;
+    if (*prev_us != IMU_BATCH_NO_TIME && now_us > *prev_us) {
+        float span_s = (float)(now_us - *prev_us) * 1e-6f;
+        float share_s = span_s / (float)(n + unread);
+        if (span_s <= (float)IMU_FIFO_MAX_FRAMES * fallback_s &&
+            share_s <= IMU_BATCH_MAX_SHARE * fallback_s) {
+            dt = share_s;
+        }
+    }
+    *prev_us = now_us - (int64_t)((float)unread * dt * 1e6f);
+    return dt;
 }
 
 void imu_rate_init(imu_rate_t *r, float nominal_period_s)

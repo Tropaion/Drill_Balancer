@@ -115,6 +115,7 @@ static imu_rate_t s_rate;
 static imu_sample_t s_last;       // last sample handed out, for gap filling
 static bool s_have_last;
 static uint32_t s_filled;         // synthesised samples, for the log
+static int64_t s_batch_us;        // the last read with samples (configure())
 static uint32_t s_epoch;          // configure() runs (imu_raw_info_t.epoch)
 static uint8_t s_fifo_buf[IMU_FIFO_MAX_FRAMES * IMU_FRAME_BYTES];
 
@@ -222,11 +223,12 @@ static esp_err_t configure(void)
 
     s_gap = (imu_gap_t){0};
     s_restore_pending = false;
-    // A period measured before stays (scaled to this ODR): FIFO losses are
-    // filled at once, not only after a new 2 s baseline.
+    // A period measured before stays (scaled to this ODR): where TIMESTAMP
+    // counts, FIFO losses are filled at once, not only after a new 2 s baseline.
     imu_rate_restart(&s_rate, 1.0f / odr_hz());
     s_have_last = false;
     s_filled = 0;
+    s_batch_us = IMU_BATCH_NO_TIME;
     s_epoch++;
     s_running = true;
     return ESP_OK;
@@ -256,8 +258,9 @@ esp_err_t imu_init(i2c_master_bus_handle_t bus, imu_profile_t p)
     esp_err_t err = configure();
     unlock();
     if (err == ESP_OK) {
-        ESP_LOGI(TAG, "QMI8658 6DOF %.1f Hz, +-%u g, +-512 dps, profile %s, FIFO stream",
-                 (double)odr_hz(), 32768u / profile()->accel_lsb_per_g, profile()->name);
+        ESP_LOGI(TAG, "QMI8658 6DOF %.1f Hz, +-%u g, +-%u dps, profile %s, FIFO stream",
+                 (double)odr_hz(), 32768u / profile()->accel_lsb_per_g,
+                 32768u / profile()->gyro_lsb_per_dps, profile()->name);
     }
     return err;
 }
@@ -288,12 +291,6 @@ esp_err_t imu_set_profile(imu_profile_t p)
 imu_profile_t imu_get_profile(void)
 {
     return s_profile;
-}
-
-float imu_sample_period_s(void)
-{
-    // A float load is atomic; the estimate only moves slowly.
-    return s_running ? s_rate.period_s : 1.0f / odr_hz();
 }
 
 // TIMESTAMP and FIFO count from the same instant: a sample landing between
@@ -354,13 +351,11 @@ static esp_err_t restore_run_mode(void)
     return ESP_OK;
 }
 
-// Samples lost while the FIFO was in read mode are replaced by interpolated
-// ones, so every output sample is one ODR period after the previous and the
-// fusion can integrate with a fixed dt. This needs TIMESTAMP to count one per
-// 6DOF sample and to keep counting in read mode, which the ODR estimate
-// confirms before any filling happens.
-// TODO(hw): log s_filled against the read count on the board; expect about
-// 10% at 448 Hz.
+// Samples lost while the FIFO is in read mode are replaced by interpolated
+// ones if TIMESTAMP counts one per 6DOF sample and keeps counting in read
+// mode, which the ODR estimate confirms before any filling happens. On the
+// board it reads 0, so nothing is filled: raw->sample_period_s accounts for
+// the losses instead (imu_batch_step()).
 static esp_err_t read_fifo_locked(imu_sample_t *out, size_t max, size_t *n_out,
                                   imu_raw_info_t *raw)
 {
@@ -377,15 +372,13 @@ static esp_err_t read_fifo_locked(imu_sample_t *out, size_t max, size_t *n_out,
     if (n > 0) {
         ESP_RETURN_ON_ERROR(read_fifo_bytes(s_fifo_buf, n * IMU_FRAME_BYTES), TAG, "FIFO read");
     }
-    if (raw) {
-        imu_raw_runs(&plan, raw->run);
-        raw->frames = s_fifo_buf;
-        raw->n = (uint16_t)n;
-        raw->map = imu_axis_map();
-        raw->chip_ts = ts;
-        raw->host_us = now_us;
-        raw->epoch = s_epoch;
-    }
+    imu_raw_runs(&plan, raw->run);
+    raw->frames = s_fifo_buf;
+    raw->n = (uint16_t)n;
+    raw->map = imu_axis_map();
+    raw->chip_ts = ts;
+    raw->host_us = now_us;
+    raw->epoch = s_epoch;
 
     const imu_profile_info_t *p = profile();
     size_t o = 0;
@@ -404,17 +397,16 @@ static esp_err_t read_fifo_locked(imu_sample_t *out, size_t max, size_t *n_out,
         s_have_last = true;
     }
     imu_gap_commit(&s_gap, ts, frames, n);
+    raw->sample_period_s = imu_batch_step(&s_batch_us, now_us, o, frames - n, s_rate.period_s);
     *n_out = o;
     return ESP_OK;
 }
 
 esp_err_t imu_read_fifo_ex(imu_sample_t *out, size_t max, size_t *n_out, imu_raw_info_t *raw)
 {
-    ESP_RETURN_ON_FALSE(out && n_out, ESP_ERR_INVALID_ARG, TAG, "null argument");
+    ESP_RETURN_ON_FALSE(out && n_out && raw, ESP_ERR_INVALID_ARG, TAG, "null argument");
     *n_out = 0;
-    if (raw) {
-        *raw = (imu_raw_info_t){0};
-    }
+    *raw = (imu_raw_info_t){0};
     if (!s_running) {
         return ESP_ERR_INVALID_STATE;
     }
@@ -425,11 +417,6 @@ esp_err_t imu_read_fifo_ex(imu_sample_t *out, size_t max, size_t *n_out, imu_raw
     esp_err_t err = s_running ? read_fifo_locked(out, max, n_out, raw) : ESP_ERR_INVALID_STATE;
     unlock();
     return err;
-}
-
-esp_err_t imu_read_fifo(imu_sample_t *out, size_t max, size_t *n_out)
-{
-    return imu_read_fifo_ex(out, max, n_out, NULL);
 }
 
 // The data registers keep updating in FIFO mode (only DRDY is disabled, 6.2).

@@ -82,7 +82,7 @@ void imu_map_frame_i16(const imu_axis_map_t *map, const uint8_t frame[IMU_FRAME_
 
 // Configures the chip for profile p (LEVEL at boot; the re-init after a
 // lost IMU passes the one the sensor task wants), FIFO enabled for accel +
-// gyro. Gyro +-512 dps in every profile.
+// gyro. Gyro +-2048 dps in LEVEL, +-512 dps in the RAW profiles.
 esp_err_t imu_init(i2c_master_bus_handle_t bus, imu_profile_t p);
 
 // Reconfigures the chip for p: a reset plus the gyro start-up, about 180 ms
@@ -99,12 +99,6 @@ imu_profile_t imu_get_profile(void);
 // The chip-to-board axis map (imu_frame.c), e.g. for the recorder's SESSION
 // record.
 const imu_axis_map_t *imu_axis_map(void);
-
-// Sample period of the configured ODR (seconds), for the fusion dt.
-float imu_sample_period_s(void);
-
-// Drains up to max samples from the FIFO, oldest first. *n_out may be 0.
-esp_err_t imu_read_fifo(imu_sample_t *out, size_t max, size_t *n_out);
 
 // The FIFO frames one read returned, before decoding and gap filling, with
 // their chip timestamps (24-bit TIMESTAMP, one count per 6DOF sample).
@@ -131,10 +125,12 @@ typedef struct imu_raw_info {
                                 // the chip was reset and TIMESTAMP counts anew,
                                 // unrelated to the earlier reads
                                 // TODO(hw): check that the reset restarts it
+    float sample_period_s;      // the time each returned sample stands for
+                                // (imu_batch_step()), for the fusion dt
 } imu_raw_info_t;
 
-// imu_read_fifo() that also returns the raw frames when raw is not NULL
-// (raw->n is 0 when nothing was read).
+// Drains up to max samples from the FIFO, oldest first, and returns the raw
+// frames with them. *n_out and raw->n are 0 when nothing was read.
 esp_err_t imu_read_fifo_ex(imu_sample_t *out, size_t max, size_t *n_out, imu_raw_info_t *raw);
 
 // Reads the latest sample directly (no FIFO), e.g. for self-test.

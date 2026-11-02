@@ -89,7 +89,7 @@ static void test_decode_is_little_endian_and_scaled(void)
     TEST_ASSERT_EQUAL_HEX8(0x20, f[1]);
 
     imu_sample_t s;
-    imu_decode_frame(&IDENTITY, imu_profile_info(IMU_PROFILE_LEVEL), f, &s);
+    imu_decode_frame(&IDENTITY, imu_profile_info(IMU_PROFILE_RAW448), f, &s);
     assert_vec3_within(1e-6f, (vec3_t){1.0f, -1.0f, 0.5f}, s.accel_g);
     TEST_ASSERT_FLOAT_WITHIN(1e-6f, LEVEL_DEG2RAD(1.0f), s.gyro_rad_s.x);
     TEST_ASSERT_FLOAT_WITHIN(1e-6f, LEVEL_DEG2RAD(-1.0f), s.gyro_rad_s.y);
@@ -101,7 +101,7 @@ static void test_decode_full_scale_extremes(void)
     uint8_t f[IMU_FRAME_BYTES];
     make_frame(f, INT16_MIN, INT16_MAX, 0, INT16_MIN, INT16_MAX, 0);
     imu_sample_t s;
-    imu_decode_frame(&IDENTITY, imu_profile_info(IMU_PROFILE_LEVEL), f, &s);
+    imu_decode_frame(&IDENTITY, imu_profile_info(IMU_PROFILE_RAW448), f, &s);
     TEST_ASSERT_FLOAT_WITHIN(1e-6f, -4.0f, s.accel_g.x);
     TEST_ASSERT_FLOAT_WITHIN(1e-3f, 4.0f, s.accel_g.y);
     TEST_ASSERT_FLOAT_WITHIN(1e-4f, LEVEL_DEG2RAD(-512.0f), s.gyro_rad_s.x);
@@ -116,7 +116,7 @@ static void test_decode_applies_axis_map_to_both_sensors(void)
     uint8_t f[IMU_FRAME_BYTES];
     make_frame(f, 8192, 4096, 2048, 640, 320, 64);
     imu_sample_t s;
-    imu_decode_frame(&map, imu_profile_info(IMU_PROFILE_LEVEL), f, &s);
+    imu_decode_frame(&map, imu_profile_info(IMU_PROFILE_RAW448), f, &s);
     assert_vec3_within(1e-6f, (vec3_t){-0.5f, -1.0f, -0.25f}, s.accel_g);
     assert_vec3_within(1e-6f,
                        (vec3_t){LEVEL_DEG2RAD(-5.0f), LEVEL_DEG2RAD(-10.0f), LEVEL_DEG2RAD(-1.0f)},
@@ -419,6 +419,80 @@ static void test_rate_survives_a_restart(void)
     TEST_ASSERT_FLOAT_WITHIN(1e-9f, nominal / 2.0f, r.nominal_s);
 }
 
+// What the board does: 444 Hz out of the chip, about 7.7 samples per 20 ms
+// pass after the ones lost in FIFO read mode, none of them filled.
+static void test_batch_step_gives_each_sample_its_share_of_the_time(void)
+{
+    int64_t prev = 1000000;
+    TEST_ASSERT_FLOAT_WITHIN(1e-7f, 0.0025f, imu_batch_step(&prev, 1020000, 8, 0, TEST_IMU_DT));
+    TEST_ASSERT_EQUAL_INT64(1020000, prev);
+}
+
+static void test_batch_step_adds_up_to_the_elapsed_time(void)
+{
+    const size_t n[] = {8, 7, 8, 2, 14, 8, 7};
+    const int64_t span_us[] = {20000, 19000, 21000, 5000, 37000, 20000, 20000};
+    int64_t t = 5000000, prev = t;
+    float sum_s = 0.0f, total_s = 0.0f;
+    for (size_t i = 0; i < sizeof(n) / sizeof(n[0]); i++) {
+        t += span_us[i];
+        sum_s += imu_batch_step(&prev, t, n[i], 0, TEST_IMU_DT) * (float)n[i];
+        total_s += (float)span_us[i] * 1e-6f;
+    }
+    TEST_ASSERT_FLOAT_WITHIN(1e-5f, total_s, sum_s);
+}
+
+// A 200 ms stall queues more than one read takes: each sample keeps its share,
+// also in the read that takes the rest.
+static void test_batch_step_shares_a_backlog_with_the_unread_samples(void)
+{
+    int64_t prev = 1000000;
+    float first = imu_batch_step(&prev, 1200000, 64, 24, TEST_IMU_DT);
+    TEST_ASSERT_FLOAT_WITHIN(1e-6f, 0.2f / 88.0f, first);
+    float second = imu_batch_step(&prev, 1220000, 33, 0, TEST_IMU_DT);
+    TEST_ASSERT_FLOAT_WITHIN(2e-5f, first, second);
+    TEST_ASSERT_FLOAT_WITHIN(1e-4f, 0.22f, first * 64.0f + second * 33.0f);
+}
+
+static void test_batch_step_falls_back_without_a_usable_span(void)
+{
+    int64_t prev = IMU_BATCH_NO_TIME;
+    TEST_ASSERT_EQUAL_FLOAT(TEST_IMU_DT, imu_batch_step(&prev, 1020000, 8, 0, TEST_IMU_DT));
+    TEST_ASSERT_EQUAL_INT64(1020000, prev);
+    TEST_ASSERT_EQUAL_FLOAT(TEST_IMU_DT, imu_batch_step(&prev, 1020000, 8, 0, TEST_IMU_DT));
+    prev = 1020000;
+    TEST_ASSERT_EQUAL_FLOAT(TEST_IMU_DT, imu_batch_step(&prev, 1000000, 8, 0, TEST_IMU_DT));
+    // Longer than the FIFO holds: the samples cover only the end of it. At a
+    // faster ODR the same span is already too long.
+    const int64_t fifo_us = 285000;
+    prev = 1000000;
+    TEST_ASSERT_FLOAT_WITHIN(1e-6f, 0.285f / 128.0f,
+                             imu_batch_step(&prev, 1000000 + fifo_us, 128, 0, TEST_IMU_DT));
+    prev = 1000000;
+    TEST_ASSERT_EQUAL_FLOAT(TEST_IMU_DT,
+                            imu_batch_step(&prev, 1000000 + fifo_us + 1000, 128, 0, TEST_IMU_DT));
+    prev = 1000000;
+    TEST_ASSERT_EQUAL_FLOAT(TEST_IMU_DT / 2.0f,
+                            imu_batch_step(&prev, 1000000 + fifo_us, 128, 0, TEST_IMU_DT / 2.0f));
+}
+
+// One sample after a pause must not turn the estimate by 200 ms of its rate.
+static void test_batch_step_ignores_a_share_no_loss_explains(void)
+{
+    int64_t prev = 1000000;
+    TEST_ASSERT_EQUAL_FLOAT(TEST_IMU_DT, imu_batch_step(&prev, 1200000, 1, 0, TEST_IMU_DT));
+    TEST_ASSERT_EQUAL_INT64(1200000, prev);
+    prev = 1000000;
+    TEST_ASSERT_FLOAT_WITHIN(1e-7f, 0.02f / 7.0f, imu_batch_step(&prev, 1020000, 7, 0, TEST_IMU_DT));
+}
+
+static void test_batch_step_without_samples_keeps_the_time(void)
+{
+    int64_t prev = 1000000;
+    TEST_ASSERT_EQUAL_FLOAT(TEST_IMU_DT, imu_batch_step(&prev, 1020000, 0, 0, TEST_IMU_DT));
+    TEST_ASSERT_EQUAL_INT64(1000000, prev);
+}
+
 static void test_profile_table(void)
 {
     const imu_profile_info_t *l = imu_profile_info(IMU_PROFILE_LEVEL);
@@ -426,11 +500,11 @@ static void test_profile_table(void)
     // The registers imu.c wrote before profiles existed.
     TEST_ASSERT_EQUAL_STRING("LEVEL", l->name);
     TEST_ASSERT_EQUAL_HEX8(0x14, l->ctrl2);
-    TEST_ASSERT_EQUAL_HEX8(0x54, l->ctrl3);
+    TEST_ASSERT_EQUAL_HEX8(0x74, l->ctrl3);    // +-2048 dps: a flick of the hand passes 512
     TEST_ASSERT_EQUAL_HEX8(0x51, l->ctrl5);
     TEST_ASSERT_EQUAL_UINT32(448400, l->odr_mhz);
     TEST_ASSERT_EQUAL_UINT16(8192, l->accel_lsb_per_g);
-    TEST_ASSERT_EQUAL_UINT16(64, l->gyro_lsb_per_dps);
+    TEST_ASSERT_EQUAL_UINT16(16, l->gyro_lsb_per_dps);
 
     const imu_profile_info_t *r = imu_profile_info(IMU_PROFILE_RAW448);
     TEST_ASSERT_EQUAL_STRING("RAW448", r->name);
@@ -458,11 +532,11 @@ static void test_profile_table(void)
 
     for (int p = 0; p < IMU_PROFILE_COUNT; p++) {
         const imu_profile_info_t *i = imu_profile_info((imu_profile_t)p);
-        // Accel and gyro at the same ODR (6DOF FIFO), gyro +-512 dps.
+        // Accel and gyro at the same ODR (6DOF FIFO).
         TEST_ASSERT_EQUAL_HEX8(i->ctrl2 & 0x0F, i->ctrl3 & 0x0F);
-        TEST_ASSERT_EQUAL_HEX8(0x50, i->ctrl3 & 0xF0);
         // Full scale = 32768 counts.
         TEST_ASSERT_EQUAL_UINT32(32768u, (uint32_t)i->accel_lsb_per_g << ((i->ctrl2 >> 4) + 1));
+        TEST_ASSERT_EQUAL_UINT32(32768u, (uint32_t)i->gyro_lsb_per_dps * (16u << (i->ctrl3 >> 4)));
     }
     TEST_ASSERT_NULL(imu_profile_info(IMU_PROFILE_COUNT));
     TEST_ASSERT_NULL(imu_profile_info((imu_profile_t)-1));
@@ -751,5 +825,11 @@ int main(void)
     RUN_TEST(test_rate_estimate);
     RUN_TEST(test_rate_rejects_implausible);
     RUN_TEST(test_rate_survives_a_restart);
+    RUN_TEST(test_batch_step_gives_each_sample_its_share_of_the_time);
+    RUN_TEST(test_batch_step_adds_up_to_the_elapsed_time);
+    RUN_TEST(test_batch_step_shares_a_backlog_with_the_unread_samples);
+    RUN_TEST(test_batch_step_falls_back_without_a_usable_span);
+    RUN_TEST(test_batch_step_ignores_a_share_no_loss_explains);
+    RUN_TEST(test_batch_step_without_samples_keeps_the_time);
     return UNITY_END();
 }

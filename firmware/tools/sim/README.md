@@ -328,8 +328,10 @@ written to `state/rec_truth_<take>.json` when a take ends and served at
 - IMU records from the active profile's raw FIFO frames, one per timestamp
   run. The simulated QMI8658 loses the samples that arrive while a FIFO
   read is in progress (about 12 % at 448 Hz, 20 % at 897 Hz) and its
-  TIMESTAMP counts them, so the driver's real gap code runs: the level
-  pipeline gets the interpolated floats, the recorder the runs. A profile
+  TIMESTAMP counts them, so the driver's gap code runs: the level pipeline
+  gets the interpolated floats, the recorder the runs. The board differs
+  here: its TIMESTAMP reads 0, so it fills nothing, and every IMU record comes
+  out marked DISCONT without a usable chip time (firmware/README.md). A profile
   switch or an IMU re-init resets the chip (180 ms without samples,
   TIMESTAMP from 0, `REC_IMU_EPOCH`), and EVENT PROFILE comes before the
   first IMU record of the profile. Fusion and the level zeros (also the

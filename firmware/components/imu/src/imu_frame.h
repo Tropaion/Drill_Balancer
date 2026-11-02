@@ -118,6 +118,21 @@ void imu_rate_update(imu_rate_t *r, uint32_t ts, int64_t now_us);
 // imu_period_ns of a RAW897 take against a RAW448 one, 1:2 within 0.1 %.
 void imu_rate_restart(imu_rate_t *r, float nominal_period_s);
 
+// No read to measure from (after configure()).
+#define IMU_BATCH_NO_TIME INT64_MIN
+// A share above this many ODR periods is a pause in the samples, not losses
+// (the board's FIFO losses give about 1.3).
+#define IMU_BATCH_MAX_SHARE 2.0f
+
+// The time each of the n samples of a read stands for: the time since *prev_us
+// shared among them and the unread ones still in the FIFO, so a batch that
+// lost samples still integrates to the time that passed (firmware/README.md:
+// nothing else sees the losses on the board). *prev_us moves on to where the
+// unread samples start. fallback_s (the ODR period) without a usable
+// span: *prev_us IMU_BATCH_NO_TIME, longer than the FIFO holds, or a share over
+// IMU_BATCH_MAX_SHARE. A read of no samples leaves *prev_us alone.
+float imu_batch_step(int64_t *prev_us, int64_t now_us, size_t n, size_t unread, float fallback_s);
+
 #ifdef __cplusplus
 }
 #endif

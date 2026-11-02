@@ -312,7 +312,7 @@ static void sensor_task(void *arg)
         }
 
         const imu_sample_t *smp = level_samples(n);
-        float dt = imu_sample_period_s();
+        float dt = raw.sample_period_s;
         level_reading_t reading = {0};
         quat_t q = quat_identity();
         bool still = false;
