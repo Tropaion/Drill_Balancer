@@ -3316,6 +3316,15 @@ int sim_snapshot_json(char *buf, int cap)
     return (int)o.len;
 }
 
+int sim_ui_key_action(int on_level, int on_settings, int dimmed, int take, int overlay, int confirm)
+{
+    const ui_key_ctx_t c = {
+        .on_level = on_level != 0, .on_settings = on_settings != 0, .dimmed = dimmed != 0,
+        .take = take != 0, .overlay = overlay != 0, .confirm = confirm != 0,
+    };
+    return (int)ui_key_action(&c);
+}
+
 const char *sim_ui_text(int which, int code)
 {
     switch (which) {

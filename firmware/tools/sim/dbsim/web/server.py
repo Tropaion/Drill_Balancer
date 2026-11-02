@@ -376,6 +376,9 @@ class WebPanel:
                          kind="touch")
         return what
 
+    def c_boot(self, d):
+        return self.screen.boot()
+
     def c_battery(self, d):
         kw = {}
         if "percent" in d:

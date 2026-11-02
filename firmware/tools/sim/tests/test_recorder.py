@@ -805,6 +805,16 @@ class PanelRecorderTest(DeviceTest):
         self.dev.advance(3000)                                       # nobody drains: the 2 s limit
         self.assertIsNone(self.snap()["recorder"]["session"])
 
+    def test_boot_during_a_take(self):
+        dev = self.dev
+        self.assertEqual(dev.write_char("rec_ctrl", dc.encode_rec("open")), 0)
+        dev.advance(20)
+        dev.rec_hello(dc.encode_hello(dc.decode_rec_state(dev.read_char("rec_state")).token))
+        self.assertEqual(dev.write_char("rec_ctrl", dc.encode_rec("take-start", take_id=1)), 0)
+        dev.advance(100)
+        self.assertEqual(self.cmd(cmd="boot"), "ignored")
+        self.assertEqual(self.panel.screen.screen, "level")
+
     def test_touches_during_a_take(self):
         dev = self.dev
         self.assertEqual(dev.write_char("rec_ctrl", dc.encode_rec("open")), 0)

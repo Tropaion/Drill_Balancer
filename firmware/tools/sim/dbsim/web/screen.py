@@ -8,8 +8,11 @@ already recognised by the browser and is handled with the firmware's rules:
 
 - ui.c activity_cb: every press is activity; a press that wakes a dimmed
   screen does nothing else.
-- ui_level.c: tap = APP_CMD_ZERO (only with a sensor), swipe left / right =
-  APP_CMD_NEXT_MODE +1 / -1, 1 s hold = settings.
+- ui_level.c: 1 s hold = APP_CMD_ZERO (only with a sensor), swipe left / right
+  = APP_CMD_NEXT_MODE +1 / -1, a tap does nothing.
+- ui.c boot_key_cb, ui_logic.c ui_key_action: BOOT opens the settings and leaves
+  them; it only wakes a dimmed screen and does nothing on the calibration
+  guides, under an overlay, on the reset confirmation or during a take.
 - The passkey and OTA overlays are modal panels: they swallow touches.
 - ui_settings.c: swipe right (no confirmation shown) = back to the level.
 - During a recorder take every touch is an EVENT TOUCH in the stream and is
@@ -26,12 +29,13 @@ from __future__ import annotations
 
 from .. import core as C
 
-HOLD_FOR_SETTINGS_MS = 1000   # ui_level.c (the browser times the hold)
+HOLD_FOR_ZERO_MS = 1000       # ui_level.c (the browser times the hold)
 ZERO_FLASH_MS = 700           # ui_level.c
 SOLVE_TIMEOUT_MS = 3000       # ui_cal.c
 ACCEL_CAL_DIR_ALL = 0x3F      # accel_cal.h
 
 REC_RECORDING = 4             # rec_state_t
+UI_KEY_NONE, UI_KEY_TO_SETTINGS = 0, 1   # ui_key_action_t
 UI_C_GREEN = "#00E676"
 UI_C_WHITE = "#FFFFFF"
 
@@ -206,6 +210,9 @@ class DeviceScreen:
     def _modal(self, snap: dict) -> bool:
         return bool(snap.get("passkey_pending") or snap.get("ota_active"))
 
+    def _recording(self, snap: dict) -> bool:
+        return snap.get("rec", {}).get("state") == REC_RECORDING
+
     def touch(self, action: str, dir: str | None = None, button: str | None = None) -> str:
         """A gesture from the mirror. Returns what it did (for the event log)."""
         if self.dev.state != "running":
@@ -218,7 +225,7 @@ class DeviceScreen:
             return "woke the screen" if self.swallow else "EVENT TOUCH (recording)" if taken else ""
         if self.swallow:
             return "ignored: the press woke the screen"
-        recording = snap.get("rec", {}).get("state") == REC_RECORDING
+        recording = self._recording(snap)
         if action == "button" and button == "rec_pill":
             if not recording:
                 return ""
@@ -242,8 +249,23 @@ class DeviceScreen:
             return f"{v['left'] if left else v['right']} pressed"
         return ""
 
+    def boot(self) -> str:
+        """ui.c boot_key_cb; the decision is the firmware's (ui_logic.c)."""
+        if self.dev.state != "running":
+            return "ignored: screen off"
+        snap = self.dev.core.snapshot()
+        self.dev.boot_key()
+        action = self.dev.core.ui_key_action(
+            on_level=self.screen == "level", on_settings=self.screen == "settings",
+            dimmed=snap["power"] == 1, take=self._recording(snap), overlay=self._modal(snap),
+            confirm=self.confirm)
+        if action == UI_KEY_NONE:
+            return "ignored"
+        self.show("settings" if action == UI_KEY_TO_SETTINGS else "level")
+        return self.screen
+
     def _level(self, action, dir, snap) -> str:
-        if action == "tap":
+        if action == "hold":
             if snap["imu_ok"] and self.dev.ui_command(C.APP_CMD_ZERO, 0):
                 self.toast_show("ZERO", UI_C_GREEN, ZERO_FLASH_MS)
                 return "zero"
@@ -251,9 +273,6 @@ class DeviceScreen:
         if action == "swipe" and dir in ("left", "right"):
             self.dev.ui_command(C.APP_CMD_NEXT_MODE, 1 if dir == "left" else -1)
             return f"next mode {'+1' if dir == 'left' else '-1'}"
-        if action == "hold":
-            self.show("settings")
-            return "settings"
         return ""
 
     def _settings(self, action, dir, button) -> str:

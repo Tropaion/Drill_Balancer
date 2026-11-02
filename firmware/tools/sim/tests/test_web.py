@@ -35,6 +35,11 @@ class PanelTest(DeviceTest):
         self.dev.advance(300)
         return what
 
+    def boot(self):
+        what = self.cmd(cmd="boot")
+        self.dev.advance(300)
+        return what
+
     def test_commands_are_validated(self):
         bad = [{}, {"cmd": "nope"}, {"cmd": "pose"}, {"cmd": "pose", "elevation": 91},
                {"cmd": "pose", "yaw": "1"}, {"cmd": "pose", "roll": True},
@@ -61,15 +66,18 @@ class PanelTest(DeviceTest):
         self.assertEqual(self.dev.write_char("command", bytes([0x02])), 0)
 
     def test_level_gestures(self):
-        self.assertEqual(self.touch("tap"), "zero")
+        self.assertEqual(self.touch("tap"), "")
+        self.assertFalse(self.snap()["zero_set"])
+        self.assertEqual(self.touch("hold"), "zero")
         self.assertTrue(self.snap()["zero_set"])
+        self.assertEqual(self.panel.screen.screen, "level")
         self.touch("swipe", dir="left")
         self.assertEqual(self.snap()["reading"]["mode"], 1)
         self.touch("swipe", dir="right")
         self.assertEqual(self.snap()["reading"]["mode"], 0)
         self.touch("swipe", dir="up")
         self.assertEqual(self.snap()["reading"]["mode"], 0)
-        self.touch("hold")
+        self.boot()
         self.assertEqual(self.panel.screen.screen, "settings")
         self.touch("swipe", dir="right")
         self.assertEqual(self.panel.screen.screen, "level")
@@ -77,17 +85,50 @@ class PanelTest(DeviceTest):
     def test_no_zero_without_sensor(self):
         self.dev.imu_present = False
         self.settle()
-        self.assertEqual(self.touch("tap"), "")
+        self.assertEqual(self.touch("hold"), "")
         self.assertFalse(self.snap()["zero_set"])
 
     def test_press_that_wakes_a_dim_screen_does_nothing_else(self):
         self.write_config(dim_s=5, sleep_s=60)
         self.dev.advance(6000)
         self.assertEqual(self.snap()["power"], 1)
-        self.assertTrue(self.touch("tap").startswith("ignored"))
+        self.assertTrue(self.touch("hold").startswith("ignored"))
         self.assertFalse(self.snap()["zero_set"])
         self.assertEqual(self.snap()["power"], 0)
-        self.assertEqual(self.touch("tap"), "zero")
+        self.assertEqual(self.touch("hold"), "zero")
+
+    def test_boot_opens_and_leaves_settings(self):
+        self.assertEqual(self.boot(), "settings")
+        self.assertEqual(self.panel.screen.screen, "settings")
+        self.assertEqual(self.boot(), "level")
+        self.assertEqual(self.panel.screen.screen, "level")
+
+    def test_boot_only_wakes_a_dim_screen(self):
+        self.write_config(dim_s=5, sleep_s=60)
+        self.dev.advance(6000)
+        self.assertEqual(self.snap()["power"], 1)
+        self.assertTrue(self.boot().startswith("ignored"))
+        self.assertEqual(self.panel.screen.screen, "level")
+        self.assertEqual(self.snap()["power"], 0)
+
+    def test_boot_ignored_on_calibration_guides(self):
+        self.boot()
+        self.touch("button", button="set_mount")
+        self.assertTrue(self.boot().startswith("ignored"))
+        self.assertEqual(self.panel.screen.screen, "mount_cal")
+
+    def test_boot_ignored_on_the_reset_confirmation(self):
+        self.boot()
+        self.touch("button", button="set_reset")
+        self.assertTrue(self.boot().startswith("ignored"))
+        self.assertEqual(self.panel.screen.screen, "settings")
+
+    def test_boot_ignored_under_an_overlay(self):
+        self.connect(trusted=False)
+        self.dev.pairing_passkey(123456)
+        self.dev.advance(100)
+        self.assertTrue(self.boot().startswith("ignored"))
+        self.assertEqual(self.panel.screen.screen, "level")
 
     def test_overlays_swallow_touches(self):
         self.connect(trusted=False)
@@ -98,7 +139,7 @@ class PanelTest(DeviceTest):
         self.assertEqual(self.panel.screen.screen, "level")
 
     def test_sensor_calibration_guide(self):
-        self.touch("hold")
+        self.boot()
         self.touch("button", button="set_sensor")
         g = self.panel.state()["screen"]["cal"]
         self.assertEqual((g["phase"], g["right"], g["right_enabled"]), ("collect", "Finish", False))
@@ -119,7 +160,7 @@ class PanelTest(DeviceTest):
         self.assertEqual(self.panel.screen.screen, "level")
 
     def test_mount_guide_waits_for_start_and_cancel_returns(self):
-        self.touch("hold")
+        self.boot()
         self.touch("button", button="set_mount")
         g = self.panel.state()["screen"]["cal"]
         self.assertEqual((g["phase"], g["right"]), ("ready", "Start"))
@@ -131,7 +172,7 @@ class PanelTest(DeviceTest):
         self.assertEqual(self.snap()["cal"]["kind"], 0)
 
     def test_guide_shows_a_result_when_cancelled_over_ble(self):
-        self.touch("hold")
+        self.boot()
         self.touch("button", button="set_mount")
         self.touch("button", button="cal_right")
         self.panel.state()
@@ -144,7 +185,7 @@ class PanelTest(DeviceTest):
         self.connect()
         self.assertEqual(self.dev.write_char("rec_ctrl", bytes([0x01])), 0)   # OPEN
         self.dev.advance(50)
-        self.touch("hold")
+        self.boot()
         self.touch("button", button="set_sensor")
         g = self.panel.state()["screen"]["cal"]
         self.assertEqual((g["phase"], g["result_ok"], g["right"]), ("result", False, "Done"))
@@ -157,7 +198,7 @@ class PanelTest(DeviceTest):
         # looked): the guide ends the same way.
         self.dev.write_char("rec_ctrl", bytes([0x02]))                       # CLOSE
         self.dev.advance(1000)
-        self.touch("hold")
+        self.boot()
         self.touch("button", button="set_mount")
         self.cmd(cmd="touch", action="press")
         self.cmd(cmd="touch", action="button", button="cal_right")          # Start: posted
@@ -174,7 +215,7 @@ class PanelTest(DeviceTest):
 
     def test_factory_reset_needs_the_confirmation(self):
         self.write_config(tol=1.0)
-        self.touch("hold")
+        self.boot()
         self.touch("button", button="set_reset")
         self.assertTrue(self.panel.screen.confirm)
         self.touch("button", button="confirm_cancel")
@@ -185,7 +226,7 @@ class PanelTest(DeviceTest):
         self.assertEqual(self.config()["tol"], 0.5)
 
     def test_screen_resets_on_boot(self):
-        self.touch("hold")
+        self.boot()
         self.dev.write_char("command", bytes([0x22]))   # REBOOT
         self.dev.advance(3000)
         self.assertEqual(self.dev.state, "running")
@@ -206,7 +247,7 @@ class PanelTest(DeviceTest):
         ui = self.snap()["ui"]
         self.assertEqual(ui["settings_text"],
                          ["0.25°", "2.00°", "45.0°", "100 %", "90 s", "1 h", "Never"])
-        self.assertEqual(self.touch("tap"), "zero")
+        self.assertEqual(self.touch("hold"), "zero")
         self.cmd(cmd="pose", yaw=-12.34)
         self.settle(3000)
         r = self.snap()["reading"]

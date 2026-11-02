@@ -223,6 +223,7 @@ def _load():
         "sim_set_faults": (None, [ctypes.c_uint32]),
         "sim_fault_busy": (None, [ctypes.c_int]),
         "sim_ui_text": (ctypes.c_char_p, [ctypes.c_int, ctypes.c_int]),
+        "sim_ui_key_action": (ctypes.c_int, [ctypes.c_int] * 6),
         "sim_seed": (None, [ctypes.c_uint32]),
         "sim_set_identity": (None, [u8p, ctypes.c_char_p]),
         "sim_imu_odr_hz": (ctypes.c_float, []),
@@ -473,6 +474,10 @@ class Core:
 
     def fault_busy(self, n: int) -> None:
         self._lib.sim_fault_busy(n)
+
+    def ui_key_action(self, on_level: bool, on_settings: bool, dimmed: bool, take: bool,
+                      overlay: bool, confirm: bool) -> int:
+        return self._lib.sim_ui_key_action(on_level, on_settings, dimmed, take, overlay, confirm)
 
     def ui_text(self, which: int, code: int) -> str:
         return self._lib.sim_ui_text(which, code).decode()

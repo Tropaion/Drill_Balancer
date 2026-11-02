@@ -107,16 +107,19 @@ Mouse or touch input on the copy follows the firmware's rules:
 
 | Gesture | Action |
 |---|---|
-| Tap | zero |
+| Hold 1 s | zero |
 | Swipe left / right | next / previous mode |
-| Hold 1 s | settings |
+| Tap | nothing |
+
+The **BOOT button** card presses the second button: it opens the settings
+and leaves them.
 
 As on the device:
 - a press that wakes a dimmed screen does nothing else;
 - the passkey and OTA overlays swallow touches;
 - during a take the REC pill takes touches only while it reads
-  "REC mm:ss" (held 2 s it stops the take, and that press opens no
-  settings); as "REC ready" it is a label and a tap goes to what lies
+  "REC mm:ss" (held 2 s it stops the take, and that press does not
+  zero); as "REC ready" it is a label and a touch goes to what lies
   under it. The press rules are in `dbsim/web/touch.js`.
 
 Settings screen: the list scrolls (drag or mouse wheel). Its action buttons

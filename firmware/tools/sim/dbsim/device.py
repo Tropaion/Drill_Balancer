@@ -475,6 +475,10 @@ class DbSimDevice:
         self.core.note_activity(self.core_now)
         return taken
 
+    def boot_key(self):
+        """The BOOT button: user activity, but no EVENT TOUCH in a recording."""
+        self.core.note_activity(self.core_now)
+
     def rec_ui_stop(self) -> int:
         """The 2 s long-press on the REC pill: stops the take."""
         att = self.core.rec_ui_stop(self.core_now)

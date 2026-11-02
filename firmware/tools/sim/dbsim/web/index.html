@@ -20,7 +20,7 @@
 <main class="layout">
   <section class="left">
     <div class="device"><canvas id="screen" width="932" height="932"
-         title="Touchscreen: tap = zero, swipe left/right = mode, hold 1 s = settings"></canvas></div>
+         title="Touchscreen: hold 1 s = zero, swipe left/right = mode"></canvas></div>
     <div class="caption" id="caption">-</div>
     <div class="passkey-banner" id="passkey" hidden>
       <div class="hint">Pairing: type this passkey into the phone</div>
@@ -135,6 +135,11 @@
         <label class="switch"><input type="checkbox" id="bat-done"> Charge done</label>
         <label class="switch"><input type="checkbox" id="bat-valid" checked> Gauge valid</label>
       </div>
+      <h3>BOOT button</h3>
+      <div class="row">
+        <button id="boot-key">Press</button>
+      </div>
+      <p class="note">Opens the settings and leaves them.</p>
       <h3>PWR key</h3>
       <div class="row">
         <button id="pwr-short">Short press</button>

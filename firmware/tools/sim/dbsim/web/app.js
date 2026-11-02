@@ -441,7 +441,7 @@ function drawSettings(s, view) {
       gearIcon(CX - tw / 2 - 22, cy, 11, COL.grey);
       text("SETTINGS", CX + 12, cy, 24, COL.grey);
     } else if (row.kind === "hint") {
-      text("Swipe right or tap Back to leave", CX, cy, 16, COL.grey);
+      text("BOOT, swipe right or Back to leave", CX, cy, 16, COL.grey);
     } else if (row.kind === "step") {
       text(row.label, CX, top + 9, 16, COL.grey);
       const by = top + row.h - 32;
@@ -818,6 +818,7 @@ for (const [id, key] of [["bat-vbus", "vbus"], ["bat-chg", "charging"], ["bat-do
   ["bat-valid", "valid"]]) {
   $(id).addEventListener("change", () => post({cmd: "battery", [key]: $(id).checked}));
 }
+$("boot-key").addEventListener("click", () => post({cmd: "boot"}));
 $("pwr-short").addEventListener("click", () => post({cmd: "pwrkey", long: false}));
 $("pwr-long").addEventListener("click", () => post({cmd: "pwrkey", long: true}));
 $("nudge").addEventListener("click", () => post({cmd: "nudge"}));

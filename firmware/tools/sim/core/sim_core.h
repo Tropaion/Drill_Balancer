@@ -193,6 +193,10 @@ void sim_fault_busy(int n);
 // cal result (code = last_result).
 const char *sim_ui_text(int which, int code);
 
+// ui_key_action(): what a BOOT press does (ui_key_action_t). The screen's own
+// state lives in the Python mirror, so it comes in as flags.
+int sim_ui_key_action(int on_level, int on_settings, int dimmed, int take, int overlay, int confirm);
+
 // ---- recorder (recorder.c, rec_wifi.c, rec_audio.c) ------------------------------
 // The session/take FSM, the stream ring and the producers run as on the
 // board. The Python side plays the network: it provides the endpoint when

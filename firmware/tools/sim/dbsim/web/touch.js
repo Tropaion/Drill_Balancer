@@ -4,7 +4,7 @@
 "use strict";
 
 const Touch = {
-  HOLD_MS: 1000,            // ui_level.c HOLD_FOR_SETTINGS_MS
+  HOLD_MS: 1000,            // ui_level.c HOLD_FOR_ZERO_MS
   REC_PILL_HOLD_MS: 2000,   // the REC pill's long-press stops the take
   REC_READY: 3,             // rec_state_t REC_STATE_READY ..
   REC_RECORDING: 4,         // .. REC_STATE_RECORDING ..
@@ -21,7 +21,7 @@ const Touch = {
   // The long-press a press arms. On the pill: its 2 s stop, and nothing else
   // (the pill is an object on lv_layer_top, the level screen under it never
   // sees the press). Anywhere else: the level screen's 1 s hold for the
-  // settings (levelOnly: only if the level screen is still shown then).
+  // zero (levelOnly: only if the level screen is still shown then).
   holdFor(region) {
     if (region && region.id === "rec_pill") {
       return {ms: Touch.REC_PILL_HOLD_MS, levelOnly: false,
