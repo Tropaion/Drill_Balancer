@@ -204,6 +204,11 @@ void ui_settings_confirm_reset(void)
     lv_obj_set_flag(s.confirm, LV_OBJ_FLAG_HIDDEN, false);
 }
 
+bool ui_settings_confirm_open(void)
+{
+    return !lv_obj_has_flag(s.confirm, LV_OBJ_FLAG_HIDDEN);
+}
+
 static void reset_cb(lv_event_t *e)
 {
     (void)e;
@@ -233,7 +238,7 @@ static void screen_gesture_cb(lv_event_t *e)
 {
     (void)e;
     lv_indev_t *in = lv_indev_active();
-    if (in && lv_indev_get_gesture_dir(in) == LV_DIR_RIGHT && lv_obj_has_flag(s.confirm, LV_OBJ_FLAG_HIDDEN)) {
+    if (in && lv_indev_get_gesture_dir(in) == LV_DIR_RIGHT && !ui_settings_confirm_open()) {
         ui_show(UI_SCREEN_LEVEL);
     }
 }
@@ -346,7 +351,7 @@ lv_obj_t *ui_settings_create(void)
     lv_obj_t *title = ui_label_new(s.list, &lv_font_montserrat_24, UI_C_GREY);
     lv_label_set_text_static(title, LV_SYMBOL_SETTINGS "  SETTINGS");
     lv_obj_t *hint = ui_label_new(s.list, &lv_font_montserrat_16, UI_C_GREY);
-    lv_label_set_text_static(hint, "Swipe right or tap Back to leave");
+    lv_label_set_text_static(hint, "BOOT, swipe right or Back to leave");
 
     stepper_new(UI_FIELD_TOLERANCE);
     stepper_new(UI_FIELD_NEAR);

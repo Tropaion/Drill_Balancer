@@ -23,5 +23,9 @@ extern rec_cmd_t g_rec_cmds[PREVIEW_MAX_REC_CMDS];
 extern int g_rec_cmd_count;
 extern int g_rec_touches;
 
+// The BOOT key (ui_boot_key_down()) and the activity notes.
+extern bool g_boot_down;
+extern int g_activity_count;
+
 void preview_stubs_reset(void);
 int preview_count_cmd(app_cmd_id_t id, int32_t arg, bool match_arg);

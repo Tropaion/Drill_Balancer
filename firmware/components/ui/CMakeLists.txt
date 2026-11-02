@@ -6,5 +6,5 @@ idf_component_register(SRCS "src/ui.c" "src/ui_level.c" "src/ui_settings.c" "src
                        INCLUDE_DIRS "include"
                        REQUIRES esp_common
                        PRIV_REQUIRES lvgl esp32_s3_touch_amoled_1_75 app_core settings level
-                                     recorder esp_app_format log)
+                                     recorder esp_app_format log esp_driver_gpio)
 target_compile_options(${COMPONENT_LIB} PRIVATE -Wdouble-promotion -Wshadow)

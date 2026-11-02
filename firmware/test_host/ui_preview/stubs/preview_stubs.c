@@ -10,6 +10,7 @@
 #include "preview_stubs.h"
 #include "recorder.h"
 #include "settings_store.h"
+#include "ui_priv.h"
 
 app_snapshot_t g_snap;
 settings_t g_settings;
@@ -21,6 +22,8 @@ int g_lock_depth;
 rec_cmd_t g_rec_cmds[PREVIEW_MAX_REC_CMDS];
 int g_rec_cmd_count;
 int g_rec_touches;
+bool g_boot_down;
+int g_activity_count;
 
 void preview_stubs_reset(void)
 {
@@ -32,6 +35,8 @@ void preview_stubs_reset(void)
     g_cmd_count = 0;
     g_rec_cmd_count = 0;
     g_rec_touches = 0;
+    g_boot_down = false;
+    g_activity_count = 0;
 }
 
 int preview_count_cmd(app_cmd_id_t id, int32_t arg, bool match_arg)
@@ -59,7 +64,15 @@ bool app_post_cmd(app_cmd_id_t id, int32_t arg)
     return true;
 }
 
-void app_note_activity(void) {}
+void app_note_activity(void)
+{
+    g_activity_count++;
+}
+
+bool ui_boot_key_down(void)
+{
+    return g_boot_down;
+}
 
 bool recorder_send(const rec_cmd_t *cmd)
 {

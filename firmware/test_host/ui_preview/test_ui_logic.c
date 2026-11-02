@@ -157,8 +157,8 @@ static void test_aim_sub_line(void)
     r = (level_reading_t){0};
     ui_aim_sub(&r, LEVEL_MODE_WALL, false, false, &sub);
     TEST_ASSERT_EQUAL_STRING("", sub.yaw);
-    TEST_ASSERT_EQUAL_STRING("Tap to zero for left/right", sub.info);
-    // Zeroed with the bit near vertical: yaw stays invalid, tapping again
+    TEST_ASSERT_EQUAL_STRING("Hold to zero for left/right", sub.info);
+    // Zeroed with the bit near vertical: yaw stays invalid, zeroing again
     // would not help, so no hint.
     ui_aim_sub(&r, LEVEL_MODE_WALL, true, false, &sub);
     TEST_ASSERT_EQUAL_STRING("", sub.info);

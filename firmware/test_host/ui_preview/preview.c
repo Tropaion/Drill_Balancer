@@ -104,6 +104,14 @@ static void tap(int32_t x, int32_t y)
     hold(x, y, 80);
 }
 
+static void boot_press(void)
+{
+    g_boot_down = true;
+    run(100);
+    g_boot_down = false;
+    run(100);
+}
+
 // Calibration guide buttons (ui_cal.c): Cancel / Retry on the left, Start /
 // Finish / Done on the right.
 static void tap_cal_left(void)
@@ -253,7 +261,7 @@ static void rec_touch_checks(void)
     g_snap.rec = (app_rec_status_t){.state = APP_REC_STATE_READY};
     run(200);
     int zeros = preview_count_cmd(APP_CMD_ZERO, 0, false);
-    tap(CX, PILL_Y);   // "REC ready" lets the tap through to the level screen
+    hold(CX, PILL_Y, 1200);   // "REC ready" lets the hold through to the level screen
     CHECK(preview_count_cmd(APP_CMD_ZERO, 0, false) == zeros + 1);
     CHECK(g_rec_touches == 0);
     run(1000);
@@ -268,8 +276,8 @@ static void rec_touch_checks(void)
     CHECK(preview_count_cmd(APP_CMD_NEXT_MODE, 0, false) == 0);
     CHECK(ui_current() == UI_SCREEN_LEVEL);
     CHECK(g_rec_touches == 3);
-    // A press on the pill is the pill's: no settings after 1.2 s, no stop
-    // yet; held 2 s it stops the take once.
+    // A press on the pill is the pill's: no zero after 1.2 s, no stop yet;
+    // held 2 s it stops the take once.
     hold(CX, PILL_Y, 1200);
     CHECK(ui_current() == UI_SCREEN_LEVEL);
     CHECK(g_rec_cmd_count == 0);
@@ -278,14 +286,25 @@ static void rec_touch_checks(void)
     CHECK(g_rec_touches == 5);
     CHECK(preview_count_cmd(APP_CMD_ZERO, 0, false) == zeros + 1);
 
+    // A hold that started before the take does not zero during it
+    g_snap.rec.state = APP_REC_STATE_READY;
+    run(200);
+    int before_take = preview_count_cmd(APP_CMD_ZERO, 0, false);
+    s_touch = (touch_t){.pressed = true, .x = CX, .y = CY};
+    run(500);
+    g_snap.rec.state = APP_REC_STATE_RECORDING;
+    run(1000);
+    s_touch.pressed = false;
+    run(100);
+    CHECK(preview_count_cmd(APP_CMD_ZERO, 0, false) == before_take);
+
     // Draining and READY again: a label, the hold beneath it is the level
-    // screen's (settings), nothing is stopped.
+    // screen's (zero), nothing is stopped.
     g_snap.rec.state = APP_REC_STATE_DRAINING;
     run(200);
     hold(CX, PILL_Y, 2600);
     CHECK(g_rec_cmd_count == 1);
-    CHECK(ui_current() == UI_SCREEN_SETTINGS);
-    ui_show(UI_SCREEN_LEVEL);
+    CHECK(preview_count_cmd(APP_CMD_ZERO, 0, false) == zeros + 2);
     CHECK(g_lock_depth == 0);
 }
 
@@ -321,6 +340,91 @@ static void cal_refusal_checks(void)
     CHECK(g_lock_depth == 0);
 }
 
+// In the state just set up, BOOT leaves the screen as it is.
+static void boot_changes_nothing(void)
+{
+    ui_screen_t screen = ui_current();
+    run(200);
+    boot_press();
+    CHECK(ui_current() == screen);
+}
+
+// BOOT: one action per press, on the level and settings screens only.
+static void boot_checks(void)
+{
+    printf("BOOT checks\n");
+    base_state();
+    ui_show(UI_SCREEN_LEVEL);
+    run(200);
+
+    boot_press();
+    CHECK(ui_current() == UI_SCREEN_SETTINGS);
+    boot_press();
+    CHECK(ui_current() == UI_SCREEN_LEVEL);
+
+    // Held for seconds: one action, not open and closed again
+    g_boot_down = true;
+    run(3000);
+    CHECK(ui_current() == UI_SCREEN_SETTINGS);
+    g_boot_down = false;
+    run(100);
+    // The factory reset confirmation is modal, as for the swipe back
+    ui_settings_confirm_reset();
+    boot_press();
+    CHECK(ui_current() == UI_SCREEN_SETTINGS);
+    ui_show(UI_SCREEN_LEVEL);
+
+    // A take, the overlays and the calibrations: nothing changes, but the
+    // press counts as activity
+    int activity = g_activity_count;
+    g_snap.rec = (app_rec_status_t){.state = APP_REC_STATE_RECORDING};
+    boot_changes_nothing();
+    g_snap.rec = (app_rec_status_t){0};
+    g_snap.ota_active = true;
+    boot_changes_nothing();
+    g_snap.ota_active = false;
+    g_snap.passkey_pending = true;
+    boot_changes_nothing();
+    g_snap.passkey_pending = false;
+    ui_show(UI_SCREEN_MOUNT_CAL);
+    boot_changes_nothing();
+    ui_show(UI_SCREEN_SENSOR_CAL);
+    boot_changes_nothing();
+    CHECK(g_activity_count == activity + 5);
+    CHECK(g_rec_touches == 0);   // BOOT is no touch in a recording
+    ui_show(UI_SCREEN_LEVEL);
+
+    // The first press on a dimmed screen only wakes it
+    g_snap.power = APP_POWER_DIM;
+    boot_changes_nothing();
+    CHECK(g_activity_count == activity + 6);
+    g_snap.power = APP_POWER_ACTIVE;
+    run(200);
+
+    // The finger on the screen when BOOT goes down acts on nothing, neither
+    // as the hold on the level screen nor on the stepper it ends up over
+    ui_show(UI_SCREEN_SETTINGS);
+    run(100);
+    lv_area_t step;
+    lv_obj_t *row = lv_obj_get_child(ui_settings_list(), 2);   // as in touch_checks()
+    lv_obj_get_coords(lv_obj_get_child(row, 2), &step);        // its plus
+    ui_show(UI_SCREEN_LEVEL);
+    run(100);
+    int zeros = preview_count_cmd(APP_CMD_ZERO, 0, false);
+    int stored = g_settings_store_count;
+    s_touch = (touch_t){.pressed = true, .x = (step.x1 + step.x2) / 2, .y = (step.y1 + step.y2) / 2};
+    run(300);
+    boot_press();
+    run(1000);
+    s_touch.pressed = false;
+    run(1500);
+    CHECK(ui_current() == UI_SCREEN_SETTINGS);
+    CHECK(preview_count_cmd(APP_CMD_ZERO, 0, false) == zeros);
+    CHECK(g_settings_store_count == stored);
+    ui_show(UI_SCREEN_LEVEL);
+    CHECK(g_lock_depth == 0);
+}
+
 static void touch_checks(void)
 {
     printf("touch checks\n");
@@ -328,8 +432,18 @@ static void touch_checks(void)
     ui_show(UI_SCREEN_LEVEL);
     run(200);
 
+    // A tap does nothing, LVGL's 400 ms long press neither; a 1 s hold zeroes
+    // while still held.
     tap(CX, CY);
+    CHECK(preview_count_cmd(APP_CMD_ZERO, 0, false) == 0);
+    hold(CX, CY, 600);
+    CHECK(preview_count_cmd(APP_CMD_ZERO, 0, false) == 0);
+    s_touch = (touch_t){.pressed = true, .x = CX, .y = CY};
+    run(1100);
     CHECK(preview_count_cmd(APP_CMD_ZERO, 0, false) == 1);
+    s_touch.pressed = false;
+    run(100);
+    CHECK(ui_current() == UI_SCREEN_LEVEL);
     render("14_zero_flash");
     run(1000);
 
@@ -345,21 +459,29 @@ static void touch_checks(void)
     CHECK(ui_current() == UI_SCREEN_LEVEL);
     g_snap.power = APP_POWER_ACTIVE;
     run(200);
-    tap(CX, CY);
+    hold(CX, CY, 1200);
     CHECK(preview_count_cmd(APP_CMD_ZERO, 0, false) == 2);
     run(1000);
 
+    // A finger that slid away and came back is no deliberate hold, however
+    // long it stays
+    s_touch = (touch_t){.pressed = true, .x = CX, .y = CY};
+    run(200);
+    s_touch.x = CX + 40;
+    run(300);
+    s_touch.x = CX;
+    run(1000);
+    s_touch.pressed = false;
+    run(100);
+    CHECK(preview_count_cmd(APP_CMD_ZERO, 0, false) == 2);
+
     swipe(330, 240, 120, 240);
     CHECK(preview_count_cmd(APP_CMD_NEXT_MODE, +1, true) == 1);
-    CHECK(preview_count_cmd(APP_CMD_ZERO, 0, false) == 2);   // a swipe is no tap
+    CHECK(preview_count_cmd(APP_CMD_ZERO, 0, false) == 2);   // a swipe is no hold
     swipe(120, 240, 330, 240);
     CHECK(preview_count_cmd(APP_CMD_NEXT_MODE, -1, true) == 1);
 
-    // LVGL's 400 ms long press alone does not open settings
-    hold(CX, CY, 600);
-    CHECK(ui_current() == UI_SCREEN_LEVEL);
-    CHECK(preview_count_cmd(APP_CMD_ZERO, 0, false) == 2);
-    hold(CX, CY, 1200);
+    boot_press();
     CHECK(ui_current() == UI_SCREEN_SETTINGS);
     CHECK(preview_count_cmd(APP_CMD_ZERO, 0, false) == 2);
 
@@ -417,7 +539,7 @@ static void touch_checks(void)
 
     // The list scrolls from anywhere, not only from a button: drag up from
     // the value text of the centred row
-    hold(CX, CY, 1200);
+    boot_press();
     CHECK(ui_current() == UI_SCREEN_SETTINGS);
     lv_obj_t *list = ui_settings_list();
     lv_obj_scroll_to_y(list, 0, LV_ANIM_OFF);
@@ -583,6 +705,7 @@ int main(int argc, char **argv)
     // --- touch behaviour (also renders 14 and 39) ---
     touch_checks();
     rec_touch_checks();
+    boot_checks();
     cal_refusal_checks();
 
     // --- burn-in shift ---

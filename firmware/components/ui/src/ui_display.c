@@ -9,11 +9,13 @@
 // DMA-capable, so two 10-line buffers there (2 x 9.3 KB for good) are sent as
 // they are. bsp_display_get_input_dev() stays NULL (unused).
 
+#include "driver/gpio.h"
 #include "esp_check.h"
 #include "esp_log.h"
 #include "bsp/esp-bsp.h"
 #include "bsp/touch.h"
 #include "ui.h"
+#include "ui_priv.h"
 
 static const char *TAG = "ui_display";
 
@@ -21,6 +23,15 @@ static const char *TAG = "ui_display";
 // end on an odd one, so a strip is always a whole number of row pairs.
 #define DRAW_BUF_LINES 10
 #define DRAW_BUF_BYTES (BSP_LCD_H_RES * DRAW_BUF_LINES * BSP_LCD_BITS_PER_PIXEL / 8)
+
+// The BOOT button: low while pressed. Nothing in the BSP uses it, and held at
+// reset it still selects download mode.
+#define BOOT_GPIO GPIO_NUM_0
+
+bool ui_boot_key_down(void)
+{
+    return gpio_get_level(BOOT_GPIO) == 0;
+}
 
 // The CO5300 takes windows that start on an even and end on an odd pixel.
 static void rounder_cb(lv_area_t *area, void *user_data)
@@ -63,6 +74,17 @@ esp_err_t ui_display_start(void)
         }
     } else {
         ESP_LOGE(TAG, "touch: %s, running without touch", esp_err_to_name(err));
+    }
+
+    // Like touch: without the key the level still shows.
+    const gpio_config_t boot_cfg = {
+        .pin_bit_mask = 1ULL << BOOT_GPIO,
+        .mode = GPIO_MODE_INPUT,
+        .pull_up_en = GPIO_PULLUP_ENABLE,
+    };
+    err = gpio_config(&boot_cfg);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "BOOT key: %s, running without it", esp_err_to_name(err));
     }
 
     ESP_RETURN_ON_ERROR(bsp_display_brightness_init(), TAG, "brightness");

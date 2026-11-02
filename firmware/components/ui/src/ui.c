@@ -22,6 +22,7 @@ static app_power_t s_power;     // last snapshot's power state
 static bool s_rec_live;         // the REC pill takes touches (RECORDING)
 static uint32_t s_rec_press_ms;
 static bool s_rec_fired;        // this press has stopped the take
+static ui_key_t s_boot_key;
 
 // Overlays live on lv_layer_top() so they cover every screen.
 static struct {
@@ -239,10 +240,10 @@ void ui_show(ui_screen_t screen)
     if (screen >= UI_SCREEN_COUNT) {
         return;
     }
-    // The finger that triggered the switch must not act on the new screen.
-    lv_indev_t *indev = lv_indev_active();
-    if (indev) {
-        lv_indev_wait_release(indev);
+    // A finger on the screen must not act on the new one, also when the switch
+    // came from a timer (no input device is active then).
+    for (lv_indev_t *in = lv_indev_get_next(NULL); in; in = lv_indev_get_next(in)) {
+        lv_indev_wait_release(in);
     }
     if (s_current == UI_SCREEN_SETTINGS && screen != UI_SCREEN_SETTINGS) {
         ui_settings_on_hide();
@@ -285,7 +286,7 @@ void ui_toast(const char *text, lv_color_t color, uint32_t ms)
 
 // The REC pill held for UI_REC_HOLD_MS stops the take (as STOP over BLE).
 // A press on it is the pill's: the screen beneath never sees it, so it arms
-// no settings hold either.
+// no zero hold either.
 static void rec_pill_cb(lv_event_t *e)
 {
     lv_event_code_t code = lv_event_get_code(e);
@@ -435,8 +436,8 @@ static void activity_cb(lv_event_t *e)
     app_note_activity();
     // During a take every touch is an EVENT TOUCH in the recording (the
     // recorder knows whether one runs), and only the REC pill acts on it:
-    // a stray touch must not zero, switch the mode or open the settings in
-    // the middle of a take.
+    // a stray touch must not switch the mode or press a button in the middle
+    // of a take.
     bool recording = recorder_note_touch();
     // A tap that brightens a dimmed screen does nothing else, on any screen
     // (no re-zero, no stepper, no calibration button): the object never gets
@@ -492,6 +493,32 @@ static void tick_cb(lv_timer_t *t)
     }
 }
 
+// The BOOT key (ui_logic.h has why on a timer of its own). Every press is
+// activity, like a touch; ui_key_action() says what else it does.
+static void boot_key_cb(lv_timer_t *t)
+{
+    (void)t;
+    if (s_power == APP_POWER_SLEEP || s_power == APP_POWER_OFF ||
+        !ui_key_update(&s_boot_key, ui_boot_key_down())) {
+        return;
+    }
+    app_note_activity();
+    app_snapshot_t snap;
+    app_state_get(&snap);
+    const ui_key_ctx_t ctx = {
+        .on_level = s_current == UI_SCREEN_LEVEL,
+        .on_settings = s_current == UI_SCREEN_SETTINGS,
+        .dimmed = s_power == APP_POWER_DIM,
+        .take = ui_rec_pill_live(&snap.rec),
+        .overlay = snap.ota_active || snap.passkey_pending,
+        .confirm = ui_settings_confirm_open(),
+    };
+    ui_key_action_t action = ui_key_action(&ctx);
+    if (action != UI_KEY_NONE) {
+        ui_show(action == UI_KEY_TO_SETTINGS ? UI_SCREEN_SETTINGS : UI_SCREEN_LEVEL);
+    }
+}
+
 esp_err_t ui_init(void)
 {
     // bsp_display_lock: -1 waits forever (the BSP passes it on as int32_t).
@@ -516,6 +543,9 @@ esp_err_t ui_init(void)
     if (timer == NULL) {
         bsp_display_unlock();
         return ESP_ERR_NO_MEM;
+    }
+    if (lv_timer_create(boot_key_cb, UI_KEY_POLL_MS, NULL) == NULL) {
+        ESP_LOGE(TAG, "running without the BOOT key");
     }
     for (lv_indev_t *in = lv_indev_get_next(NULL); in; in = lv_indev_get_next(in)) {
         lv_indev_add_event_cb(in, activity_cb, LV_EVENT_PRESSED, NULL);

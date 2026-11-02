@@ -12,8 +12,8 @@
 #define DOT_R 16
 #define VALUE_DY 92
 #define SUB_DY 136
-#define HOLD_FOR_SETTINGS_MS 1000
-#define TAP_MAX_MOVE_PX 24
+#define HOLD_FOR_ZERO_MS 1000
+#define HOLD_MAX_MOVE_PX 24
 #define ZERO_FLASH_MS 700
 
 static struct {
@@ -37,12 +37,12 @@ static struct {
     lv_obj_t *charge;
     lv_obj_t *ble;
 
-    bool imu_ok;
+    bool can_zero;          // a sensor and no take (a hold can start before one)
 
     // touch tracking (a tap that wakes a dimmed screen never gets here, ui.c)
     lv_point_t press_pt;
     uint32_t press_ms;
-    bool press_used;        // gesture or long hold already consumed this touch
+    bool press_used;        // a swipe or the hold already consumed this touch
 } s;
 
 // --- touch ---
@@ -53,7 +53,7 @@ static bool moved_far(lv_indev_t *in)
     lv_indev_get_point(in, &p);
     int32_t dx = p.x - s.press_pt.x;
     int32_t dy = p.y - s.press_pt.y;
-    return dx * dx + dy * dy > TAP_MAX_MOVE_PX * TAP_MAX_MOVE_PX;
+    return dx * dx + dy * dy > HOLD_MAX_MOVE_PX * HOLD_MAX_MOVE_PX;
 }
 
 static void screen_event_cb(lv_event_t *e)
@@ -69,17 +69,24 @@ static void screen_event_cb(lv_event_t *e)
         s.press_used = false;
         break;
     case LV_EVENT_PRESSING:
-        // A deliberate one second hold, not LVGL's 400 ms long press: the
-        // screen gets touched while handling the drill.
-        if (!s.press_used && lv_tick_elaps(s.press_ms) >= HOLD_FOR_SETTINGS_MS &&
-            !moved_far(in)) {
+        // A deliberate one second hold, not a tap or LVGL's 400 ms long press:
+        // the screen gets touched while handling the drill, and that must not
+        // move the zero. It fires while held, so the toast says when to let go.
+        if (s.press_used) {
+            break;
+        }
+        if (moved_far(in)) {
+            s.press_used = true;   // coming back later is still no deliberate hold
+        } else if (lv_tick_elaps(s.press_ms) >= HOLD_FOR_ZERO_MS) {
             s.press_used = true;
-            ui_show(UI_SCREEN_SETTINGS);
+            if (s.can_zero && app_post_cmd(APP_CMD_ZERO, 0)) {
+                ui_toast("ZERO", lv_color_hex(UI_C_GREEN), ZERO_FLASH_MS);
+            }
         }
         break;
     case LV_EVENT_GESTURE: {
         lv_dir_t dir = lv_indev_get_gesture_dir(in);
-        s.press_used = true;   // a swipe is never also a tap
+        s.press_used = true;   // a swipe never also zeroes
         if (dir == LV_DIR_LEFT) {
             app_post_cmd(APP_CMD_NEXT_MODE, +1);
         } else if (dir == LV_DIR_RIGHT) {
@@ -87,13 +94,6 @@ static void screen_event_cb(lv_event_t *e)
         }
         break;
     }
-    case LV_EVENT_SHORT_CLICKED:
-        if (!s.press_used && !moved_far(in) && s.imu_ok) {
-            if (app_post_cmd(APP_CMD_ZERO, 0)) {
-                ui_toast("ZERO", lv_color_hex(UI_C_GREEN), ZERO_FLASH_MS);
-            }
-        }
-        break;
     default:
         break;
     }
@@ -280,7 +280,7 @@ void ui_level_update(const app_snapshot_t *snap, uint32_t now_ms)
     const level_reading_t *r = &snap->reading;
     level_mode_t mode = r->mode < LEVEL_MODE_COUNT ? r->mode : LEVEL_MODE_WALL;
 
-    s.imu_ok = snap->imu_ok;
+    s.can_zero = snap->imu_ok && !ui_rec_pill_live(&snap->rec);
     char title[32];
     ui_level_title(mode, cfg->target_deg, title, sizeof(title));
     ui_set_text(s.title, title);

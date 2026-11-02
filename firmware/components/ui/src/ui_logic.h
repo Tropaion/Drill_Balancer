@@ -41,7 +41,7 @@ void ui_dot_deg(const level_reading_t *r, bool invert, float *x_deg, float *y_de
 
 // The line under the crosshair's number. yaw: the yaw on WALL and ANGLE
 // while it is valid, "R 1.2°" / "L 1.2°" / "0.0°", plus "  re-zero" once
-// stale (then shown amber, else in yaw_status's colour). info: "Tap to zero
+// stale (then shown amber, else in yaw_status's colour). info: "Hold to zero
 // for left/right" on WALL without a zero, "now 46.3°" on ANGLE (not next to
 // a stale yaw, for width). Empty strings are not shown.
 typedef struct {

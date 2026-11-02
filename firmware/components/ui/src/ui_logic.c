@@ -110,7 +110,7 @@ void ui_aim_sub(const level_reading_t *r, level_mode_t mode, bool zero_set, bool
                  r->yaw_stale ? "  re-zero" : "");
     }
     if (mode == LEVEL_MODE_WALL && !zero_set) {
-        snprintf(out->info, sizeof(out->info), "Tap to zero for left/right");
+        snprintf(out->info, sizeof(out->info), "Hold to zero for left/right");
     } else if (mode == LEVEL_MODE_ANGLE && !(yaw && r->yaw_stale)) {
         ui_fmt_deg(deg, sizeof(deg), r->elevation_deg, false);
         snprintf(out->info, sizeof(out->info), "now %s", deg);

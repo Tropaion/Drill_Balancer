@@ -60,6 +60,9 @@ typedef enum {
     UI_SCREEN_COUNT
 } ui_screen_t;
 
+// --- ui_display.c ---
+bool ui_boot_key_down(void);
+
 // --- ui.c ---
 void ui_show(ui_screen_t screen);
 ui_screen_t ui_current(void);
@@ -127,6 +130,7 @@ void ui_overlays_update(const app_snapshot_t *snap);
 // the factory reset confirmation.
 lv_obj_t *ui_settings_list(void);
 void ui_settings_confirm_reset(void);
+bool ui_settings_confirm_open(void);
 
 #ifdef __cplusplus
 }

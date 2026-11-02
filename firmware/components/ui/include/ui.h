@@ -7,11 +7,12 @@
 // It never calls sensor, PMU or BLE code.
 //
 // Screens:
-// - Level: one view per mode (swipe left/right = APP_CMD_NEXT_MODE),
-//   tap = APP_CMD_ZERO, long press = settings. One crosshair for every mode,
-//   colour by status (green on target, amber near, white off): on floor the
-//   dot is a bubble, on wall and angle it is where the bit points (up = too
-//   high, right = turned right since the zero). Below it the error, then yaw
+// - Level: one view per mode (swipe left/right = APP_CMD_NEXT_MODE), a 1 s
+//   hold = APP_CMD_ZERO, a tap does nothing. The BOOT button opens the
+//   settings and leaves them. One crosshair for every mode, colour by status
+//   (green on target, amber near, white off): on floor the dot is a bubble,
+//   on wall and angle it is where the bit points (up = too high, right =
+//   turned right since the zero). Below it the error, then yaw
 //   (wall, with a stale warning) or the current angle; battery %, charging
 //   and BLE icons.
 // - Settings: tolerance, target angle, brightness, auto-off times, BLE,
@@ -20,7 +21,9 @@
 //   deg, progress), sensor (six sides, coverage shown as six targets).
 // - Overlays: BLE passkey while pairing, OTA progress, low battery, and the
 //   REC pill of a recording session ("REC ready", "REC mm:ss"; not modal).
-// A touch that wakes a dimmed screen does nothing else, on any screen.
+// A touch or a BOOT press that wakes a dimmed screen does nothing else, on any
+// screen. BOOT does nothing on the calibration guides, under the passkey and
+// OTA overlays and during a take.
 // During a take a touch is logged in the recording (EVENT TOUCH) and does
 // nothing else either, unless it is on the REC pill: held 2 s, the pill
 // stops the take. The UI posts that STOP with recorder_send() and the
