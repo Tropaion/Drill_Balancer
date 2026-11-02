@@ -95,8 +95,12 @@ import dev.drillbalancer.ui.training.TrainingSetupViewModel
 import dev.drillbalancer.ui.training.UploadSettingsRoute
 import dev.drillbalancer.ui.training.upload.UploadSettingsViewModel
 import dev.drillbalancer.ui.training.reviewViewModel
+import dev.drillbalancer.ui.update.UpdateBanner
+import dev.drillbalancer.ui.update.UpdatesViewModel
+import dev.drillbalancer.update.UpdateDeps
 import dev.drillbalancer.ui.theme.Green
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.map
 import kotlinx.serialization.Serializable
 import kotlin.reflect.KClass
 
@@ -149,8 +153,20 @@ enum class Tab(val dest: Dest, val label: String, val icon: ImageVector) {
  * session that outlives the Bluetooth link stays on screen.
  */
 @Composable
-fun AppRoot(session: DeviceSession, scan: () -> Flow<List<ScannedDevice>>, lastAddress: Flow<String?>, training: TrainingDeps) {
+fun AppRoot(
+    session: DeviceSession,
+    scan: () -> Flow<List<ScannedDevice>>,
+    lastAddress: Flow<String?>,
+    training: TrainingDeps,
+    updates: UpdateDeps? = null,   // null: no update notices, and no network
+) {
     val sessionVm = viewModel { SessionViewModel(session) }
+    val updatesVm = updates?.let { viewModel { UpdatesViewModel(it, session, training.controller.phase.map { p -> p.active }) } }
+    // Back from "Install unknown apps" or the installer.
+    LifecycleResumeEffect(updatesVm) {
+        updatesVm?.onResume()
+        onPauseOrDispose {}
+    }
     val shell by sessionVm.shell.collectAsStateWithLifecycle()
     val prompt by sessionVm.gate.prompt.collectAsStateWithLifecycle()
     // The phase alone: the whole state changes up to 10 times a second during a take.
@@ -170,7 +186,11 @@ fun AppRoot(session: DeviceSession, scan: () -> Flow<List<ScannedDevice>>, lastA
         if (offline) {
             OfflineTraining(training, reviews, onClose = { offlineOpen = false }, review = review, onReview = { review = it })
         } else {
-            ConnectRoute(viewModel { ConnectViewModel(session, scan, lastAddress) }, openTrainingData = { offlineOpen = true })
+            ConnectRoute(
+                viewModel { ConnectViewModel(session, scan, lastAddress) },
+                openTrainingData = { offlineOpen = true },
+                banner = { AppNotice(updatesVm) },
+            )
         }
         return
     }
@@ -181,7 +201,7 @@ fun AppRoot(session: DeviceSession, scan: () -> Flow<List<ScannedDevice>>, lastA
     }
     Box(Modifier.fillMaxSize()) {
         CompositionLocalProvider(LocalViewModelStoreOwner provides screens) {
-            ConnectedApp(sessionVm, shell, training, reviews, review, onReview = { review = it })
+            ConnectedApp(sessionVm, shell, training, updatesVm, reviews, review, onReview = { review = it })
         }
         prompt?.let { p ->
             BackHandler { sessionVm.gate.cancel() }
@@ -204,6 +224,7 @@ private fun ConnectedApp(
     sessionVm: SessionViewModel,
     shell: ShellState,
     training: TrainingDeps,
+    updates: UpdatesViewModel?,
     reviews: ReviewStores,
     review: String?,
     onReview: (String?) -> Unit,
@@ -242,7 +263,7 @@ private fun ConnectedApp(
                 val state by vm.state.collectAsStateWithLifecycle()
                 val angle = vm.angle.collectAsStateWithLifecycle()
                 val read = remember(angle) { { angle.value } }
-                LiveScreen(state, read, vm::setMode, vm::zero, vm::clearZero, vm::dismissMessage)
+                LiveScreen(state, read, vm::setMode, vm::zero, vm::clearZero, vm::dismissMessage, banner = { FirmwareNotice(updates) })
             }
             composable<Dest.Settings> {
                 val vm = viewModel { SettingsViewModel(session, gate) }
@@ -286,10 +307,24 @@ private fun ConnectedApp(
                         openTrainingData = { nav.navigate(Dest.Training) },
                         dismissMessage = vm::dismissMessage,
                     ),
+                    banner = {
+                        FirmwareNotice(updates)
+                        AppNotice(updates)
+                    },
                 )
             }
             composable<Dest.Firmware> {
-                FirmwareRoute(viewModel { FirmwareViewModel(session, gate) }, onDone = { nav.popBackStack() })
+                val vm = viewModel { FirmwareViewModel(session, gate) }
+                // Also one that finishes while this screen is open; never over a running update.
+                val canPick = vm.state.collectAsStateWithLifecycle().value.canPick
+                val pending = updates?.pendingFirmware?.collectAsStateWithLifecycle()?.value
+                LaunchedEffect(pending, canPick) {
+                    if (pending != null && canPick) {
+                        vm.onFile(pending.name, pending.parsed)
+                        updates.firmwareTaken()
+                    }
+                }
+                FirmwareRoute(vm, onDone = { nav.popBackStack() })
             }
             composable<Dest.Training> {
                 TrainingListRoute(
@@ -321,6 +356,11 @@ private fun ConnectedApp(
             }
         }
     }
+    // A downloaded firmware goes to the Firmware screen, as a picked file would.
+    val firmwareReady = updates?.pendingFirmware?.collectAsStateWithLifecycle()?.value != null
+    LaunchedEffect(firmwareReady) {
+        if (firmwareReady) nav.navigate(Dest.Firmware) { launchSingleTop = true }
+    }
     // Back on the tabs after the link was given up while a session ran: show the session again,
     // and a review left open without the link over it.
     var resumed by rememberSaveable { mutableStateOf(false) }
@@ -335,6 +375,22 @@ private fun ConnectedApp(
             reported(e.takeIf { it.destination.hasRoute(Dest.TrainingReview::class) }?.toRoute<Dest.TrainingReview>()?.id)
         }
     }
+}
+
+/** The firmware update notice, while there is one. */
+@Composable
+private fun FirmwareNotice(updates: UpdatesViewModel?) {
+    updates ?: return
+    val notice = updates.state.collectAsStateWithLifecycle().value.firmware ?: return
+    UpdateBanner(notice, updates::downloadFirmware, updates::dismissFirmware)
+}
+
+/** The notice of a newer app, while there is one. */
+@Composable
+private fun AppNotice(updates: UpdatesViewModel?) {
+    updates ?: return
+    val notice = updates.state.collectAsStateWithLifecycle().value.app ?: return
+    UpdateBanner(notice, updates::downloadApp, updates::dismissApp, onInstall = updates::installApp)
 }
 
 /** Top bar (device, link, battery), reconnect bar and bottom tabs around a connected screen. */

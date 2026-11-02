@@ -59,7 +59,12 @@ private enum class Confirm(val command: Command, val title: String, val text: St
 }
 
 @Composable
-fun DeviceScreen(state: DeviceUiState, actions: DeviceActions, modifier: Modifier = Modifier) {
+fun DeviceScreen(
+    state: DeviceUiState,
+    actions: DeviceActions,
+    modifier: Modifier = Modifier,
+    banner: @Composable () -> Unit = {},   // update notices
+) {
     var confirm by rememberSaveable { mutableStateOf<Confirm?>(null) }
     var reset by rememberSaveable { mutableStateOf(false) }
     Column(
@@ -69,6 +74,7 @@ fun DeviceScreen(state: DeviceUiState, actions: DeviceActions, modifier: Modifie
             .padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
+        banner()
         state.message?.let { MessageBanner(it, onDismiss = actions.dismissMessage) }
 
         SectionTitle("Device")

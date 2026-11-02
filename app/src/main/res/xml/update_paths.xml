@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- What the installer may read: the downloaded APK in the cache (AndroidApkInstaller). -->
+<paths>
+    <cache-path name="updates" path="updates/" />
+</paths>

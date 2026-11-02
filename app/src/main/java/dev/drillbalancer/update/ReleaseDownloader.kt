@@ -13,6 +13,7 @@ import java.net.URL
 import kotlin.coroutines.coroutineContext
 
 internal const val USER_AGENT = "DrillBalancer-app"
+const val MAX_APK_BYTES = 200L * 1024 * 1024
 const val RELEASE_REPO = "Tropaion/Drill_Balancer"
 const val RELEASE_URL_PREFIX = "https://github.com/$RELEASE_REPO/releases/download/"
 

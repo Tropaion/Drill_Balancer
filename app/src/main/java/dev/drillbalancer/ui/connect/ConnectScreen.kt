@@ -65,6 +65,7 @@ fun ConnectScreen(
     legacyLocation: Boolean,              // API <= 30: the permission is "Location"
     actions: ConnectActions,
     modifier: Modifier = Modifier,
+    banner: @Composable () -> Unit = {},   // an update notice
 ) {
     Scaffold(
         modifier = modifier,
@@ -88,6 +89,7 @@ fun ConnectScreen(
                 .padding(horizontal = 16.dp, vertical = 8.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
+            banner()
             state.message?.let {
                 MessageBanner(
                     it,

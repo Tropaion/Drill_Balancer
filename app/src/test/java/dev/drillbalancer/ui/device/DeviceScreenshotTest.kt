@@ -15,6 +15,10 @@ import dev.drillbalancer.protocol.StatusFlags
 import dev.drillbalancer.protocol.StatusPacket
 import dev.drillbalancer.ui.InFrame
 import dev.drillbalancer.ui.PHONE
+import dev.drillbalancer.ui.update.UpdateBanner
+import dev.drillbalancer.ui.update.UpdateKind
+import dev.drillbalancer.ui.update.UpdateNotice
+import dev.drillbalancer.ui.update.UpdateStage
 import dev.drillbalancer.ui.SHELL
 import dev.drillbalancer.ui.Tab
 import dev.drillbalancer.ui.Themed
@@ -48,6 +52,15 @@ class DeviceScreenshotTest {
 
     private fun show() {
         compose.setContent { Themed { InFrame(Tab.DEVICE) { m -> DeviceScreen(state, DeviceActions(), m) } } }
+    }
+
+    @Test
+    fun updateNotice() {
+        val notice = UpdateNotice(UpdateKind.FIRMWARE, "0.2.0", UpdateStage.Available)
+        compose.setContent {
+            Themed { InFrame(Tab.DEVICE) { m -> DeviceScreen(state, DeviceActions(), m, banner = { UpdateBanner(notice, {}, {}) }) } }
+        }
+        compose.onRoot().captureRoboImage()
     }
 
     @Test

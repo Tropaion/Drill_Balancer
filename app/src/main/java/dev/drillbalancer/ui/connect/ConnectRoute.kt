@@ -30,7 +30,7 @@ import dev.drillbalancer.ble.BleReadiness
 
 /** The connect screen wired to Android: permissions, Bluetooth and location switches, scanning. */
 @Composable
-fun ConnectRoute(vm: ConnectViewModel, openTrainingData: () -> Unit = {}) {
+fun ConnectRoute(vm: ConnectViewModel, openTrainingData: () -> Unit = {}, banner: @Composable () -> Unit = {}) {
     val context = LocalContext.current
     val activity = LocalActivity.current
     val state by vm.state.collectAsStateWithLifecycle()
@@ -90,6 +90,7 @@ fun ConnectRoute(vm: ConnectViewModel, openTrainingData: () -> Unit = {}) {
         readiness = readiness,
         permissionPrompt = prompt,
         legacyLocation = BlePermissions.needsLocationServices(),
+        banner = banner,
         actions = ConnectActions(
             requestPermissions = {
                 val required = BlePermissions.required()

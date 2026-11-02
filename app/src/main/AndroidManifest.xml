@@ -47,6 +47,9 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
+    <!-- A newer app from GitHub goes to Android's installer, which asks the user -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+
     <uses-feature
         android:name="android.hardware.bluetooth_le"
         android:required="true" />
@@ -74,6 +77,16 @@
             android:name=".recorder.RecorderService"
             android:exported="false"
             android:foregroundServiceType="connectedDevice" />
+        <!-- The downloaded APK, for the installer (AndroidApkInstaller) -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.updates"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/update_paths" />
+        </provider>
         <!-- WorkManager's foreground service for the upload worker (setForeground) -->
         <service
             android:name="androidx.work.impl.foreground.SystemForegroundService"

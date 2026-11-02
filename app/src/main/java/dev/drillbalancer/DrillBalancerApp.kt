@@ -2,6 +2,7 @@ package dev.drillbalancer
 
 import android.app.Application
 import android.os.Build
+import android.os.SystemClock
 import android.os.storage.StorageManager
 import android.util.Log
 import dev.drillbalancer.ble.BleDeviceSession
@@ -22,6 +23,15 @@ import dev.drillbalancer.recorder.net.StreamLink
 import dev.drillbalancer.recorder.net.StreamLinkFactory
 import dev.drillbalancer.recorder.net.WifiPermissions
 import dev.drillbalancer.ui.training.TrainingDeps
+import dev.drillbalancer.update.AndroidApkInstaller
+import dev.drillbalancer.update.AppUpdates
+import dev.drillbalancer.update.HttpReleaseSource
+import dev.drillbalancer.update.ReleaseDownloader
+import dev.drillbalancer.update.ReleaseVersion
+import dev.drillbalancer.update.UpdateChecker
+import dev.drillbalancer.update.UpdateDeps
+import dev.drillbalancer.update.UpdateStore
+import dev.drillbalancer.update.updateDataStore
 import dev.drillbalancer.upload.GcmCipher
 import dev.drillbalancer.upload.KeystoreKey
 import dev.drillbalancer.upload.TokenVault
@@ -94,6 +104,14 @@ class DrillBalancerApp : Application(), UploadDeps.Provider {
 
     val training: TrainingDeps by lazy {
         TrainingDeps(recorder, recordings, setupStore, labeler, UploadServices(uploads, uploadSettings, vault))
+    }
+
+    // Update notices: elapsed time, so a corrected phone clock cannot stretch the 10 minutes.
+    val updates: UpdateDeps by lazy {
+        UpdateDeps(
+            UpdateChecker(HttpReleaseSource(), SystemClock::elapsedRealtime), UpdateStore(updateDataStore), ReleaseDownloader(),
+            app = if (BuildConfig.DEBUG) null else AppUpdates(ReleaseVersion.parse(BuildConfig.VERSION_NAME), AndroidApkInstaller(this)),
+        )
     }
 
     // A take that ended gets its dataset files (a storage error leaves it to the next start's recovery).

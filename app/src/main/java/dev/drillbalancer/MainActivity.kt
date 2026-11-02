@@ -14,7 +14,7 @@ class MainActivity : ComponentActivity() {
         val app = application as DrillBalancerApp
         setContent {
             DrillBalancerTheme {
-                AppRoot(app.session, app.scanner::scan, app.lastDevice.address, app.training)
+                AppRoot(app.session, app.scanner::scan, app.lastDevice.address, app.training, app.updates)
             }
         }
     }

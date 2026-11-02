@@ -221,6 +221,12 @@ class FakeDeviceSession(
         dropLink(null)
     }
 
+    /** What the running image reports, as after an update. */
+    fun setFirmwareRevision(version: String) {
+        deviceInfo = deviceInfo.copy(firmwareRevision = version)
+        _info.value = deviceInfo
+    }
+
     override suspend fun ensureBonded() {
         requireLink()
         if (bonded) return

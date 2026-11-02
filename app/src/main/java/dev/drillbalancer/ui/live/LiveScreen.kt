@@ -65,9 +65,11 @@ fun LiveScreen(
     onClearZero: () -> Unit,
     onDismissMessage: () -> Unit,
     modifier: Modifier = Modifier,
+    banner: @Composable () -> Unit = {},   // an update notice
 ) {
     Column(modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         ModeTabs(state.mode, onMode)
+        banner()
         state.message?.let { MessageBanner(it, onDismiss = onDismissMessage) }
         Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
             when {
