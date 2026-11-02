@@ -1,0 +1,108 @@
+# Publishes a GitHub release from a version tag: the firmware image CI built and
+# tested for that commit, and the release-signed APK. The suites do not run again
+# here: CI on the tagged commit has to be green, so push the version bump, wait
+# for CI, then tag. Tagged too early: re-run this workflow once CI has passed.
+name: Release
+
+on:
+  push:
+    tags: ['v[0-9]+.[0-9]+.[0-9]+']
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  check:
+    name: Tag and CI
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      version: ${{ steps.tag.outputs.version }}
+      ci_run: ${{ steps.ci.outputs.run }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0    # the check below looks for the commit on main
+      - id: tag
+        run: tools/ci/release_check.sh "$GITHUB_REF_NAME"
+      - name: The commit is on main
+        run: |
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+            echo "::error::$GITHUB_SHA is not on main"
+            exit 1
+          fi
+      - name: CI is green on this commit
+        id: ci
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          run=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs?head_sha=$GITHUB_SHA&status=success&per_page=1" --jq '.workflow_runs[0].id // empty')
+          if [ -z "$run" ]; then
+            echo "::error::CI has not passed on $GITHUB_SHA"
+            exit 1
+          fi
+          echo "run=$run" >> "$GITHUB_OUTPUT"
+
+  apk:
+    name: Signed APK
+    needs: check
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # This job holds the signing key: its third-party actions are pinned to a commit.
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: android-actions/setup-android@be39fa834029ff78f1a44aa3bb0819b8fc2bd8fd  # v4
+        with:
+          packages: platform-tools platforms;android-37.0 build-tools;36.0.0
+      # No Gradle cache: nothing of a signing build is kept.
+      - uses: gradle/actions/setup-gradle@8da46b539cd8fe6ab27ca75128919a18d757604c  # v6
+        with:
+          cache-disabled: true
+      - run: tools/ci/run_logged.sh tools/ci/release_apk.sh "$RUNNER_TEMP/apk"
+        env:
+          DB_RELEASE_KEYSTORE_B64: ${{ secrets.DB_RELEASE_KEYSTORE_B64 }}
+          DB_RELEASE_STORE_PASSWORD: ${{ secrets.DB_RELEASE_STORE_PASSWORD }}
+          DB_RELEASE_KEY_ALIAS: ${{ secrets.DB_RELEASE_KEY_ALIAS }}
+          DB_RELEASE_KEY_PASSWORD: ${{ secrets.DB_RELEASE_KEY_PASSWORD }}
+      - uses: actions/upload-artifact@v7
+        with:
+          name: apk
+          path: ${{ runner.temp }}/apk/*.apk
+          if-no-files-found: error
+
+  publish:
+    name: Publish
+    needs: [check, apk]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: apk
+          path: ${{ runner.temp }}/release
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.check.outputs.version }}
+          CI_RUN: ${{ needs.check.outputs.ci_run }}
+        run: |
+          cd "$RUNNER_TEMP/release"
+          gh run download "$CI_RUN" --repo "$GITHUB_REPOSITORY" --name firmware --dir ci
+          # The artifact's root is firmware/ (the common folder of its files).
+          mv ci/build-ci/drillbalancer.bin "drillbalancer-$VERSION.bin"
+          gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --title "$GITHUB_REF_NAME" \
+            --generate-notes "drillbalancer-$VERSION.bin" "drillbalancer-$VERSION.apk"

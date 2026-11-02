@@ -191,6 +191,36 @@ sed -i 's/FIRMWARE_IMAGE.exists()/True/' "$sb/fake_tests/test_fake.py"
 capture python3 "$R/tools/ci/sim_image_tests.py" "$sb/fake_tests"
 expect_rc "sim_image_tests.py fails when it finds no image test" 1
 
+# --- release_check.sh -------------------------------------------------------
+echo 0.2.0 > "$R/VERSION"
+capture "$R/tools/ci/release_check.sh" v0.2.0
+expect_rc "release_check.sh passes when the tag is VERSION" 0
+expect_eq "... and prints the version" 0.2.0 "$out"
+GITHUB_ACTIONS=true GITHUB_OUTPUT="$sb/step_output" capture "$R/tools/ci/release_check.sh" v0.2.0
+expect_eq "... and in CI as the step output" version=0.2.0 "$(cat "$sb/step_output")"
+capture "$R/tools/ci/release_check.sh" v0.2.1
+expect_rc "release_check.sh fails on another tag" 1
+expect_grep "... and names both" 'v0.2.1.*0\.2\.0' "$out"
+capture "$R/tools/ci/release_check.sh" dataset-v1
+expect_rc "release_check.sh fails on the data repo's tag" 1
+echo 0.2 > "$R/VERSION"
+capture "$R/tools/ci/release_check.sh" v0.2
+expect_rc "release_check.sh fails on a VERSION without a patch" 1
+echo 0.100.0 > "$R/VERSION"
+capture "$R/tools/ci/release_check.sh" v0.100.0
+expect_rc "release_check.sh fails when a part overflows the versionCode" 1
+
+# --- release_apk.sh: what it refuses, before any build ------------------------
+capture env -u DB_RELEASE_KEY_ALIAS DB_RELEASE_STORE_PASSWORD=sekrit1 DB_RELEASE_KEY_PASSWORD=sekrit2 \
+    "$R/tools/ci/release_apk.sh" "$sb/apk"
+expect_rc "release_apk.sh fails without a secret" 1
+expect_grep "... and names it" 'DB_RELEASE_KEY_ALIAS is not set' "$out"
+expect_no_grep "... and prints no value" 'sekrit' "$out"
+capture env DB_RELEASE_STORE_PASSWORD=sekrit1 DB_RELEASE_KEY_PASSWORD=sekrit2 DB_RELEASE_KEY_ALIAS=a \
+    DB_RELEASE_KEYSTORE=missing.jks "$R/tools/ci/release_apk.sh" "$sb/apk"
+expect_rc "release_apk.sh fails without the keystore file" 1
+expect_grep "... and says where it looked" 'no keystore at /.*/missing.jks' "$out"
+
 cd "$real_root" && rm -rf firmware/build-ci-selftest
 echo "$passed passed, $failed failed"
 if [ "$failed" -ne 0 ]; then

@@ -1,6 +1,13 @@
 cmake_minimum_required(VERSION 3.16)
 
-set(PROJECT_VER "0.1.0")
+# The one version of firmware and app; the release tag must match it
+# (tools/ci/release_check.sh).
+file(READ ${CMAKE_CURRENT_LIST_DIR}/../VERSION PROJECT_VER)
+string(STRIP "${PROJECT_VER}" PROJECT_VER)
+if(NOT PROJECT_VER MATCHES "^[0-9]+\\.[0-9]+\\.[0-9]+$")
+    message(FATAL_ERROR "VERSION is not MAJOR.MINOR.PATCH: ${PROJECT_VER}")
+endif()
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${CMAKE_CURRENT_LIST_DIR}/../VERSION)
 
 # Build only some of our components (plus main and their dependencies), e.g.
 #   DB_COMPONENTS="board;imu" idf.py -B build-board -D SDKCONFIG=build-board/sdkconfig build

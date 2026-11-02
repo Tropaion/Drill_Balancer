@@ -7,6 +7,11 @@ plugins {
     alias(libs.plugins.roborazzi)
 }
 
+// The one version of firmware and app; the release tag must match it (tools/ci/release_check.sh).
+val appVersion = providers.fileContents(layout.projectDirectory.file("../VERSION")).asText.get().trim()
+val (versionMajor, versionMinor, versionPatch) = Regex("""(\d+)\.(\d{1,2})\.(\d{1,2})""").matchEntire(appVersion)?.destructured
+    ?: error("VERSION is not MAJOR.MINOR.PATCH: $appVersion")
+
 android {
     namespace = "dev.drillbalancer"
     compileSdk = 37
@@ -15,13 +20,27 @@ android {
         applicationId = "dev.drillbalancer"
         minSdk = 26
         targetSdk = 37
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = versionMajor.toInt() * 10000 + versionMinor.toInt() * 100 + versionPatch.toInt()
+        versionName = appVersion
+    }
+
+    // Only with the key (tools/ci/release_apk.sh, which turns Gradle's caches off so they do not
+    // keep the passwords). Without it the release stays unsigned and needs no secrets.
+    signingConfigs {
+        providers.environmentVariable("DB_RELEASE_KEYSTORE").orNull?.let { path ->
+            create("release") {
+                storeFile = file(path)
+                storePassword = providers.environmentVariable("DB_RELEASE_STORE_PASSWORD").get()
+                keyAlias = providers.environmentVariable("DB_RELEASE_KEY_ALIAS").get()
+                keyPassword = providers.environmentVariable("DB_RELEASE_KEY_PASSWORD").get()
+            }
+        }
     }
 
     buildTypes {
         release {
             isMinifyEnabled = false
+            signingConfig = signingConfigs.findByName("release")
         }
     }
 
@@ -87,6 +106,7 @@ tasks.withType<Test>().configureEach {
             )
         },
     ).withPathSensitivity(PathSensitivity.RELATIVE).withPropertyName("firmwareSources")
+    inputs.file(layout.projectDirectory.file("../VERSION")).withPathSensitivity(PathSensitivity.RELATIVE).withPropertyName("version")
     val optIn = listOf(
         "DB_SIM_URL", "DB_SIM_OUT", "DB_SIM_SCENARIOS", "DB_SIM_STORE_OUT", "DB_SIM_TRUTH_OUT", "DB_SIM_FINALIZE_OUT",
         "DB_FINALIZE_OUT", "DB_REVIEW_OUT", "DB_MUTE_OUT", "DB_GITHUB_LIVE_BRANCH",
