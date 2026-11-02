@@ -106,6 +106,42 @@ bool ui_rec_pill_live(const app_rec_status_t *r);
 
 #define UI_REC_HOLD_MS 2000
 
+// --- BOOT key ---
+
+// How often the UI reads BOOT. A quick press lasts about 80 ms, too short for
+// two reads of the 66 ms UI tick.
+#define UI_KEY_POLL_MS 20
+
+// Debounce state of a key, zeroed = released.
+typedef struct {
+    uint8_t down;   // reads down in a row, before the press counts
+    uint8_t up;     // reads up in a row, before a held key counts as released
+    bool held;
+} ui_key_t;
+
+// One read of the key. True once per press, on the second read down in a row;
+// the next press counts after two reads up in a row, so neither a bounce nor a
+// key held for seconds acts twice.
+bool ui_key_update(ui_key_t *k, bool down);
+
+typedef enum {
+    UI_KEY_NONE,
+    UI_KEY_TO_SETTINGS,
+    UI_KEY_TO_LEVEL,
+} ui_key_action_t;
+
+// What the UI is doing when BOOT goes down.
+typedef struct {
+    bool on_level;      // the level screen
+    bool on_settings;   // the settings screen (neither: a calibration guide)
+    bool dimmed;        // the press only wakes the screen, like a tap
+    bool take;          // a take runs: a stray press must change nothing
+    bool overlay;       // the passkey or OTA overlay covers the screen
+    bool confirm;       // the factory reset confirmation is open
+} ui_key_ctx_t;
+
+ui_key_action_t ui_key_action(const ui_key_ctx_t *c);
+
 // --- settings steppers ---
 
 typedef enum {

@@ -246,6 +246,37 @@ bool ui_rec_pill_live(const app_rec_status_t *r)
     return r->state == APP_REC_STATE_RECORDING;
 }
 
+#define KEY_POLLS 2
+
+bool ui_key_update(ui_key_t *k, bool down)
+{
+    if (down) {
+        k->up = 0;
+        if (k->held) {
+            return false;
+        }
+        k->held = ++k->down >= KEY_POLLS;
+        return k->held;
+    }
+    k->down = 0;
+    if (k->held && ++k->up >= KEY_POLLS) {
+        k->held = false;
+        k->up = 0;
+    }
+    return false;
+}
+
+ui_key_action_t ui_key_action(const ui_key_ctx_t *c)
+{
+    if (c->dimmed || c->take || c->overlay) {
+        return UI_KEY_NONE;
+    }
+    if (c->on_level) {
+        return UI_KEY_TO_SETTINGS;
+    }
+    return c->on_settings && !c->confirm ? UI_KEY_TO_LEVEL : UI_KEY_NONE;
+}
+
 bool ui_rec_pill_text(const app_rec_status_t *r, char *buf, size_t len)
 {
     if (len == 0) {

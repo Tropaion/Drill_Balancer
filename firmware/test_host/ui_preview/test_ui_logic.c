@@ -717,6 +717,54 @@ static void test_poses_cover_all_six_directions_once(void)
     TEST_ASSERT_EQUAL_HEX8(ACCEL_CAL_DIR_ALL, bits);
 }
 
+// One read per character ('1' = down); how many reads fired.
+static int key_feed(ui_key_t *k, const char *reads)
+{
+    int fired = 0;
+    for (; *reads; reads++) {
+        fired += ui_key_update(k, *reads == '1');
+    }
+    return fired;
+}
+
+static void test_key_fires_once_per_press(void)
+{
+    ui_key_t k = {0};
+    TEST_ASSERT_EQUAL(0, key_feed(&k, "01"));
+    TEST_ASSERT_EQUAL(1, key_feed(&k, "1"));
+    TEST_ASSERT_EQUAL(0, key_feed(&k, "11111111"));
+}
+
+static void test_key_ignores_a_one_poll_glitch(void)
+{
+    ui_key_t k = {0};
+    TEST_ASSERT_EQUAL(0, key_feed(&k, "1010"));
+}
+
+static void test_key_rearms_after_two_polls_up(void)
+{
+    ui_key_t k = {0};
+    TEST_ASSERT_EQUAL(1, key_feed(&k, "11"));
+    TEST_ASSERT_EQUAL(0, key_feed(&k, "011"));   // one read up is a bounce
+    TEST_ASSERT_EQUAL(1, key_feed(&k, "0011"));
+}
+
+static void test_key_action_table(void)
+{
+    TEST_ASSERT_EQUAL(UI_KEY_TO_SETTINGS, ui_key_action(&(ui_key_ctx_t){.on_level = true}));
+    TEST_ASSERT_EQUAL(UI_KEY_TO_LEVEL, ui_key_action(&(ui_key_ctx_t){.on_settings = true}));
+    TEST_ASSERT_EQUAL(UI_KEY_NONE, ui_key_action(&(ui_key_ctx_t){0}));   // a calibration
+    TEST_ASSERT_EQUAL(UI_KEY_NONE,
+                      ui_key_action(&(ui_key_ctx_t){.on_settings = true, .confirm = true}));
+    for (int screen = 0; screen < 2; screen++) {
+        for (int mask = 1; mask < 8; mask++) {
+            ui_key_ctx_t c = {.on_level = screen == 0, .on_settings = screen == 1,
+                              .dimmed = mask & 1, .take = mask & 2, .overlay = mask & 4};
+            TEST_ASSERT_EQUAL(UI_KEY_NONE, ui_key_action(&c));
+        }
+    }
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -756,5 +804,9 @@ int main(void)
     RUN_TEST(test_round_row_fixed_width_only_fades);
     RUN_TEST(test_poses_cover_all_six_directions_once);
     RUN_TEST(test_rec_pill_text);
+    RUN_TEST(test_key_fires_once_per_press);
+    RUN_TEST(test_key_ignores_a_one_poll_glitch);
+    RUN_TEST(test_key_rearms_after_two_polls_up);
+    RUN_TEST(test_key_action_table);
     return UNITY_END();
 }
