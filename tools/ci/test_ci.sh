@@ -45,18 +45,21 @@ exec python3 "$@"
 EOF
 # idf.py -B BUILD -D SDKCONFIG=... reconfigure|build: logs its directory and
 # arguments; build prints $STUB_WARNINGS as the compiler output, then the size
-# line of the app_check_size target.
+# line of the app_check_size target; size writes a JSON report with
+# $STUB_DIRAM_REMAIN bytes of D/IRAM left (default 153245) to its last argument.
 cat > "$sb/bin/idf.py" <<'EOF'
 #!/usr/bin/env bash
 echo "$PWD $*" >> "$STUB_LOG"
 build=$2
-case ${*: -1} in
+case $5 in
     reconfigure)
         mkdir -p "$build"
         if [ -n "${STUB_LOCK_SED:-}" ]; then sed -i -e "$STUB_LOCK_SED" dependencies.lock; fi ;;
     build)
         if [ -n "${STUB_WARNINGS:-}" ]; then cat "$STUB_WARNINGS"; fi
         echo "drillbalancer.bin binary size 0x100000 bytes. Smallest app partition is 0x600000 bytes. 0x500000 bytes (83%) free." ;;
+    size)
+        printf '{"diram_remain": %s}\n' "${STUB_DIRAM_REMAIN:-153245}" > "${*: -1}" ;;
 esac
 EOF
 # cmake/ctest: log their arguments; the ui_preview_png target writes
@@ -105,6 +108,18 @@ expect_rc "firmware_build.sh passes" 0
 expect_eq "firmware_build.sh takes a relative BUILD_DIR from the caller's directory" \
     "-B $sb/cwd/rel-build" "$(sed -n '1s/.* \(-B [^ ]*\) .*/\1/p' "$sb/stub.log")"
 expect_grep "the build log lands in that directory" '.' "$(ls "$sb/cwd/rel-build/ci-build.log" 2>/dev/null)"
+
+# --- firmware_build.sh: static internal RAM --------------------------------
+expect_grep "the summary has the static internal RAM left" \
+    '^Firmware: 149 KB of static internal RAM left$' "$(cat "$sb/summary")"
+STUB_DIRAM_REMAIN=120000 run_stub firmware_build.sh
+expect_rc "117 KB of static internal RAM left fails" 1
+expect_grep "... with an error that names the minimum" \
+    '^::error::only 117 KB of static internal RAM left \(at least 125 KB\)' "$out"
+STUB_DIRAM_REMAIN=120000 MIN_DIRAM_FREE_KB=100 run_stub firmware_build.sh
+expect_rc "MIN_DIRAM_FREE_KB lowers the minimum" 0
+STUB_DIRAM_REMAIN=garbled run_stub firmware_build.sh
+expect_rc "a size report without the number fails" 1
 
 # --- firmware_build.sh: compiler warnings -----------------------------------
 mkdir -p "$R/firmware/components/ui/src"

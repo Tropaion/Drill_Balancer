@@ -11,7 +11,7 @@ training data (raw IMU and both microphones) for a future on-device model.
 > [!NOTE]
 > **Status: hardware bring-up.** The firmware runs on the board with the app
 > on a real phone, recording sessions included. Accuracy, battery life, OTA
-> on the board and the microphone levels are not measured yet. See the
+> on the board and the microphone gain are not measured yet. See the
 > [roadmap](#roadmap) and the
 > [bring-up checklist](firmware/README.md#bring-up-checklist-hardware).
 

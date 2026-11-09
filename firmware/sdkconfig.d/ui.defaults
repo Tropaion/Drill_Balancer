@@ -6,3 +6,14 @@ CONFIG_LV_USE_LABEL=y
 CONFIG_LV_USE_BUTTON=y
 CONFIG_LV_USE_SWITCH=y
 CONFIG_LV_USE_FLEX=y
+# Draw formats kept: RGB565 (the panel), RGB565A8 (rotating or scaling RGB565
+# content, images with alpha), ARGB8888 (layers, decoded PNGs) and A8 (glyphs).
+# The others are off, which keeps their blend code out of IRAM
+# (memory.defaults): an image in one of them draws nothing, without a log
+# line. The host preview leaves them out too (test_host/ui_preview/lv_conf.h).
+CONFIG_LV_DRAW_SW_SUPPORT_RGB888=n
+CONFIG_LV_DRAW_SW_SUPPORT_XRGB8888=n
+CONFIG_LV_DRAW_SW_SUPPORT_ARGB8888_PREMULTIPLIED=n
+CONFIG_LV_DRAW_SW_SUPPORT_L8=n
+CONFIG_LV_DRAW_SW_SUPPORT_AL88=n
+CONFIG_LV_DRAW_SW_SUPPORT_I1=n

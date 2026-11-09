@@ -1,6 +1,7 @@
 // LVGL configuration for the host preview. Mirrors the firmware's Kconfig
-// choices that affect layout (fonts, DPI, theme); 32-bit colour so the
-// dump is plain XRGB8888.
+// choices that affect layout (fonts, DPI, theme) and its draw formats
+// (sdkconfig.d/ui.defaults); 32-bit colour so the dump is plain XRGB8888,
+// which the firmware leaves out.
 #ifndef LV_CONF_H
 #define LV_CONF_H
 
@@ -11,6 +12,12 @@
 #define LV_USE_STDLIB_SPRINTF LV_STDLIB_CLIB
 #define LV_DPI_DEF 130
 #define LV_DEF_REFR_PERIOD 15
+
+#define LV_DRAW_SW_SUPPORT_RGB888 0
+#define LV_DRAW_SW_SUPPORT_ARGB8888_PREMULTIPLIED 0
+#define LV_DRAW_SW_SUPPORT_L8 0
+#define LV_DRAW_SW_SUPPORT_AL88 0
+#define LV_DRAW_SW_SUPPORT_I1 0
 
 #define LV_FONT_MONTSERRAT_14 1
 #define LV_FONT_MONTSERRAT_16 1

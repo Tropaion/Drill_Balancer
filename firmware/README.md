@@ -42,7 +42,8 @@ Configuration:
   `malloc()` to PSRAM first (as Waveshare's factory firmware does),
   `ble.defaults` puts NimBLE's allocations there too, and the display's draw
   buffers stay small and internal (`components/ui/src/ui_display.c` says
-  why). LVGL's draw code stays out of IRAM (`memory.defaults` says why).
+  why). LVGL's draw code is in IRAM only for the colour formats this UI
+  draws (`memory.defaults` and `ui.defaults` say why).
 - Defaults only apply to options that are not yet in `sdkconfig`. After you
   change a defaults file, delete `sdkconfig` (and `build/`) before you build
   again.
@@ -813,11 +814,11 @@ Use `tools/ble/db_client.py rec open`, `rec start`, `rec stop`, `rec pull`
     microphones come on, 8 KB of I2S DMA more). Keep at least 20 KB free;
     otherwise lower CONFIG_ESP_WIFI_STATIC_TX_BUFFER_NUM or move `rec`'s stack
     to PSRAM (`xTaskCreateWithCaps()`, MALLOC_CAP_SPIRAM). Done on the board:
-    about 118 KB free before the AP, 76 KB with it up, 62 KB during a take.
-    LVGL's draw code runs from PSRAM (`sdkconfig.d/memory.defaults`): check
-    that the level dot still moves smoothly. If it stutters, map only
-    `lv_draw_sw_blend_to_rgb565.c` and `lv_draw_sw_mask.c` (about 14 KB) back
-    to IRAM with a linker fragment.
+    about 57 KB free with the AP up and 48 KB during a take, the largest
+    block 31 KB, with 150 KB of static internal RAM left in the build. So
+    the CI build (`tools/ci/firmware_build.sh`) fails below 125 KB of static
+    internal RAM, which would leave less than 20 KB during a take. LVGL's
+    share of IRAM: `sdkconfig.d/memory.defaults`.
 35. **Current and heat while recording.** Measure on the battery side with
     the AP up and a take running (BLE connected, both microphones), and the
     case temperature after a 20 min take.
