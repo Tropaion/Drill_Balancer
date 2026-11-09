@@ -4,3 +4,7 @@
 # (sdkconfig.defaults) a flash write does not disable the cache, so PSRAM
 # stays readable meanwhile (api-guides/external-ram.rst).
 CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=0
+# LVGL's draw code stays in flash (run from PSRAM) instead of IRAM, which held
+# about 83 KB of it: with it there, 35 KB of internal RAM was free with the app
+# connected and esp_wifi_init() failed on its static buffers (ESP_ERR_NO_MEM).
+CONFIG_LV_ATTRIBUTE_FAST_MEM_USE_IRAM=n

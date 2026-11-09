@@ -30,11 +30,11 @@ _Static_assert(REC_AUDIO_BITS == 16, "I2S_DATA_BIT_WIDTH_16BIT, int16_t samples"
 #define TS_SLOTS          16u          // > DMA_DESC_NUM: the stamps of the queued blocks
 // Above LVGL and the control task, below the sensor task: one block every
 // 16 ms, and the DMA queue holds about 112 ms.
-// TODO(hw): check uxTaskGetStackHighWaterMark() after a take with both
-// microphones (bring-up step 26).
+// Stack: opening the ES7210 with both microphones (esp_codec_dev and its
+// logs) reaches about 2.5 KB on the board (bring-up step 26).
 #define MIC_TASK_PRIO     9
 #define MIC_TASK_CORE     1
-#define MIC_TASK_STACK    3072
+#define MIC_TASK_STACK    4096
 #define READ_TIMEOUT_MS   100u
 
 typedef struct {
@@ -189,8 +189,7 @@ static bool mic_on(uint8_t mic_mask, uint8_t gain_db)
         return false;
     }
     ESP_LOGI(TAG, "on: mics 0x%x, %u dB", (unsigned)mic_mask, (unsigned)gain_db);
-    // TODO(hw): the free internal heap during a take with the microphones
-    // on (bring-up step 34): the AP's figure minus the I2S DMA.
+    // The AP's figure minus the I2S DMA (bring-up step 34).
     ESP_LOGI(TAG, "internal heap %u B free, largest block %u B",
              (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
              (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));

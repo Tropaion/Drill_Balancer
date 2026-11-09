@@ -41,7 +41,7 @@ Configuration:
   `malloc()` to PSRAM first (as Waveshare's factory firmware does),
   `ble.defaults` puts NimBLE's allocations there too, and the display's draw
   buffers stay small and internal (`components/ui/src/ui_display.c` says
-  why).
+  why). LVGL's draw code stays out of IRAM (`memory.defaults` says why).
 - Defaults only apply to options that are not yet in `sdkconfig`. After you
   change a defaults file, delete `sdkconfig` (and `build/`) before you build
   again.
@@ -140,7 +140,7 @@ Tasks:
 | Task | Priority / core | Job |
 |---|---|---|
 | `sensor` (main/sensor_task.c) | 10, core 1 | Every 20 ms (50 Hz): drains the IMU FIFO, applies the accel calibration, runs fusion, computes the level reading and publishes it; feeds the calibration collectors, the vibration detector and the turn detector, and notes a turn as activity. Hands each read's raw frames to the recorder's tap, applies the IMU profile the recorder asks for, and under a RAW profile runs the level path on a filtered copy (`lpf.h`). |
-| `rec_mic` (components/recorder/src/rec_audio.c) | 9, core 1 | Only during a take with microphones: reads the I2S DMA blocks (16 ms each) into AUDIO records. |
+| `rec_mic` (components/recorder/src/rec_audio.c) | 9, core 1 | Created at boot; works only during a take with microphones: reads the I2S DMA blocks (16 ms each) into AUDIO records. |
 | LVGL (esp_lvgl_adapter) | 6 | The UI. Reads `app_state` snapshots about 15 times a second. |
 | `control` (main/control.c) | 5 | Executes app commands (from the UI and BLE). Polls the AXP2101 every 200 and 500 ms. Runs the power policy. |
 | `rec` (components/recorder/src/recorder.c) | 5 | The recorder's session/take state machine: rec_ctrl commands, Wi-Fi, TCP, BLE and IMU events, a 100 ms tick (timeouts, LEVEL records at 10 Hz, STATS at 1 Hz). Short steps only: a command is answered within milliseconds. |
@@ -730,10 +730,11 @@ Every `TODO(hw)` in the tree is covered below (36 steps), with its file. Grep fo
       calibration and an IMU re-init;
     - the control task (6144, `main/control.c`), after a calibration finish
       and a factory reset;
-    - the recorder's tasks (`components/recorder/src/recorder.c`): `rec`
-      (4096) after a session with a take and a close, `rec_tx` (4096,
-      `rec_wifi.c`) after a long take, `rec_mic` (3072, `rec_audio.c`) after
-      a take with both microphones.
+    - the recorder's tasks: `rec` (6144, `components/recorder/src/recorder.c`),
+      `rec_tx` (4096, `rec_wifi.c`), `rec_mic` (4096, `rec_audio.c`). Done on
+      the board after a session with takes and a close; the figures are next
+      to each `*_TASK_STACK`. Still open: `rec_tx` after a long take with
+      retransmits.
 
 **Recorder (training data)**
 
@@ -808,9 +809,14 @@ Use `tools/ble/db_client.py rec open`, `rec start`, `rec stop`, `rec pull`
 34. **Internal heap** (`components/recorder/src/recorder.c`, the log line
     `AP up: internal heap ... free, largest block ...`, and `rec_audio.c`,
     `rec_mic: internal heap ... free, largest block ...` when a take's
-    microphones come on, 8 KB of I2S DMA more). Note both. Keep at least
-    20 KB free; otherwise lower CONFIG_ESP_WIFI_STATIC_TX_BUFFER_NUM or the
-    recorder's stacks.
+    microphones come on, 8 KB of I2S DMA more). Keep at least 20 KB free;
+    otherwise lower CONFIG_ESP_WIFI_STATIC_TX_BUFFER_NUM or move `rec`'s stack
+    to PSRAM (`xTaskCreateWithCaps()`, MALLOC_CAP_SPIRAM). Done on the board:
+    about 118 KB free before the AP, 76 KB with it up, 62 KB during a take.
+    LVGL's draw code runs from PSRAM (`sdkconfig.d/memory.defaults`): check
+    that the level dot still moves smoothly. If it stutters, map only
+    `lv_draw_sw_blend_to_rgb565.c` and `lv_draw_sw_mask.c` (about 14 KB) back
+    to IRAM with a linker fragment.
 35. **Current and heat while recording.** Measure on the battery side with
     the AP up and a take running (BLE connected, both microphones), and the
     case temperature after a 20 min take.

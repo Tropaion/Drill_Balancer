@@ -38,8 +38,9 @@ static const char *TAG = "rec_wifi";
 // rec_tx: Wi-Fi's owner (it carries out rec_wifi_start() and
 // rec_wifi_stop(), so nobody else waits for them) and the stream's sender;
 // blocks in send(), below the sensor task and the BT controller.
-// TODO(hw): check uxTaskGetStackHighWaterMark() after a long take and a
-// session close (bring-up step 26).
+// Stack: about 2.9 KB on the board, the deepest in esp_wifi_init() (bring-up
+// step 26).
+// TODO(hw): the stack after a long take with retransmits (bring-up step 26).
 #define TX_TASK_PRIO       4
 #define TX_TASK_CORE       0
 #define TX_TASK_STACK      4096

@@ -35,10 +35,11 @@ _Static_assert(REC_IMU_FRAME_LEN == IMU_FRAME_BYTES, "IMU frame");
 // a command is answered within milliseconds. Same priority as the control
 // task, which only waits for it in recorder_shutdown(); below the sensor
 // task and LVGL.
-// TODO(hw): check uxTaskGetStackHighWaterMark() after a session with a
-// take (SESSION, END) and a close (bring-up step 26).
+// Stack: about 4.5 KB on the board (bring-up step 26), the deepest at a
+// take's start: the SESSION settings JSON (cJSON prints floats through
+// newlib's printf and scanf).
 #define REC_TASK_PRIO      5
-#define REC_TASK_STACK     4096
+#define REC_TASK_STACK     6144
 #define REC_QUEUE_LEN      24
 #define REC_TICK_MS        100u     // the FSM tick timer (rec_fsm.h TICK)
 #define REC_LEVEL_MS       100u     // LEVEL records, 10 Hz
@@ -693,8 +694,7 @@ static void ap_up(void)
     s_wifi_up = true;
     unlock();
     step(REC_IN_AP_UP, NULL);
-    // TODO(hw): the free internal heap with the AP up (bring-up step 34);
-    // Wi-Fi and lwIP take what PSRAM cannot hold.
+    // Wi-Fi and lwIP take what PSRAM cannot hold (bring-up step 34).
     ESP_LOGI(TAG, "AP up: internal heap %u B free, largest block %u B",
              (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
              (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
