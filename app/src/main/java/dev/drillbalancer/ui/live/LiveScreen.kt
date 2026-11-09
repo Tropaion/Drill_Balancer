@@ -40,6 +40,7 @@ import dev.drillbalancer.ui.components.FitNumber
 import dev.drillbalancer.ui.components.MessageBanner
 import dev.drillbalancer.ui.components.ModeSelector
 import dev.drillbalancer.ui.components.Panel
+import dev.drillbalancer.ui.dotDeg
 import dev.drillbalancer.ui.formatDeg
 import dev.drillbalancer.ui.formatYaw
 import dev.drillbalancer.ui.levelStatusFor
@@ -108,7 +109,7 @@ fun StatusColors.of(status: LevelStatus?): Color = when (status) {
 private fun Wall(state: LiveUiState, angle: () -> AnglePacket?) {
     Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(8.dp)) {
         StatusLine(angle)
-        WallNumber(angle)
+        WallNumber(state.dotInvert, angle)
         when {
             state.yawValid -> {
                 YawBar(state, angle)
@@ -122,17 +123,21 @@ private fun Wall(state: LiveUiState, angle: () -> AnglePacket?) {
 }
 
 @Composable
-private fun WallNumber(angle: () -> AnglePacket?) {
+private fun WallNumber(invert: Boolean, angle: () -> AnglePacket?) {
     val a = angle() ?: return
     val color = DrillBalancerTheme.status.of(a.status)
-    val arrow = wallArrow(a.elevationDeg, a.status)
+    val arrow = wallArrow(dotDeg(a.elevationDeg, invert), a.status)
     Row(verticalAlignment = Alignment.CenterVertically) {
-        // The device's arrow: which way the bit points from horizontal
+        // The device's arrow: which way the bit points from horizontal, inverted the way to correct
         Box(Modifier.size(48.dp)) {
             if (arrow != 0) {
                 Icon(
                     if (arrow > 0) DbIcons.ArrowUp else DbIcons.ArrowDown,
-                    contentDescription = if (arrow > 0) "Bit points up" else "Bit points down",
+                    contentDescription = if (invert) {
+                        if (arrow > 0) "Aim higher" else "Aim lower"
+                    } else {
+                        if (arrow > 0) "Bit points up" else "Bit points down"
+                    },
                     tint = color, modifier = Modifier.fillMaxSize(),
                 )
             }
@@ -152,7 +157,7 @@ private fun YawBar(state: LiveUiState, angle: () -> AnglePacket?) {
         drawLine(Dark, Offset(center.x - half, mid), Offset(center.x + half, mid), 6.dp.toPx(), StrokeCap.Round)
         drawLine(Grey, Offset(center.x, mid - 10.dp.toPx()), Offset(center.x, mid + 10.dp.toPx()), 2.dp.toPx())
         // near maps to a third of the half width, as on the crosshair (ui_bubble_ppd)
-        val x = (a.yawDeg * half / 3f / saneNear(state.nearDeg)).coerceIn(-half, half)
+        val x = (dotDeg(a.yawDeg, state.dotInvert) * half / 3f / saneNear(state.nearDeg)).coerceIn(-half, half)
         val c = colors.of(levelStatusFor(a.yawDeg, state.toleranceDeg, state.nearDeg))
         drawLine(c, Offset(center.x + x, 2.dp.toPx()), Offset(center.x + x, size.height - 2.dp.toPx()), 10.dp.toPx(), StrokeCap.Round)
     }
@@ -162,7 +167,7 @@ private fun YawBar(state: LiveUiState, angle: () -> AnglePacket?) {
 private fun YawText(state: LiveUiState, angle: () -> AnglePacket?) {
     val a = angle() ?: return
     val c = DrillBalancerTheme.status.of(levelStatusFor(a.yawDeg, state.toleranceDeg, state.nearDeg))
-    Text(formatYaw(a.yawDeg), style = MaterialTheme.typography.headlineMedium, color = c)
+    Text(formatYaw(dotDeg(a.yawDeg, state.dotInvert)), style = MaterialTheme.typography.headlineMedium, color = c)
 }
 
 // ---- floor: bubble from vertical ----
@@ -195,9 +200,10 @@ private fun Bubble(state: LiveUiState, angle: () -> AnglePacket?, modifier: Modi
         drawCircle(colors.near.copy(alpha = 0.7f), state.nearDeg * ppd + bubbleR, style = thin)
         drawCircle(colors.onTarget.copy(alpha = 0.7f), state.toleranceDeg * ppd + bubbleR, style = thin)
         val a = angle() ?: return@Canvas
-        // ui_bubble_offset(): board +Y is up on the screen; pinned to the rim, direction kept
-        var x = a.bubbleXDeg * ppd
-        var y = -a.bubbleYDeg * ppd
+        // ui_bubble_offset(): board +Y is up on the screen; pinned to the rim, direction kept.
+        // Inverted (ui_dot_deg) the bubble moves to the lower side.
+        var x = dotDeg(a.bubbleXDeg, state.dotInvert) * ppd
+        var y = -dotDeg(a.bubbleYDeg, state.dotInvert) * ppd
         val lim = maxOf(0f, r - bubbleR - 2.dp.toPx())
         val d = hypot(x, y)
         if (d > lim) {
@@ -217,6 +223,7 @@ private fun Deviation(angle: () -> AnglePacket?) {
 @Composable
 private fun BubbleXY(angle: () -> AnglePacket?) {
     val a = angle() ?: return
+    // the tilt itself: Invert dot moves only the drawn bubble (ui_dot_deg)
     Text(
         "X ${formatDeg(a.bubbleXDeg, showPlus = true)}   Y ${formatDeg(a.bubbleYDeg, showPlus = true)}",
         style = MaterialTheme.typography.titleMedium,

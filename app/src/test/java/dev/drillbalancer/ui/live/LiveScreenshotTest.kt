@@ -78,6 +78,19 @@ class LiveScreenshotTest {
         fontScale = 1.6f,
     )
 
+    // Invert dot: the arrow and the yaw show the way to correct, as on the device.
+    @Test
+    fun wallInverted() = shot(
+        zeroed.copy(dotInvert = true),
+        wall(AngleFlags.NEAR or AngleFlags.ZERO_SET or AngleFlags.YAW_VALID, 1.4f, 2.1f),
+    )
+
+    @Test
+    fun floorInverted() = shot(
+        LiveUiState(mode = LevelMode.FLOOR, hasAngle = true, dotInvert = true),
+        AnglePacket.of(LevelMode.FLOOR, base or AngleFlags.NEAR, bubbleXDeg = 1.1f, bubbleYDeg = 0.8f, deviationDeg = 1.36f),
+    )
+
     @Test
     fun angleNear() = shot(
         LiveUiState(mode = LevelMode.ANGLE, hasAngle = true, targetDeg = 45f),

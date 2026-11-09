@@ -5,6 +5,7 @@ import dev.drillbalancer.device.DisconnectReason
 import dev.drillbalancer.device.FakeDeviceSession
 import dev.drillbalancer.protocol.AttError
 import dev.drillbalancer.protocol.Command
+import dev.drillbalancer.protocol.DeviceSettings
 import dev.drillbalancer.protocol.LevelMode
 import dev.drillbalancer.ui.MainDispatcherRule
 import dev.drillbalancer.ui.PairingGate
@@ -143,6 +144,16 @@ class LiveViewModelTest {
         assertNull(vm.angle.value)
         fake.connect("F4:12:FA:00:1A:2B")
         assertTrue(vm.state.value.hasAngle)
+    }
+
+    @Test
+    fun followsTheDevicesInvertDot() = runTest(main.dispatcher) {
+        val (_, _, plain) = setUp()
+        assertFalse(plain.state.value.dotInvert)
+        val fake = FakeDeviceSession(settings = DeviceSettings.DEFAULTS.copy(dotInvert = true))
+        val vm = LiveViewModel(fake, PairingGate(fake, backgroundScope))
+        fake.readSettings()
+        assertTrue(vm.state.value.dotInvert)
     }
 
     @Test

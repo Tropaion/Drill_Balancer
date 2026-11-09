@@ -37,6 +37,7 @@ data class LiveUiState(
     val toleranceDeg: Float = DeviceSettings.DEFAULTS.toleranceDeg,
     val nearDeg: Float = DeviceSettings.DEFAULTS.nearDeg,
     val targetDeg: Float = DeviceSettings.DEFAULTS.targetDeg,
+    val dotInvert: Boolean = DeviceSettings.DEFAULTS.dotInvert,   // as on the device: the way to correct
     val busy: Boolean = false,
     val message: UiMessage? = null,
 )
@@ -86,6 +87,7 @@ class LiveViewModel(private val session: DeviceSession, private val gate: Pairin
             toleranceDeg = cfg.toleranceDeg,
             nearDeg = cfg.nearDeg,
             targetDeg = cfg.targetDeg,
+            dotInvert = cfg.dotInvert,
             busy = b,
             message = m,
         )

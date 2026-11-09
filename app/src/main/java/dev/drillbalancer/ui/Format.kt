@@ -38,6 +38,12 @@ fun tenths(deg: Float): Int {
     return if (deg < 0f) -n else n
 }
 
+/**
+ * A direction mark's angle (ui_dot_deg on the device): as measured, or mirrored with the
+ * setting dot_inv, so the dot, the arrow and R/L show the way to correct. Numbers stay as measured.
+ */
+fun dotDeg(deg: Float, invert: Boolean): Float = if (invert) -deg else deg
+
 /** Wall mode arrow (ui_aim_arrow on the device): +1 bit above horizontal, -1 below, 0 none. */
 fun wallArrow(elevationDeg: Float, status: LevelStatus?): Int {
     if (status == LevelStatus.ON_TARGET) return 0
@@ -45,7 +51,7 @@ fun wallArrow(elevationDeg: Float, status: LevelStatus?): Int {
     return if (t > 0) 1 else if (t < 0) -1 else 0
 }
 
-/** "R 0.1°" / "L 6.4°" / "0.0°": yaw since zero, right positive (ui_level.c). */
+/** "R 0.1°" / "L 6.4°" / "0.0°": yaw since zero, right positive (ui_aim_sub on the device). */
 fun formatYaw(yawDeg: Float): String {
     val t = tenths(yawDeg)
     val deg = formatDeg(abs(yawDeg))
