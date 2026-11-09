@@ -10,8 +10,9 @@ Hardware: Waveshare ESP32-S3-Touch-AMOLED-1.75-B (ESP32-S3R8, 16 MB flash,
 8 MB octal PSRAM, CO5300 466x466 AMOLED, CST9217 touch, QMI8658 IMU, AXP2101
 PMIC, 1000 mAh LiPo). ESP-IDF 5.5.1, C11 (C++ only for XPowersLib).
 
-> Nothing here has run on hardware yet. Work through the
-> [bring-up checklist](#bring-up-checklist-hardware) when the board arrives.
+> The firmware runs on the board. The
+> [bring-up checklist](#bring-up-checklist-hardware) records the result of
+> each step checked there so far.
 
 ## Build and flash
 

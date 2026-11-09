@@ -8,20 +8,12 @@ the angle you set. An Android app connects over Bluetooth LE for live
 readings, settings, calibration and firmware updates. It also records
 training data (raw IMU and both microphones) for a future on-device model.
 
-> [!WARNING]
-> **Status: pre-hardware.** The board has not arrived yet, and nothing in this
-> repo has run on real hardware. The firmware is written, builds and passes
-> its host tests on a PC. The Android app passes its JVM and screenshot tests
-> and has been tested end-to-end on a real phone against the
-> [PC simulator](firmware/tools/sim/README.md). Takes recorded from the
-> simulator through the app's recording engine (the opt-in
-> `SimulatorEndToEndTest`) were finalized, auto-labelled, reviewed and
-> uploaded by the app in the Android emulator; recording from the app on a
-> phone (BLE control, the soft-AP join) is still to come. Hardware
-> bring-up will follow the
-> [checklist in firmware/README.md](firmware/README.md#bring-up-checklist-hardware).
-> Battery life, accuracy, OTA speed and the recorder's Wi-Fi throughput on
-> the board are **not measured yet**.
+> [!NOTE]
+> **Status: hardware bring-up.** The firmware runs on the board with the app
+> on a real phone, recording sessions included. Accuracy, battery life, OTA
+> on the board and the microphone levels are not measured yet. See the
+> [roadmap](#roadmap) and the
+> [bring-up checklist](firmware/README.md#bring-up-checklist-hardware).
 
 <p align="center">
   <img src="docs/images/device-overview.png" alt="Device screen renders: wall, floor and angle mode, and the settings list" width="720">
@@ -348,12 +340,16 @@ More: [Development and Testing](https://github.com/Tropaion/Drill_Balancer/wiki/
       app's engine, then labelled, reviewed and uploaded in the Android
       emulator
 - [x] CI on GitHub Actions
-- [ ] Recorder on a real phone against the simulator: BLE control and the
-      soft-AP join (`--rec-ap`)
-- [ ] Hardware bring-up following the
-      [checklist](firmware/README.md#bring-up-checklist-hardware) (all
-      `TODO(hw)` items, including the recorder's: microphone order and gain,
-      the soft-AP join, throughput and Wi-Fi/BLE coexistence)
+- [x] Firmware and app on the real board: display, touch, the level screens,
+      the BOOT key, pairing, live values, settings and the battery readout
+- [x] Recorder on the real board with a real phone: BLE control, the soft-AP
+      join, takes streamed at about 72 kB/s with no lost records
+- [ ] The rest of the hardware bring-up
+      ([checklist](firmware/README.md#bring-up-checklist-hardware)):
+      microphone order and gain, recorder throughput at a distance,
+      Wi-Fi/BLE coexistence and the other open `TODO(hw)` items
+- [ ] An IMU sample counter for recordings (the IMU's timestamp reads 0 on
+      this board, so takes carry no chip time)
 - [ ] Measure: current per state and battery life, accuracy against a spirit
       level (target ≤ 0.2° after mount calibration), steadiness with the
       motor running (target ±0.3°), OTA throughput

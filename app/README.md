@@ -11,14 +11,13 @@ Kotlin, Jetpack Compose (Material 3), one activity, coroutines/Flow, manual
 DI. BLE runs on Nordic's Android-BLE-Library. minSdk 26 (Android 8.0),
 target/compile SDK 37. Package `dev.drillbalancer`.
 
-> Nothing here has run against the real board yet. The app has been tested
-> on a real phone against the [device simulator](#against-the-device-simulator)
-> (scan, pairing, live values, settings, calibrations, OTA). Takes recorded
-> from the simulator by the app's recording engine (`SimulatorEndToEndTest`)
-> were finalized, auto-labelled, reviewed and uploaded by the app in the
-> Android emulator; recording on a phone (BLE control, the soft-AP join) is
-> still to come. Work through the
-> [first-run checklist](#first-run-on-real-hardware) when you try it.
+> The app runs on a real phone with the board: pairing, live values,
+> settings and recording sessions. It was also tested end to end against the
+> [device simulator](#against-the-device-simulator) (calibrations, OTA, the
+> fault cases, and the review and upload of takes in the Android emulator).
+> Still to check on the board: calibrations, OTA, and the review and upload
+> of its takes; the [first-run checklist](#first-run-on-real-hardware) lists
+> what to look at.
 
 ## Requirements
 
@@ -575,7 +574,7 @@ DB_GITHUB_TOKEN=github_pat_... DB_GITHUB_LIVE_BRANCH=upload-live-test \
 
 ## First run on real hardware
 
-None of this could be checked without a phone and a board.
+These checks need a phone and the board.
 
 1. **Permissions and switches**: the permission request; a dismissed
    dialog keeping *Allow* next to *Open app settings*; "denied for good"
