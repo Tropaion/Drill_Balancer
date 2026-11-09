@@ -112,7 +112,7 @@ class UploadScreenTest {
             }
         }
         compose.onNodeWithText("Repo not found or no access.").assertExists()
-        compose.onNodeWithText("Retry upload").performClick()
+        compose.onNodeWithText("Retry upload").performScrollTo().performClick()
         assertEquals(listOf("a"), retried)
         compose.onNodeWithText("Tropaion/Drill_Balancer_Data · Wi-Fi only").performClick()
         assertEquals(1, opened)
@@ -136,7 +136,7 @@ class UploadScreenTest {
             }
         }
         compose.onNodeWithText("Retry upload").assertDoesNotExist()
-        compose.onNode(hasText("Upload settings") and hasClickAction() and !hasText("Tropaion", substring = true)).performClick()
+        compose.onNode(hasText("Upload settings") and hasClickAction() and !hasText("Tropaion", substring = true)).performScrollTo().performClick()
         assertEquals(1, opened)
         // no token set: the same, whatever the row's message
         summary = summary.copy(tokenSet = false, tokenRejected = false)
@@ -161,7 +161,7 @@ class UploadScreenTest {
                 )
             }
         }
-        compose.onNode(hasText("Upload settings") and hasClickAction() and !hasText("Tropaion", substring = true)).performClick()
+        compose.onNode(hasText("Upload settings") and hasClickAction() and !hasText("Tropaion", substring = true)).performScrollTo().performClick()
         assertEquals(1, opened)
         compose.onNodeWithText("Retry upload").performScrollTo().performClick()
         assertEquals(listOf("b"), retried)

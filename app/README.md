@@ -381,6 +381,11 @@ main button; a new review's is *Accept all*.
   review then closes and the row is gone (a finished session says how many
   of its takes were deleted). A delete that fails shows its message at the
   top of the review, and the take stays as it was.
+- **Several takes at once**: *Select* above the recordings list ticks rows
+  (*Select all*, *Cancel*), and *Delete N takes* deletes them the same way,
+  after one confirmation that says how many are uploaded (the data repo
+  keeps those) and how many go for good. A take being recorded cannot be
+  ticked; one that could not be deleted is counted in a message.
 - The review needs no device: when the Bluetooth link ends it stays open
   (on the connect screen's side), and the link coming back shows it on the
   tabs again. It is the same review on both sides, and across a rotation

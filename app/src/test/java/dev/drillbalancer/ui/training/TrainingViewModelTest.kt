@@ -20,6 +20,7 @@ import dev.drillbalancer.recorder.net.LinkException
 import dev.drillbalancer.recorder.net.StreamLinkFactory
 import dev.drillbalancer.ui.MainDispatcherRule
 import dev.drillbalancer.ui.PairingGate
+import dev.drillbalancer.upload.RepoCopy
 import dev.drillbalancer.upload.UploadStage
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -37,6 +38,7 @@ import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 import java.io.File
+import java.io.IOException
 import java.time.ZoneOffset
 
 /** SetupPrefs in memory. */
@@ -57,10 +59,16 @@ class TrainingViewModelTest {
     @get:Rule
     val tmp = TemporaryFolder()
 
-    private fun TestScope.controller(fake: FakeDeviceSession) = RecordingController(
-        fake, RecordingStore(File(tmp.root, "rec")),
+    private fun TestScope.controller(fake: FakeDeviceSession, store: RecordingStore = RecordingStore(File(tmp.root, "rec"))) = RecordingController(
+        fake, store,
         StreamLinkFactory { throw LinkException("no network in this test", LinkException.Kind.CONNECT) },
         { "k7q2abcdefghijkl" }, AppInfo("0.1.0", "t", 37), backgroundScope, io = main.dispatcher,
+    )
+
+    /** A take's journal, as RecordingController starts one. */
+    private fun journal(id: String, state: JournalState = JournalState.COMPLETE) = TakeJournal(
+        recordingId = id, sessionId = "s", takeId = 1, reviewer = "k7q2", state = state, startedUtc = "2026-10-26T14:30:12.418Z",
+        setup = SessionSetup(), take = TakeSettings("RAW448", 3, 6, 300), app = AppInfo("0.1.0", "t", 37), link = "lan",
     )
 
     @Test
@@ -115,11 +123,7 @@ class TrainingViewModelTest {
     @Test
     fun theListReloadsWhenARecordingChanges() = runTest(main.dispatcher) {
         val store = RecordingStore(File(tmp.root, "rec"))
-        val c = RecordingController(
-            FakeDeviceSession(), store, StreamLinkFactory { throw LinkException("no network in this test", LinkException.Kind.CONNECT) },
-            { "k7q2abcdefghijkl" }, AppInfo("0.1.0", "t", 37), backgroundScope, io = main.dispatcher,
-        )
-        val vm = TrainingListViewModel(store, c, null, io = main.dispatcher)
+        val vm = TrainingListViewModel(store, controller(FakeDeviceSession(), store), null, io = main.dispatcher)
         advanceUntilIdle()
         assertEquals(listOf<String>(), vm.state.value.rows.map { it.id })
         val j = TakeJournal(
@@ -137,6 +141,73 @@ class TrainingViewModelTest {
         assertTrue(store.remove(j.recordingId))
         advanceUntilIdle()
         assertEquals(listOf<String>(), vm.state.value.rows.map { it.id })
+    }
+
+    /** Select, tick, Delete: each ticked take through delete (TrainingDeps.delete in the app); one being recorded cannot be ticked. */
+    @Test
+    fun deletesTheSelectedTakes() = runTest(main.dispatcher) {
+        val store = RecordingStore(File(tmp.root, "rec"))
+        val c = controller(FakeDeviceSession(), store)
+        for (id in listOf("a", "b", "c")) store.create(journal(id), 1_000) { 0L }.close()
+        store.create(journal("rec", JournalState.RECORDING), 1_000) { 0L }.close()
+        val asked = mutableListOf<String>()
+        // b's upload does not stop (UploadQueue.delete)
+        val vm = TrainingListViewModel(
+            store, c, null, io = main.dispatcher,
+            delete = { id -> asked += id; if (id == "b") throw IOException("its upload does not stop") else store.remove(id) },
+        )
+        advanceUntilIdle()
+        vm.toggle("a")
+        assertNull("not selecting", vm.state.value.selected)
+        vm.startSelecting()
+        vm.toggle("a")
+        vm.toggle("c")
+        vm.toggle("c")
+        vm.toggle("rec")
+        assertEquals(setOf("a"), vm.state.value.selected)
+        vm.selectAll()
+        assertEquals(setOf("a", "b", "c"), vm.state.value.selected)
+        vm.toggle("c")
+        vm.deleteSelected()
+        advanceUntilIdle()
+        assertEquals(setOf("a", "b"), asked.toSet())
+        assertNull(vm.state.value.selected)
+        assertEquals("1 of 2 takes could not be deleted (its upload does not stop).", vm.state.value.message?.text)
+        assertEquals(setOf("b", "c", "rec"), vm.state.value.rows.map { it.id }.toSet())
+        vm.dismissMessage()
+        assertNull(vm.state.value.message)
+    }
+
+    /** Select ends when nothing is left to select, so a new take does not open in it. */
+    @Test
+    fun selectingEndsWithTheLastTake() = runTest(main.dispatcher) {
+        val store = RecordingStore(File(tmp.root, "rec"))
+        store.create(journal("a"), 1_000) { 0L }.close()
+        val vm = TrainingListViewModel(store, controller(FakeDeviceSession(), store), null, io = main.dispatcher)
+        advanceUntilIdle()
+        vm.startSelecting()
+        assertEquals(setOf<String>(), vm.state.value.selected)
+        assertTrue(store.remove("a"))   // deleted from its review
+        advanceUntilIdle()
+        assertNull(vm.state.value.selected)
+    }
+
+    @Test
+    fun deleteTakesSaysWhatTheDataRepoKeeps() {
+        fun row(id: String, upload: UploadStage, copy: RepoCopy = RepoCopy.NONE) =
+            RecordingRow(id, "t", "d", RecordingStage.SAVED, upload, copy, canOpen = true)
+        assertEquals(
+            "1 is uploaded: only the phone's copy is deleted, its data repo keeps it. " +
+                "2 are not uploaded: their files are deleted from the phone for good. " +
+                "Their uploads are stopped; one already finishing still reaches the data repo.",
+            deleteTakesText(listOf(row("a", UploadStage.Done, RepoCopy.CURRENT), row("b", UploadStage.Queued), row("c", UploadStage.None))),
+        )
+        // relabelled after its upload (queued again), or uploaded to the repo set before: the repo keeps it
+        assertEquals(
+            "2 are uploaded: only the phone's copies are deleted, their data repo keeps them. " +
+                "Their uploads are stopped; one already finishing still reaches the data repo.",
+            deleteTakesText(listOf(row("a", UploadStage.Queued, RepoCopy.OLDER), row("b", UploadStage.None, RepoCopy.ELSEWHERE))),
+        )
     }
 
     @Test

@@ -81,19 +81,22 @@ class TrainingDeps(
     }
 
     /**
-     * Deletes [id] from the phone (the review's Delete take; RecordingStore.remove says how an
-     * upload of it is stopped); the record screen no longer offers it as the last take, and counts
-     * it as deleted when it is one of its session's. Blocking file I/O: not cut short once it runs.
+     * Deletes [id] from the phone (Delete take, in the review and the list; RecordingStore.remove
+     * says how an upload of it is stopped); the record screen no longer offers it as the last take,
+     * and counts it as deleted when it is one of its session's. True when it is gone, also when its
+     * folder was gone already; false while it is recorded. Blocking file I/O: not cut short once it runs.
      */
     fun delete(id: String): Boolean {
         val session = store.read(id)?.sessionId
-        return (uploads?.queue?.delete(id) ?: store.remove(id)).also { if (it) controller.deleted(id, session) }
+        val removed = uploads?.queue?.delete(id) ?: store.remove(id)
+        if (removed) controller.deleted(id, session)
+        return removed || !store.dir(id).exists()
     }
 
     /** Whether an upload of [id] is waiting or running, each time that changes (the review reads [repoCopy] again). */
     fun uploadChanges(id: String): Flow<Boolean> = uploads?.queue?.active?.map { id in it }?.distinctUntilChanged() ?: emptyFlow()
 
-    fun listViewModel(session: DeviceSession?) = TrainingListViewModel(store, controller, session, uploads = uploads)
+    fun listViewModel(session: DeviceSession?) = TrainingListViewModel(store, controller, session, uploads = uploads, delete = ::delete)
 }
 
 @Composable
@@ -106,6 +109,7 @@ fun TrainingListRoute(
     onOpenUploadSettings: () -> Unit = {},
 ) {
     val state by vm.state.collectAsStateWithLifecycle()
+    var confirmDelete by rememberSaveable { mutableStateOf(false) }
     LifecycleResumeEffect(vm) {
         vm.reload()
         onPauseOrDispose {}
@@ -115,9 +119,29 @@ fun TrainingListRoute(
         TrainingListActions(
             newRecording = onNew, openSession = onOpenSession, reload = vm::reload, openRecording = onOpenRecording,
             openUploadSettings = onOpenUploadSettings, retryUpload = vm::retryUpload,
+            startSelecting = vm::startSelecting, cancelSelecting = vm::cancelSelecting, toggle = vm::toggle,
+            selectAll = vm::selectAll, deleteSelected = { confirmDelete = true }, dismissMessage = vm::dismissMessage,
         ),
         modifier,
     )
+    val doomed = if (confirmDelete) state.selectedRows else emptyList()
+    // the rows went meanwhile (deleted elsewhere): the question goes too, and does not come back
+    LaunchedEffect(confirmDelete && doomed.isEmpty()) { if (doomed.isEmpty()) confirmDelete = false }
+    val confirm = {
+        confirmDelete = false
+        vm.deleteSelected()
+    }
+    when {
+        doomed.size == 1 -> DeleteTakeDialog(doomed[0].repoCopy, doomed[0].upload.sending, onConfirm = confirm, onDismiss = { confirmDelete = false })
+        doomed.isNotEmpty() -> ConfirmDialog(
+            title = "Delete ${doomed.size} takes?",
+            text = deleteTakesText(doomed),
+            confirmLabel = "Delete",
+            confirmColor = Red,
+            onConfirm = confirm,
+            onDismiss = { confirmDelete = false },
+        )
+    }
 }
 
 /**

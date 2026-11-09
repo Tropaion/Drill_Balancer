@@ -475,7 +475,7 @@ class ReviewViewModel(
         viewModelScope.launch {
             val failed = try {
                 // false: being recorded, or no folder (gone already: done all the same)
-                val gone = withContext(io) { files.withLock { (removeTake(id) || !store.dir(id).exists()).also { if (it) closed = true } } }
+                val gone = withContext(io) { files.withLock { removeTake(id).also { if (it) closed = true } } }
                 if (gone) null else "This take cannot be deleted while it is recorded."
             } catch (e: CancellationException) {
                 throw e

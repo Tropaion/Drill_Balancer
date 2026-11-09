@@ -20,6 +20,9 @@ sealed interface UploadStage {
     data class Uploading(val pct: Int?) : UploadStage
     data object Done : UploadStage                              // the data repo holds these files
     data class Failed(val message: String, val kind: FailureKind? = null) : UploadStage   // Retry sends it again (or the settings fix it: kind.settings)
+
+    /** Waiting or running: a delete stops it. */
+    val sending: Boolean get() = this == Queued || this is Uploading
 }
 
 /** An upload WorkManager has: waiting, or running with its progress. */

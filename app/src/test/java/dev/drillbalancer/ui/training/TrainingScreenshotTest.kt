@@ -56,6 +56,15 @@ class TrainingScreenshotTest {
     }
 
     @Test
+    fun listSelecting() = shot("Training data") { m ->
+        val recording = RecordingRow("4", "Wood · softwood 38 mm · drill", "26 Oct 15:02 · 0:12 · 0.4 MB", RecordingStage.RECORDING)
+        TrainingListScreen(
+            TrainingListUiState(rows = listOf(recording) + rows, loading = false, usedBytes = 8_600_000, freeBytes = 12L shl 30, selected = setOf("1", "3")),
+            TrainingListActions(), m,
+        )
+    }
+
+    @Test
     fun listMixed() = shot("Training data") { m ->
         TrainingListScreen(TrainingListUiState(rows = rows, loading = false, usedBytes = 8_600_000, freeBytes = 12L shl 30), TrainingListActions(), m)
     }

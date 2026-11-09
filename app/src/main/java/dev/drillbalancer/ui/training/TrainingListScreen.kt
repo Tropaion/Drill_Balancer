@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -50,6 +51,12 @@ class TrainingListActions(
     val openRecording: (id: String) -> Unit = {},
     val openUploadSettings: () -> Unit = {},
     val retryUpload: (id: String) -> Unit = {},
+    val startSelecting: () -> Unit = {},
+    val cancelSelecting: () -> Unit = {},
+    val toggle: (id: String) -> Unit = {},
+    val selectAll: () -> Unit = {},
+    val deleteSelected: () -> Unit = {},   // asks first (TrainingListRoute)
+    val dismissMessage: () -> Unit = {},
 )
 
 /** The recordings on the phone, and the way to a new one. Works without a device. */
@@ -63,6 +70,7 @@ fun TrainingListScreen(state: TrainingListUiState, actions: TrainingListActions,
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         state.error?.let { MessageBanner(UiMessage(it), actionLabel = "Try again", onAction = actions.reload) }
+        state.message?.let { MessageBanner(it, onDismiss = actions.dismissMessage) }
         if (state.session.active) {
             MessageBanner(
                 UiMessage(
@@ -91,6 +99,27 @@ fun TrainingListScreen(state: TrainingListUiState, actions: TrainingListActions,
                 )
             }
         }
+        val selected = state.selected
+        if (!state.loading && state.rows.isNotEmpty()) {
+            if (selected == null) {
+                TextButton(actions.startSelecting, Modifier.align(Alignment.End).heightIn(min = TouchHeight)) { Text("Select") }
+            } else {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("${selected.size} selected", Modifier.weight(1f), style = MaterialTheme.typography.titleMedium)
+                    TextButton(actions.selectAll, Modifier.heightIn(min = TouchHeight), enabled = !state.deleting) { Text("Select all") }
+                    TextButton(actions.cancelSelecting, Modifier.heightIn(min = TouchHeight), enabled = !state.deleting) { Text("Cancel") }
+                }
+                ActionButton(
+                    when {
+                        state.deleting -> "Deleting…"
+                        selected.size == 1 -> "Delete 1 take"
+                        else -> "Delete ${selected.size} takes"
+                    },
+                    actions.deleteSelected, Modifier.fillMaxWidth(),
+                    enabled = selected.isNotEmpty() && !state.deleting, kind = ButtonKind.DANGER_OUTLINED,
+                )
+            }
+        }
         when {
             state.loading -> Box(Modifier.fillMaxWidth().padding(32.dp), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
             state.rows.isEmpty() -> Panel {
@@ -104,7 +133,11 @@ fun TrainingListScreen(state: TrainingListUiState, actions: TrainingListActions,
                 // a missing or rejected token: Retry would fail the same way, the settings fix it
                 val tokenProblem = state.upload?.tokenProblem == true
                 for (row in state.rows) {
-                    RecordingRowItem(row, { actions.openRecording(row.id) }, { actions.retryUpload(row.id) }, actions.openUploadSettings, tokenProblem)
+                    if (selected != null) {
+                        SelectableRow(row, row.id in selected, enabled = !state.deleting) { actions.toggle(row.id) }
+                    } else {
+                        RecordingRowItem(row, { actions.openRecording(row.id) }, { actions.retryUpload(row.id) }, actions.openUploadSettings, tokenProblem)
+                    }
                 }
             }
         }
@@ -135,15 +168,7 @@ private fun UploadRow(summary: UploadSummary, onOpen: () -> Unit) {
 private fun RecordingRowItem(row: RecordingRow, onOpen: () -> Unit, onRetry: () -> Unit, onSettings: () -> Unit, tokenProblem: Boolean) {
     PanelRow(onOpen, enabled = row.canOpen) {
         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            Text(row.title, style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            Text(
-                row.detail, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 1, overflow = TextOverflow.Ellipsis,
-            )
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Badge(row.stage.label, stageColor(row.stage))
-                Badge(row.upload.label, uploadColor(row.upload))
-            }
+            RowSummary(row)
             (row.upload as? UploadStage.Failed)?.let { f ->
                 Text(f.message, style = MaterialTheme.typography.bodyMedium, color = Red)
                 if (tokenProblem || f.kind?.settings == true) {
@@ -157,9 +182,34 @@ private fun RecordingRowItem(row: RecordingRow, onOpen: () -> Unit, onRetry: () 
     }
 }
 
+/** A recording while selecting: a tap ticks it; one being recorded cannot be ticked. */
+@Composable
+private fun SelectableRow(row: RecordingRow, checked: Boolean, enabled: Boolean, onToggle: () -> Unit) {
+    PanelRow(onToggle, enabled = enabled && row.canOpen) {
+        Checkbox(checked, onCheckedChange = null, enabled = row.canOpen)
+        Column(Modifier.weight(1f).padding(start = 8.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            RowSummary(row)
+        }
+    }
+}
+
+/** A recording's title, time, length and size, and its stage and upload badges. */
+@Composable
+private fun RowSummary(row: RecordingRow) {
+    Text(row.title, style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+    Text(
+        row.detail, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant,
+        maxLines = 1, overflow = TextOverflow.Ellipsis,
+    )
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        Badge(row.stage.label, stageColor(row.stage))
+        Badge(row.upload.label, uploadColor(row.upload))
+    }
+}
+
 private fun uploadColor(s: UploadStage): Color = when (s) {
     UploadStage.None -> Grey
-    UploadStage.Queued, is UploadStage.Uploading -> Blue
+    UploadStage.Queued, is UploadStage.Uploading -> Blue   // sending
     UploadStage.Done -> Green
     is UploadStage.Failed -> Red
 }

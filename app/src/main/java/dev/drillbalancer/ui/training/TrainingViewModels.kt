@@ -17,15 +17,18 @@ import dev.drillbalancer.recorder.SetupPrefs
 import dev.drillbalancer.recorder.Taxonomy
 import dev.drillbalancer.ui.PairingCancelled
 import dev.drillbalancer.ui.PairingGate
+import dev.drillbalancer.ui.components.UiMessage
 import dev.drillbalancer.ui.formatBytes
 import dev.drillbalancer.ui.formatFixed
 import dev.drillbalancer.ui.formatMinSec
 import dev.drillbalancer.upload.FailureKind
 import dev.drillbalancer.upload.LocalUpload
+import dev.drillbalancer.upload.RepoCopy
 import dev.drillbalancer.upload.TokenState
 import dev.drillbalancer.upload.UploadQueue
 import dev.drillbalancer.upload.UploadServices
 import dev.drillbalancer.upload.UploadStage
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -103,6 +106,7 @@ data class RecordingRow(
     val detail: String,     // "26 Oct 14:30 · 0:42 · 1.9 MB"
     val stage: RecordingStage,
     val upload: UploadStage = UploadStage.None,
+    val repoCopy: RepoCopy = RepoCopy.NONE,   // what a data repo holds of it (upload.json)
     val canOpen: Boolean = false,   // not being recorded: the review opens (it waits for the files, or says why there are none, with Try again)
 )
 
@@ -115,7 +119,37 @@ data class TrainingListUiState(
     val session: RecordPhase = RecordPhase.IDLE,
     val error: String? = null,
     val upload: UploadSummary? = null,        // null: no upload in this build (tests)
-)
+    val selected: Set<String>? = null,        // null: not selecting; else the rows ticked for Delete
+    val deleting: Boolean = false,
+    val message: UiMessage? = null,           // what a Delete of several takes could not do
+) {
+    /** The selected rows, in list order. */
+    val selectedRows: List<RecordingRow> get() = selected?.let { s -> rows.filter { it.id in s } }.orEmpty()
+}
+
+/**
+ * Delete's confirmation for several [rows]: a take a data repo holds keeps that copy (also one
+ * uploaded before a relabel, or to the repo set before), the others are gone for good; a waiting
+ * or running upload is stopped. One take gets the review's deleteTakeText.
+ */
+fun deleteTakesText(rows: List<RecordingRow>): String {
+    val uploaded = rows.count { it.repoCopy != RepoCopy.NONE }
+    val local = rows.size - uploaded
+    val sending = rows.any { it.upload.sending }
+    return listOfNotNull(
+        when (uploaded) {
+            0 -> null
+            1 -> "1 is uploaded: only the phone's copy is deleted, its data repo keeps it."
+            else -> "$uploaded are uploaded: only the phone's copies are deleted, their data repo keeps them."
+        },
+        when (local) {
+            0 -> null
+            1 -> "1 is not uploaded: its files are deleted from the phone for good."
+            else -> "$local are not uploaded: their files are deleted from the phone for good."
+        },
+        if (sending) "Their uploads are stopped; one already finishing still reaches the data repo." else null,
+    ).joinToString(" ")
+}
 
 /** The list rows of [entries], times in [zone]. */
 fun recordingRows(entries: List<RecordingEntry>, zone: ZoneId = ZoneId.systemDefault()): List<RecordingRow> {
@@ -167,6 +201,7 @@ class TrainingListViewModel(
     private val io: CoroutineDispatcher = Dispatchers.IO,
     private val zone: ZoneId = ZoneId.systemDefault(),
     private val uploads: UploadServices? = null,
+    private val delete: (id: String) -> Boolean = store::remove,   // TrainingDeps.delete: also stops its upload
 ) : ViewModel() {
     private data class Loaded(
         val rows: List<RecordingRow>,
@@ -178,6 +213,8 @@ class TrainingListViewModel(
     )
 
     private val loaded = MutableStateFlow<Loaded?>(null)
+    private data class Selection(val ids: Set<String>? = null, val deleting: Boolean = false, val message: UiMessage? = null)
+    private val selection = MutableStateFlow(Selection())
 
     // The rows with their upload stages: what upload.json says, the queue, a rejected token.
     private val withUploads = combine(
@@ -185,15 +222,19 @@ class TrainingListViewModel(
         uploads?.prefs?.settings ?: flowOf(null),
     ) { l, active, token, settings ->
         l?.copy(
-            rows = l.rows.map { row -> row.copy(upload = UploadQueue.stage(l.review[row.id], l.local[row.id], active[row.id], token.rejected)) },
+            rows = l.rows.map { row ->
+                val local = l.local[row.id]
+                row.copy(upload = UploadQueue.stage(l.review[row.id], local, active[row.id], token.rejected), repoCopy = local?.repoCopy ?: RepoCopy.NONE)
+            },
         ) to settings?.let { UploadSummary(it.repo, token.set, token.rejected, it.wifiOnly) }
     }
 
     val state: StateFlow<TrainingListUiState> = combine(
-        withUploads, controller.phase, session?.connection ?: flowOf(null), session?.recorder ?: flowOf(null),
-    ) { (l, summary), phase, c, r ->
+        withUploads, controller.phase, session?.connection ?: flowOf(null), session?.recorder ?: flowOf(null), selection,
+    ) { (l, summary), phase, c, r, sel ->
+        val rows = l?.rows.orEmpty()
         TrainingListUiState(
-            rows = l?.rows.orEmpty(),
+            rows = rows,
             loading = l == null,
             usedBytes = l?.used ?: 0,
             freeBytes = l?.free,
@@ -201,6 +242,9 @@ class TrainingListViewModel(
             session = phase,
             error = l?.error,
             upload = summary,
+            selected = sel.ids?.intersect(rows.mapTo(mutableSetOf()) { it.id }),   // a row deleted elsewhere drops out
+            deleting = sel.deleting,
+            message = sel.message,
         )
     }.stateIn(viewModelScope, SharingStarted.Eagerly, TrainingListUiState())
 
@@ -208,7 +252,8 @@ class TrainingListViewModel(
         reload()
         // A take that ends adds a row; its finalization changes its stage.
         viewModelScope.launch { controller.state.map { it.takes }.distinctUntilChanged().drop(1).collect { reload() } }
-        viewModelScope.launch { store.changes.drop(1).collect { reload() } }
+        // each take a Delete of several removes counts once: that reloads once, at its end
+        viewModelScope.launch { store.changes.drop(1).collect { if (!selection.value.deleting) reload() } }
     }
 
     fun reload() {
@@ -226,7 +271,71 @@ class TrainingListViewModel(
                     Loaded(emptyList(), 0, null, "The recordings could not be read (${e.message}).")
                 }
             }
+            // nothing left to select: Select ends (a new take must not open in it)
+            val s = selection.value
+            if (s.ids != null && !s.deleting && loaded.value?.rows.isNullOrEmpty()) selection.value = s.copy(ids = null)
         }
+    }
+
+    /** Select: the rows get check boxes, Delete takes the ticked ones. */
+    fun startSelecting() {
+        selection.value = Selection(ids = emptySet())
+    }
+
+    fun cancelSelecting() {
+        if (!selection.value.deleting) selection.value = Selection()
+    }
+
+    /** Ticks or unticks [id]; a take being recorded cannot be selected. */
+    fun toggle(id: String) {
+        val s = selection.value
+        val ids = s.ids ?: return
+        if (s.deleting || state.value.rows.none { it.id == id && it.canOpen }) return
+        selection.value = s.copy(ids = if (id in ids) ids - id else ids + id)
+    }
+
+    fun selectAll() {
+        val s = selection.value
+        if (s.ids == null || s.deleting) return
+        selection.value = s.copy(ids = state.value.rows.filter { it.canOpen }.mapTo(mutableSetOf()) { it.id })
+    }
+
+    /**
+     * Deletes the selected takes from the phone, each as the review's Delete take does
+     * (TrainingDeps.delete). Says how many could not be.
+     */
+    fun deleteSelected() {
+        val ids = state.value.selected.orEmpty()
+        if (ids.isEmpty() || selection.value.deleting) return
+        selection.value = selection.value.copy(deleting = true, message = null)
+        viewModelScope.launch {
+            var failed = 0
+            var why: String? = null
+            try {
+                withContext(io) {
+                    for (id in ids) {
+                        val gone = try {
+                            delete(id)
+                        } catch (e: CancellationException) {
+                            throw e
+                        } catch (e: Exception) {
+                            why = why ?: e.message
+                            false
+                        }
+                        if (!gone) failed++
+                    }
+                }
+            } finally {
+                selection.value = Selection(
+                    message = if (failed == 0) null else UiMessage("$failed of ${ids.size} takes could not be deleted" + (why?.let { " ($it)." } ?: ". Try again.")),
+                )
+                reload()
+            }
+        }
+    }
+
+    fun dismissMessage() {
+        selection.value = selection.value.copy(message = null)
     }
 
     /** Sends a failed upload again; over the data repo's copy only when the row's failure is a conflict (its text says Retry does that). */
