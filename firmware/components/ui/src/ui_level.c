@@ -29,20 +29,20 @@ static struct {
     lv_obj_t *dot;
     lv_obj_t *arrow;
     lv_obj_t *value;
-    lv_obj_t *sub_yaw;      // the line below the number: yaw (WALL, ANGLE)
-    lv_obj_t *sub_info;     // ... and a hint (WALL) or the current angle (ANGLE)
+    lv_obj_t *sub_yaw;      // the line below the number: yaw (WALL)
+    lv_obj_t *sub_info;     // ... and a hint (WALL)
 
     lv_obj_t *bat_icon;
     lv_obj_t *bat_pct;
     lv_obj_t *charge;
     lv_obj_t *ble;
 
-    bool can_zero;          // a sensor and no take (a hold can start before one)
+    bool can_zero;          // a sensor, the wall view and no take (a hold can start before one)
 
     // touch tracking (a tap that wakes a dimmed screen never gets here, ui.c)
     lv_point_t press_pt;
     uint32_t press_ms;
-    bool press_used;        // a swipe or the hold already consumed this touch
+    bool press_used;        // the hold already consumed this touch
 } s;
 
 // --- touch ---
@@ -84,16 +84,6 @@ static void screen_event_cb(lv_event_t *e)
             }
         }
         break;
-    case LV_EVENT_GESTURE: {
-        lv_dir_t dir = lv_indev_get_gesture_dir(in);
-        s.press_used = true;   // a swipe never also zeroes
-        if (dir == LV_DIR_LEFT) {
-            app_post_cmd(APP_CMD_NEXT_MODE, +1);
-        } else if (dir == LV_DIR_RIGHT) {
-            app_post_cmd(APP_CMD_NEXT_MODE, -1);
-        }
-        break;
-    }
     default:
         break;
     }
@@ -113,7 +103,7 @@ static lv_obj_t *circle_new(lv_obj_t *parent, int32_t r, uint32_t border_color, 
 }
 
 // One view for every mode. FLOOR: the dot is a bubble and moves to the
-// higher side. WALL and ANGLE: the dot is where the bit points, up when it
+// higher side. WALL: the dot is where the bit points, up when it
 // points too high, right when it has turned right since the zero; steer it
 // into the centre. A ring is where the dot's edge touches it at that
 // deviation, like the circle on a spirit level vial. near_deg is always a
@@ -280,9 +270,10 @@ void ui_level_update(const app_snapshot_t *snap, uint32_t now_ms)
     const level_reading_t *r = &snap->reading;
     level_mode_t mode = r->mode < LEVEL_MODE_COUNT ? r->mode : LEVEL_MODE_WALL;
 
-    s.can_zero = snap->imu_ok && !ui_rec_pill_live(&snap->rec);
+    // Only the crosshair zeroes; the bubble has no zero.
+    s.can_zero = snap->imu_ok && mode == LEVEL_MODE_WALL && !ui_rec_pill_live(&snap->rec);
     char title[32];
-    ui_level_title(mode, cfg->target_deg, title, sizeof(title));
+    ui_level_title(mode, title, sizeof(title));
     ui_set_text(s.title, title);
     lv_obj_set_flag(s.no_sensor, LV_OBJ_FLAG_HIDDEN, snap->imu_ok);
     lv_obj_set_flag(s.aim, LV_OBJ_FLAG_HIDDEN, !snap->imu_ok);

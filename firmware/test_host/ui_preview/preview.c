@@ -229,12 +229,6 @@ static level_reading_t floor_r(float bx, float by, level_status_t st)
     return r;
 }
 
-static level_reading_t angle_r(float elev, float target, level_status_t st)
-{
-    return (level_reading_t){.mode = LEVEL_MODE_ANGLE, .elevation_deg = elev,
-                             .deviation_deg = elev - target, .status = st};
-}
-
 static void base_state(void)
 {
     preview_stubs_reset();
@@ -273,7 +267,6 @@ static void rec_touch_checks(void)
     swipe(330, 240, 120, 240);
     hold(CX, CY, 1200);
     CHECK(preview_count_cmd(APP_CMD_ZERO, 0, false) == zeros + 1);
-    CHECK(preview_count_cmd(APP_CMD_NEXT_MODE, 0, false) == 0);
     CHECK(ui_current() == UI_SCREEN_LEVEL);
     CHECK(g_rec_touches == 3);
     // A press on the pill is the pill's: no zero after 1.2 s, no stop yet;
@@ -454,7 +447,6 @@ static void touch_checks(void)
     tap(CX, CY);
     CHECK(preview_count_cmd(APP_CMD_ZERO, 0, false) == 1);
     swipe(330, 240, 120, 240);
-    CHECK(preview_count_cmd(APP_CMD_NEXT_MODE, 0, false) == 0);
     hold(CX, CY, 1200);
     CHECK(ui_current() == UI_SCREEN_LEVEL);
     g_snap.power = APP_POWER_ACTIVE;
@@ -475,11 +467,12 @@ static void touch_checks(void)
     run(100);
     CHECK(preview_count_cmd(APP_CMD_ZERO, 0, false) == 2);
 
+    // A swipe on the level screen does nothing: no zero, no command.
+    int posted = g_cmd_count;
     swipe(330, 240, 120, 240);
-    CHECK(preview_count_cmd(APP_CMD_NEXT_MODE, +1, true) == 1);
-    CHECK(preview_count_cmd(APP_CMD_ZERO, 0, false) == 2);   // a swipe is no hold
     swipe(120, 240, 330, 240);
-    CHECK(preview_count_cmd(APP_CMD_NEXT_MODE, -1, true) == 1);
+    CHECK(preview_count_cmd(APP_CMD_ZERO, 0, false) == 2);
+    CHECK(g_cmd_count == posted);
 
     boot_press();
     CHECK(ui_current() == UI_SCREEN_SETTINGS);
@@ -646,16 +639,13 @@ int main(int argc, char **argv)
     g_snap.reading = floor_r(-8.0f, 5.0f, LEVEL_STATUS_OFF);
     render("07_floor_off_clamped");
 
+    // The bubble view has no zero: a hold neither posts one nor shows the toast.
     base_state();
-    g_snap.reading = angle_r(46.3f, 45.0f, LEVEL_STATUS_NEAR);
-    g_snap.reading.yaw_valid = true;    // zeroed: the dot also moves left/right
-    g_snap.reading.yaw_deg = -0.4f;
-    g_snap.reading.yaw_status = LEVEL_STATUS_ON_TARGET;
-    render("08_angle_near");
-
-    base_state();
-    g_snap.reading = angle_r(-12.0f, 45.0f, LEVEL_STATUS_OFF);
-    render("09_angle_off");
+    g_snap.reading = floor_r(0.2f, -0.1f, LEVEL_STATUS_ON_TARGET);
+    run(200);
+    int zeros_before = preview_count_cmd(APP_CMD_ZERO, 0, false);
+    hold(CX, CY, 1200);
+    CHECK(preview_count_cmd(APP_CMD_ZERO, 0, false) == zeros_before);
 
     // The same as 02, with the dot inverted (settings dot_invert): it and
     // the arrow show which way to correct.

@@ -7,14 +7,14 @@
 // It never calls sensor, PMU or BLE code.
 //
 // Screens:
-// - Level: one view per mode (swipe left/right = APP_CMD_NEXT_MODE), a 1 s
-//   hold = APP_CMD_ZERO, a tap does nothing. The BOOT button opens the
-//   settings and leaves them. One crosshair for every mode, colour by status
-//   (green on target, amber near, white off): on floor the dot is a bubble,
-//   on wall and angle it is where the bit points (up = too high, right =
-//   turned right since the zero). Below it the error, then yaw
-//   (wall, with a stale warning) or the current angle; battery %, charging
-//   and BLE icons.
+// - Level: one screen whose view the device picks from how the board sits
+//   (titles WALL and LEVEL), no swipe. A 1 s hold = APP_CMD_ZERO in the wall
+//   view only, a tap does nothing. The BOOT button opens the settings and
+//   leaves them. One crosshair for both views, colour by status (green on
+//   target, amber near, white off): in the level view the dot is a bubble, in
+//   the wall view it is where the bit points (up = too high, right = turned
+//   right since the zero). Below it the error, then yaw (wall, with a stale
+//   warning); battery %, charging and BLE icons.
 // - Settings: tolerance, target angle, brightness, auto-off times, BLE,
 //   "Calibrate mount", "Calibrate sensor", clear zero, firmware version.
 // - Calibration guides: mount (bit in a hole, Start, roll the drill +-45

@@ -2693,7 +2693,6 @@ static void enter_off(void)
 }
 
 typedef struct {
-    bool step;
     int32_t arg;
 } mode_change_t;
 
@@ -2701,7 +2700,7 @@ static bool apply_mode(settings_t *s, void *ctx)
 {
     const mode_change_t *c = ctx;
     const int32_t n = LEVEL_MODE_COUNT;
-    int32_t m = c->step ? ((int32_t)s->mode + c->arg % n + n) % n : c->arg;
+    int32_t m = c->arg;
     if (m < 0 || m >= n) {
         return false;
     }
@@ -2709,9 +2708,9 @@ static bool apply_mode(settings_t *s, void *ctx)
     return true;
 }
 
-static void change_mode(bool step, int32_t arg)
+static void change_mode(int32_t arg)
 {
-    mode_change_t c = {.step = step, .arg = arg};
+    mode_change_t c = {.arg = arg};
     if (settings_update(apply_mode, &c) != 0) {
         LOGW("mode not changed");
     }
@@ -2843,10 +2842,7 @@ static void handle_cmd(const app_cmd_t *cmd)
         sensor_clear_zero();
         break;
     case APP_CMD_SET_MODE:
-        change_mode(false, cmd->arg);
-        break;
-    case APP_CMD_NEXT_MODE:
-        change_mode(true, cmd->arg);
+        change_mode(cmd->arg);
         break;
     case APP_CMD_MOUNT_CAL_START:
         start_cal(APP_CAL_MOUNT, cmd->arg);
@@ -3275,7 +3271,7 @@ int sim_snapshot_json(char *buf, int cap)
         ui_battery_level(s->battery.percent), B(ui_low_battery(&s->battery)));
     put_str(&o, "mode_title", ui_mode_title(r->mode));
     char title[32];
-    ui_level_title(r->mode, s_current.target_deg, title, sizeof(title));
+    ui_level_title(r->mode, title, sizeof(title));
     put_str(&o, "title", title);
     ui_aim_sub_t sub;
     ui_aim_sub(r, r->mode, s->zero_set, s_current.dot_invert, &sub);

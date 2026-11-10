@@ -111,21 +111,12 @@ void ui_aim_sub(const level_reading_t *r, level_mode_t mode, bool zero_set, bool
     }
     if (mode == LEVEL_MODE_WALL && !zero_set) {
         snprintf(out->info, sizeof(out->info), "Hold to zero for left/right");
-    } else if (mode == LEVEL_MODE_ANGLE && !(yaw && r->yaw_stale)) {
-        ui_fmt_deg(deg, sizeof(deg), r->elevation_deg, false);
-        snprintf(out->info, sizeof(out->info), "now %s", deg);
     }
 }
 
-void ui_level_title(level_mode_t mode, float target_deg, char *buf, size_t len)
+void ui_level_title(level_mode_t mode, char *buf, size_t len)
 {
-    if (mode != LEVEL_MODE_ANGLE) {
-        snprintf(buf, len, "%s", ui_mode_title(mode));
-        return;
-    }
-    char deg[16];
-    ui_fmt_deg(deg, sizeof(deg), target_deg, false);
-    snprintf(buf, len, "%s  %s", ui_mode_title(mode), deg);
+    snprintf(buf, len, "%s", ui_mode_title(mode));
 }
 
 level_status_t ui_dot_status(const level_reading_t *r)
@@ -494,9 +485,9 @@ const char *ui_mode_title(level_mode_t mode)
     case LEVEL_MODE_WALL:
         return "WALL";
     case LEVEL_MODE_FLOOR:
-        return "FLOOR / CEILING";
-    case LEVEL_MODE_ANGLE:
-        return "ANGLE";
+        return "LEVEL";
+    case LEVEL_MODE_ANGLE:   // reserved, never produced: the wall view
+        return "WALL";
     default:
         return "?";
     }

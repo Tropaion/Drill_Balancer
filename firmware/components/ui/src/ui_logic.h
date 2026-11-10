@@ -26,24 +26,23 @@ void ui_fmt_deg(char *buf, size_t len, float deg, bool show_plus);
 // Elevation rounded to tenths of a degree: what the display shows.
 int32_t ui_tenths(float deg);
 
-// Arrow next to the wall and angle numbers: +1 the bit points too high, -1
+// Arrow next to the wall number: +1 the bit points too high, -1
 // too low (deviation_deg), 0 none (on target, it would read 0.0, or FLOOR).
 // invert (settings dot_invert) flips it with the dot.
 int ui_aim_arrow(const level_reading_t *r, bool invert);
 
 // The crosshair dot in degrees on screen axes (+x right, +y up). FLOOR: the
-// bubble, which moves to the higher side. WALL and ANGLE: the aim point, up
+// bubble, which moves to the higher side. WALL: the aim point, up
 // when the bit points too high (deviation_deg), right when it has turned
 // right since the zero (yaw_deg; 0 while yaw is not valid).
 // invert (settings dot_invert) mirrors both: the bubble then moves to the
 // lower side, the aim point shows which way to correct.
 void ui_dot_deg(const level_reading_t *r, bool invert, float *x_deg, float *y_deg);
 
-// The line under the crosshair's number. yaw: the yaw on WALL and ANGLE
+// The line under the crosshair's number. yaw: the yaw on WALL
 // while it is valid, "R 1.2°" / "L 1.2°" / "0.0°", plus "  re-zero" once
 // stale (then shown amber, else in yaw_status's colour). info: "Hold to zero
-// for left/right" on WALL without a zero, "now 46.3°" on ANGLE (not next to
-// a stale yaw, for width). Empty strings are not shown.
+// for left/right" on WALL without a zero. Empty strings are not shown.
 typedef struct {
     char yaw[32];
     char info[32];
@@ -53,10 +52,10 @@ typedef struct {
 void ui_aim_sub(const level_reading_t *r, level_mode_t mode, bool zero_set, bool invert,
                 ui_aim_sub_t *out);
 
-// The level screen's title: the mode, on ANGLE with the target ("ANGLE  45.0°").
-void ui_level_title(level_mode_t mode, float target_deg, char *buf, size_t len);
+// The level screen's title: "WALL" for the crosshair, "LEVEL" for the bubble.
+void ui_level_title(level_mode_t mode, char *buf, size_t len);
 
-// The dot's colour status: on WALL and ANGLE the worse of the elevation's
+// The dot's colour status: on WALL the worse of the elevation's
 // and the yaw's (while yaw is valid and not stale); on FLOOR the bubble's.
 level_status_t ui_dot_status(const level_reading_t *r);
 

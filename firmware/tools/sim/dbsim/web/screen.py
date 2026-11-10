@@ -8,8 +8,8 @@ already recognised by the browser and is handled with the firmware's rules:
 
 - ui.c activity_cb: every press is activity; a press that wakes a dimmed
   screen does nothing else.
-- ui_level.c: 1 s hold = APP_CMD_ZERO (only with a sensor), swipe left / right
-  = APP_CMD_NEXT_MODE +1 / -1, a tap does nothing.
+- ui_level.c: 1 s hold = APP_CMD_ZERO (only with a sensor and in the wall
+  view; the bubble has no zero), no swipe, a tap does nothing.
 - ui.c boot_key_cb, ui_logic.c ui_key_action: BOOT opens the settings and leaves
   them; it only wakes a dimmed screen and does nothing on the calibration
   guides, under an overlay, on the reset confirmation or during a take.
@@ -266,13 +266,11 @@ class DeviceScreen:
 
     def _level(self, action, dir, snap) -> str:
         if action == "hold":
-            if snap["imu_ok"] and self.dev.ui_command(C.APP_CMD_ZERO, 0):
+            wall_view = snap["reading"]["mode"] == C.LEVEL_MODE_WALL
+            if snap["imu_ok"] and wall_view and self.dev.ui_command(C.APP_CMD_ZERO, 0):
                 self.toast_show("ZERO", UI_C_GREEN, ZERO_FLASH_MS)
                 return "zero"
             return ""
-        if action == "swipe" and dir in ("left", "right"):
-            self.dev.ui_command(C.APP_CMD_NEXT_MODE, 1 if dir == "left" else -1)
-            return f"next mode {'+1' if dir == 'left' else '-1'}"
         return ""
 
     def _settings(self, action, dir, button) -> str:

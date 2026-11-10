@@ -71,14 +71,25 @@ class PanelTest(DeviceTest):
         self.assertEqual(self.touch("hold"), "zero")
         self.assertTrue(self.snap()["zero_set"])
         self.assertEqual(self.panel.screen.screen, "level")
-        # The view follows the pose, not swipes.
+        # The view follows the pose, not swipes: no action, no command.
         for d in ("left", "right", "up"):
-            self.touch("swipe", dir=d)
+            self.assertEqual(self.touch("swipe", dir=d), "")
             self.assertEqual(self.snap()["reading"]["mode"], 0)
         self.boot()
         self.assertEqual(self.panel.screen.screen, "settings")
         self.touch("swipe", dir="right")
         self.assertEqual(self.panel.screen.screen, "level")
+
+    def test_no_zero_hold_in_the_bubble_view(self):
+        self.cmd(cmd="preset", name="floor")
+        self.settle()
+        self.assertEqual(self.snap()["reading"]["mode"], 1)
+        self.assertEqual(self.touch("hold"), "")
+        self.assertFalse(self.snap()["zero_set"])
+        self.cmd(cmd="preset", name="wall")
+        self.settle()
+        self.assertEqual(self.touch("hold"), "zero")
+        self.assertTrue(self.snap()["zero_set"])
 
     def test_no_zero_without_sensor(self):
         self.dev.imu_present = False

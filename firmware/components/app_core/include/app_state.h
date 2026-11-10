@@ -212,7 +212,6 @@ typedef enum {
     APP_CMD_ZERO = 0,           // zero on the current orientation
     APP_CMD_CLEAR_ZERO,
     APP_CMD_SET_MODE,           // arg = level_mode_t
-    APP_CMD_NEXT_MODE,          // arg = +1 / -1
     APP_CMD_MOUNT_CAL_START,    // arg = APP_CMD_ARG_FROM_BLE or 0 (UI)
     APP_CMD_MOUNT_CAL_FINISH,   // solve, store on success
     APP_CMD_ACCEL_CAL_START,    // arg as for MOUNT_CAL_START

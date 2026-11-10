@@ -141,15 +141,13 @@ static void test_aim_sub_line(void)
     TEST_ASSERT_EQUAL_STRING("R 1.2°", sub.yaw);
     TEST_ASSERT_EQUAL_STRING("", sub.info);
     TEST_ASSERT_FALSE(sub.yaw_stale);
-    ui_aim_sub(&r, LEVEL_MODE_ANGLE, true, false, &sub);
-    TEST_ASSERT_EQUAL_STRING("now 46.3°", sub.info);
     // Inverted: the way to turn, like the dot.
     ui_aim_sub(&r, LEVEL_MODE_WALL, true, true, &sub);
     TEST_ASSERT_EQUAL_STRING("L 1.2°", sub.yaw);
-    // Stale: the warning, and no current angle next to it.
+    // Stale: the warning.
     r.yaw_stale = true;
     r.yaw_deg = -6.4f;
-    ui_aim_sub(&r, LEVEL_MODE_ANGLE, true, false, &sub);
+    ui_aim_sub(&r, LEVEL_MODE_WALL, true, false, &sub);
     TEST_ASSERT_EQUAL_STRING("L 6.4°  re-zero", sub.yaw);
     TEST_ASSERT_EQUAL_STRING("", sub.info);
     TEST_ASSERT_TRUE(sub.yaw_stale);
@@ -170,9 +168,12 @@ static void test_aim_sub_line(void)
 
 static void test_level_title(void)
 {
-    ui_level_title(LEVEL_MODE_ANGLE, 45.0f, buf, sizeof(buf));
-    TEST_ASSERT_EQUAL_STRING("ANGLE  45.0°", buf);
-    ui_level_title(LEVEL_MODE_WALL, 45.0f, buf, sizeof(buf));
+    ui_level_title(LEVEL_MODE_FLOOR, buf, sizeof(buf));
+    TEST_ASSERT_EQUAL_STRING("LEVEL", buf);
+    ui_level_title(LEVEL_MODE_WALL, buf, sizeof(buf));
+    TEST_ASSERT_EQUAL_STRING("WALL", buf);
+    // The reserved value is never produced; it reads as the wall view.
+    ui_level_title(LEVEL_MODE_ANGLE, buf, sizeof(buf));
     TEST_ASSERT_EQUAL_STRING("WALL", buf);
 }
 
@@ -539,8 +540,8 @@ static void test_merge_repairs_cross_field_rules(void)
 static void test_texts_cover_every_result(void)
 {
     TEST_ASSERT_EQUAL_STRING("WALL", ui_mode_title(LEVEL_MODE_WALL));
-    TEST_ASSERT_EQUAL_STRING("FLOOR / CEILING", ui_mode_title(LEVEL_MODE_FLOOR));
-    TEST_ASSERT_EQUAL_STRING("ANGLE", ui_mode_title(LEVEL_MODE_ANGLE));
+    TEST_ASSERT_EQUAL_STRING("LEVEL", ui_mode_title(LEVEL_MODE_FLOOR));
+    TEST_ASSERT_EQUAL_STRING("WALL", ui_mode_title(LEVEL_MODE_ANGLE));
     TEST_ASSERT_NOT_NULL(ui_mode_title(LEVEL_MODE_COUNT));
 
     const char *unknown = ui_mount_result_text(99);
