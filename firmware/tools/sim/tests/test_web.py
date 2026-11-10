@@ -255,7 +255,7 @@ class PanelTest(DeviceTest):
         self.assertEqual(self.write_config(tol=0.25, dim_s=90, sleep_s=3600, off_min=0), 0)
         ui = self.snap()["ui"]
         self.assertEqual(ui["settings_text"],
-                         ["0.25°", "2.00°", "45.0°", "100 %", "90 s", "1 h", "Never"])
+                         ["0.25°", "2.00°", "100 %", "90 s", "1 h", "Never"])
         self.assertEqual(self.touch("hold"), "zero")
         self.cmd(cmd="pose", yaw=-12.34)
         self.settle(3000)

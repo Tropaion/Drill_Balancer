@@ -146,7 +146,6 @@ ui_key_action_t ui_key_action(const ui_key_ctx_t *c);
 typedef enum {
     UI_FIELD_TOLERANCE = 0,
     UI_FIELD_NEAR,
-    UI_FIELD_TARGET,
     UI_FIELD_BRIGHTNESS,
     UI_FIELD_DIM_S,
     UI_FIELD_SLEEP_S,

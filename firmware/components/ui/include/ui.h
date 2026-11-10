@@ -15,7 +15,7 @@
 //   the wall view it is where the bit points (up = too high, right = turned
 //   right since the zero). Below it the error, then yaw (wall, with a stale
 //   warning); battery %, charging and BLE icons.
-// - Settings: tolerance, target angle, brightness, auto-off times, BLE,
+// - Settings: tolerance, brightness, auto-off times, BLE,
 //   "Calibrate mount", "Calibrate sensor", clear zero, firmware version.
 // - Calibration guides: mount (bit in a hole, Start, roll the drill +-45
 //   deg, progress), sensor (six sides, coverage shown as six targets).

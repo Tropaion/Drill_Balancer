@@ -113,7 +113,6 @@ class LiveViewModelTest {
         assertNull(vm.angle.value!!.status)
         fake.setImuOk(true)
         assertTrue(vm.state.value.imuOk)
-        assertEquals(45f, vm.state.value.targetDeg)
     }
 
     @Test

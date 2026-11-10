@@ -92,12 +92,6 @@ class LiveScreenshotTest {
     )
 
     @Test
-    fun angleNear() = shot(
-        LiveUiState(mode = LevelMode.ANGLE, hasAngle = true, targetDeg = 45f),
-        AnglePacket.of(LevelMode.ANGLE, base or AngleFlags.NEAR, elevationDeg = 43.8f, deviationDeg = -1.2f),
-    )
-
-    @Test
     fun imuNotOk() = shot(
         LiveUiState(hasAngle = true, imuOk = false, zeroSet = true),
         AnglePacket.of(LevelMode.WALL, AngleFlags.ZERO_SET),

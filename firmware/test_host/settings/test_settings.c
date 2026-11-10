@@ -32,7 +32,7 @@ static void test_defaults(void)
     TEST_ASSERT_TRUE(settings_validate(&s));
     TEST_ASSERT_EQUAL_FLOAT(0.5f, s.tolerance_deg);
     TEST_ASSERT_EQUAL_FLOAT(2.0f, s.near_deg);
-    TEST_ASSERT_EQUAL_FLOAT(45.0f, s.target_deg);
+    TEST_ASSERT_EQUAL_FLOAT(45.0f, s.legacy_target_deg);
     TEST_ASSERT_EQUAL(LEVEL_MODE_WALL, s.mode);
     TEST_ASSERT_EQUAL_UINT8(100, s.brightness_pct);
     TEST_ASSERT_EQUAL_UINT8(20, s.dim_brightness_pct);
@@ -55,7 +55,6 @@ static void test_level_config(void)
 {
     s.tolerance_deg = 0.3f;
     s.near_deg = 1.5f;
-    s.target_deg = -30.0f;
     s.yaw_stale_s = 90;
     s.drill_axis = vec3_normalize((vec3_t){0.1f, 0.0f, -1.0f});
     level_config_t c = settings_level_config(&s);
@@ -85,9 +84,10 @@ static void test_validate_ranges(void)
     CHECK(s.near_deg = 0.5f, true);            // == tol
     CHECK(s.near_deg = 20.0f, true);
     CHECK(s.near_deg = 20.5f, false);
-    CHECK(s.target_deg = -90.0f, true);
-    CHECK(s.target_deg = 90.5f, false);
-    CHECK(s.target_deg = INFINITY, false);
+    // The legacy target is still range-checked, as stored blobs were.
+    CHECK(s.legacy_target_deg = -90.0f, true);
+    CHECK(s.legacy_target_deg = 90.5f, false);
+    CHECK(s.legacy_target_deg = INFINITY, false);
     CHECK(s.mode = LEVEL_MODE_COUNT, false);
     CHECK((s.brightness_pct = 10, s.dim_brightness_pct = 10), true);
     CHECK((s.brightness_pct = 9, s.dim_brightness_pct = 5), false);
@@ -133,10 +133,6 @@ static void test_validate_uses_named_limits(void)
     CHECK((s.tolerance_deg = nextafterf(SETTINGS_TOL_MAX_DEG, 99.0f), s.near_deg = 10.0f), false);
     CHECK(s.near_deg = SETTINGS_NEAR_MAX_DEG, true);
     CHECK(s.near_deg = nextafterf(SETTINGS_NEAR_MAX_DEG, 99.0f), false);
-    CHECK(s.target_deg = SETTINGS_TARGET_MAX_DEG, true);
-    CHECK(s.target_deg = -SETTINGS_TARGET_MAX_DEG, true);
-    CHECK(s.target_deg = nextafterf(SETTINGS_TARGET_MAX_DEG, 999.0f), false);
-    CHECK(s.target_deg = nextafterf(-SETTINGS_TARGET_MAX_DEG, -999.0f), false);
     CHECK((s.brightness_pct = SETTINGS_BRIGHT_MIN_PCT, s.dim_brightness_pct = 1), true);
     CHECK((s.brightness_pct = SETTINGS_BRIGHT_MIN_PCT - 1, s.dim_brightness_pct = 1), false);
     CHECK(s.brightness_pct = SETTINGS_BRIGHT_MAX_PCT, true);
@@ -191,11 +187,53 @@ static void test_to_json_defaults(void)
     int n = settings_to_json(&s, buf, sizeof(buf));
     TEST_ASSERT_GREATER_THAN(0, n);
     TEST_ASSERT_EQUAL_INT((int)strlen(buf), n);
-    TEST_ASSERT_EQUAL_STRING("{\"tol\":0.5,\"near\":2,\"target\":45,\"mode\":\"wall\",\"bright\":100,"
+    TEST_ASSERT_EQUAL_STRING("{\"tol\":0.5,\"near\":2,\"mode\":\"wall\",\"bright\":100,"
                              "\"dim_bright\":20,\"dim_s\":30,\"sleep_s\":120,\"off_min\":60,"
                              "\"ble\":true,\"stale_s\":60,\"dot_inv\":false,"
                              "\"cal\":{\"mount\":false,\"accel\":false},\"ver\":1}",
                              buf);
+}
+
+static void test_settings_json_has_no_target(void)
+{
+    char buf[SETTINGS_JSON_MAX];
+    TEST_ASSERT_GREATER_THAN(0, settings_to_json(&s, buf, sizeof(buf)));
+    TEST_ASSERT_NULL(strstr(buf, "\"target\""));
+}
+
+static void test_target_write_is_ignored(void)
+{
+    // An older app may still send it: the write succeeds and nothing changes.
+    settings_t before = s;
+    TEST_ASSERT_EQUAL(SETTINGS_JSON_OK, apply("{\"target\":30}"));
+    TEST_ASSERT_TRUE(settings_equal(&before, &s));
+    TEST_ASSERT_EQUAL_FLOAT(before.legacy_target_deg, s.legacy_target_deg);
+}
+
+// An OTA rollback loads the blob, so a save from this firmware must write the
+// stored legacy fields and both calibrations back as they were.
+// (Task 4 renames mode to legacy_mode.)
+static void test_legacy_fields_survive_a_save(void)
+{
+    s.legacy_target_deg = 30.0f;
+    s.mode = LEVEL_MODE_ANGLE;
+    s.mount_cal_valid = true;
+    s.drill_axis = vec3_normalize((vec3_t){0.1f, 0.0f, -1.0f});
+    s.accel_cal_valid = true;
+    s.accel_cal.bias = (vec3_t){0.01f, -0.02f, 0.03f};
+    s.accel_cal.scale = (vec3_t){1.01f, 0.99f, 1.02f};
+    TEST_ASSERT_TRUE(settings_validate(&s));
+    settings_t before = s;
+
+    TEST_ASSERT_EQUAL(SETTINGS_JSON_OK, apply("{\"bright\":50}"));
+    TEST_ASSERT_EQUAL_UINT8(50, s.brightness_pct);
+    TEST_ASSERT_EQUAL_FLOAT(30.0f, s.legacy_target_deg);
+    TEST_ASSERT_EQUAL(LEVEL_MODE_ANGLE, s.mode);
+    TEST_ASSERT_TRUE(s.mount_cal_valid);
+    TEST_ASSERT_TRUE(s.accel_cal_valid);
+    TEST_ASSERT_TRUE(vec3_equal(before.drill_axis, s.drill_axis));
+    TEST_ASSERT_TRUE(vec3_equal(before.accel_cal.bias, s.accel_cal.bias));
+    TEST_ASSERT_TRUE(vec3_equal(before.accel_cal.scale, s.accel_cal.scale));
 }
 
 static void test_to_json_buffer_too_small(void)
@@ -214,7 +252,6 @@ static void test_worst_case_json_fits(void)
     // Values that need the most digits.
     s.tolerance_deg = 0.0512345678f;
     s.near_deg = 19.987654f;
-    s.target_deg = -89.123456f;
     s.mode = LEVEL_MODE_FLOOR;
     s.dim_after_s = 600;
     s.sleep_after_s = 3600;
@@ -284,7 +321,6 @@ static void test_round_trip(void)
 {
     s.tolerance_deg = 0.25f;
     s.near_deg = 1.0f / 3.0f;   // not exact in a short decimal
-    s.target_deg = -12.5f;
     s.mode = LEVEL_MODE_ANGLE;
     s.brightness_pct = 80;
     s.dim_brightness_pct = 5;
@@ -304,7 +340,6 @@ static void test_round_trip(void)
     // Floats round trip exactly.
     TEST_ASSERT_EQUAL_MEMORY(&want.tolerance_deg, &s.tolerance_deg, sizeof(float));
     TEST_ASSERT_EQUAL_MEMORY(&want.near_deg, &s.near_deg, sizeof(float));
-    TEST_ASSERT_EQUAL_MEMORY(&want.target_deg, &s.target_deg, sizeof(float));
     TEST_ASSERT_EQUAL(want.mode, s.mode);
     TEST_ASSERT_EQUAL_UINT8(want.brightness_pct, s.brightness_pct);
     TEST_ASSERT_EQUAL_UINT8(want.dim_brightness_pct, s.dim_brightness_pct);
@@ -393,7 +428,6 @@ static void test_type_errors_leave_settings_unchanged(void)
     expect_rejected(SETTINGS_JSON_TYPE_ERROR, "{\"dot_inv\":1}");
     expect_rejected(SETTINGS_JSON_TYPE_ERROR, "{\"dot_inv\":\"true\"}");
     // Overflows to infinity when parsed.
-    expect_rejected(SETTINGS_JSON_TYPE_ERROR, "{\"target\":1e999}");
     expect_rejected(SETTINGS_JSON_TYPE_ERROR, "{\"dim_s\":-1e999}");
     // A valid key before the bad one is not applied either.
     expect_rejected(SETTINGS_JSON_TYPE_ERROR, "{\"bright\":50,\"ble\":0}");
@@ -404,7 +438,6 @@ static void test_range_errors_leave_settings_unchanged(void)
     expect_rejected(SETTINGS_JSON_RANGE_ERROR, "{\"tol\":0.04}");
     expect_rejected(SETTINGS_JSON_RANGE_ERROR, "{\"tol\":1e300}");   // inf as a float
     expect_rejected(SETTINGS_JSON_RANGE_ERROR, "{\"near\":0.4}");
-    expect_rejected(SETTINGS_JSON_RANGE_ERROR, "{\"target\":91}");
     expect_rejected(SETTINGS_JSON_RANGE_ERROR, "{\"mode\":\"ceiling\"}");
     expect_rejected(SETTINGS_JSON_RANGE_ERROR, "{\"mode\":\"\"}");
     expect_rejected(SETTINGS_JSON_RANGE_ERROR, "{\"bright\":9}");
@@ -423,7 +456,7 @@ static void test_boundaries_through_json(void)
     TEST_ASSERT_EQUAL(SETTINGS_JSON_OK, apply("{\"tol\":0.05}"));
     TEST_ASSERT_EQUAL_FLOAT(0.05f, s.tolerance_deg);
     TEST_ASSERT_EQUAL(SETTINGS_JSON_OK, apply("{\"tol\":5,\"near\":5}"));
-    TEST_ASSERT_EQUAL(SETTINGS_JSON_OK, apply("{\"near\":20,\"target\":-90}"));
+    TEST_ASSERT_EQUAL(SETTINGS_JSON_OK, apply("{\"near\":20}"));
     TEST_ASSERT_EQUAL(SETTINGS_JSON_OK, apply("{\"bright\":10,\"dim_bright\":10}"));
     TEST_ASSERT_EQUAL(SETTINGS_JSON_OK, apply("{\"dim_s\":600,\"sleep_s\":600}"));
     TEST_ASSERT_EQUAL(SETTINGS_JSON_OK, apply("{\"off_min\":0,\"stale_s\":10}"));
@@ -466,7 +499,7 @@ static settings_t copy_fields_over_garbage(const settings_t *src)
     memset(&d, 0x5A, sizeof(d));
     d.tolerance_deg = src->tolerance_deg;
     d.near_deg = src->near_deg;
-    d.target_deg = src->target_deg;
+    d.legacy_target_deg = src->legacy_target_deg;
     d.mode = src->mode;
     d.brightness_pct = src->brightness_pct;
     d.dim_brightness_pct = src->dim_brightness_pct;
@@ -503,7 +536,7 @@ static void test_equal_sees_every_field(void)
     } while (0)
     CHECK_FIELD(b.tolerance_deg += 0.01f);
     CHECK_FIELD(b.near_deg += 0.01f);
-    CHECK_FIELD(b.target_deg += 1.0f);
+    // legacy_target_deg is not compared: nothing reads it.
     CHECK_FIELD(b.mode = LEVEL_MODE_ANGLE);
     CHECK_FIELD(b.brightness_pct--);
     CHECK_FIELD(b.dim_brightness_pct++);
@@ -536,6 +569,9 @@ int main(void)
     RUN_TEST(test_validate_uses_named_limits);
     RUN_TEST(test_fixup_repairs_cross_field_rules);
     RUN_TEST(test_to_json_defaults);
+    RUN_TEST(test_settings_json_has_no_target);
+    RUN_TEST(test_target_write_is_ignored);
+    RUN_TEST(test_legacy_fields_survive_a_save);
     RUN_TEST(test_to_json_buffer_too_small);
     RUN_TEST(test_worst_case_json_fits);
     RUN_TEST(test_session_json_keys);

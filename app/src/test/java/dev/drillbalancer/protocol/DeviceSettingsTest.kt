@@ -9,7 +9,7 @@ import kotlin.random.Random
 class DeviceSettingsTest {
     // settings_to_json(settings_defaults()), as test_settings.c expects it.
     private val defaultsJson =
-        "{\"tol\":0.5,\"near\":2,\"target\":45,\"mode\":\"wall\",\"bright\":100,\"dim_bright\":20," +
+        "{\"tol\":0.5,\"near\":2,\"mode\":\"wall\",\"bright\":100,\"dim_bright\":20," +
             "\"dim_s\":30,\"sleep_s\":120,\"off_min\":60,\"ble\":true,\"stale_s\":60,\"dot_inv\":false," +
             "\"cal\":{\"mount\":false,\"accel\":false},\"ver\":1}"
 
@@ -26,15 +26,25 @@ class DeviceSettingsTest {
     }
 
     @Test
+    fun parsesWithoutTarget() {
+        // The device no longer sends "target": the JSON is complete without it.
+        assertTrue(!defaultsJson.contains("target"))
+        assertTrue(DeviceSettings.parse(defaultsJson) is Decoded.Ok)
+        assertTrue(parse(defaultsJson).isValid)
+        // Older firmware still sends it: it is ignored.
+        val old = defaultsJson.replace("\"mode\"", "\"target\":45,\"mode\"")
+        assertEquals(d, parse(old))
+    }
+
+    @Test
     fun parsesNonDefaultDeviceOutput() {
         // %.6g / %.9g output of settings_to_json, calibrations stored
-        val json = "{\"tol\":0.0512345678,\"near\":19.987654,\"target\":-89.5,\"mode\":\"angle\",\"bright\":10," +
+        val json = "{\"tol\":0.0512345678,\"near\":19.987654,\"mode\":\"angle\",\"bright\":10," +
             "\"dim_bright\":1,\"dim_s\":600,\"sleep_s\":3600,\"off_min\":0,\"ble\":false,\"stale_s\":600," +
             "\"dot_inv\":true,\"cal\":{\"mount\":true,\"accel\":true},\"ver\":1}"
         val s = parse(json)
         assertEquals(0.0512345678f, s.toleranceDeg)
         assertEquals(19.987654f, s.nearDeg)
-        assertEquals(-89.5f, s.targetDeg)
         assertEquals(LevelMode.ANGLE, s.mode)
         assertEquals(CalState(mount = true, accel = true), s.cal)
         assertFalse(s.bleEnabled)
@@ -91,16 +101,6 @@ class DeviceSettingsTest {
         assertInvalid(d.copy(nearDeg = Float.NaN), SettingsField.NEAR)
         // test_settings.c: {"near":0.4} with tol 0.5 is a range error
         assertInvalid(d.copy(nearDeg = 0.4f), SettingsField.NEAR)
-    }
-
-    @Test
-    fun targetLimits() {
-        assertInvalid(d.copy(targetDeg = 90f))
-        assertInvalid(d.copy(targetDeg = -90f))
-        assertInvalid(d.copy(targetDeg = 90.00001f), SettingsField.TARGET)
-        assertInvalid(d.copy(targetDeg = -90.00001f), SettingsField.TARGET)
-        assertInvalid(d.copy(targetDeg = 91f), SettingsField.TARGET)
-        assertInvalid(d.copy(targetDeg = Float.NEGATIVE_INFINITY), SettingsField.TARGET)
     }
 
     @Test
@@ -165,12 +165,12 @@ class DeviceSettingsTest {
     @Test
     fun everyFieldEncodes() {
         val edited = d.copy(
-            toleranceDeg = 1.25f, nearDeg = 7.5f, targetDeg = -30f, mode = LevelMode.ANGLE, brightnessPct = 80,
+            toleranceDeg = 1.25f, nearDeg = 7.5f, mode = LevelMode.ANGLE, brightnessPct = 80,
             dimBrightnessPct = 5, dimAfterS = 45, sleepAfterS = 300, offAfterMin = 0, bleEnabled = false, yawStaleS = 120,
             dotInvert = true,
         )
         assertEquals(
-            "{\"tol\":1.25,\"near\":7.5,\"target\":-30,\"mode\":\"angle\",\"bright\":80,\"dim_bright\":5," +
+            "{\"tol\":1.25,\"near\":7.5,\"mode\":\"angle\",\"bright\":80,\"dim_bright\":5," +
                 "\"dim_s\":45,\"sleep_s\":300,\"off_min\":0,\"ble\":false,\"stale_s\":120,\"dot_inv\":true}",
             SettingsUpdate.diff(d, edited).toJson(),
         )
@@ -199,9 +199,9 @@ class DeviceSettingsTest {
 
     @Test
     fun zeroAndSignedZeroAreNotAChange() {
-        val a = d.copy(targetDeg = 0f)
-        assertTrue(SettingsUpdate.diff(a, a.copy(targetDeg = -0f)).isEmpty)
-        assertEquals("{\"target\":0}", SettingsUpdate.diff(d, a).toJson())
+        val a = d.copy(toleranceDeg = 0f)
+        assertTrue(SettingsUpdate.diff(a, a.copy(toleranceDeg = -0f)).isEmpty)
+        assertEquals("{\"tol\":0}", SettingsUpdate.diff(d, a).toJson())
     }
 
     // ---- float formatting ----

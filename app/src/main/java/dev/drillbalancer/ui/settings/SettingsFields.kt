@@ -15,7 +15,7 @@ import kotlin.math.roundToLong
 
 /** The numeric fields the settings screen edits, in its order. */
 val NUMERIC_FIELDS = listOf(
-    SettingsField.TOL, SettingsField.NEAR, SettingsField.TARGET,
+    SettingsField.TOL, SettingsField.NEAR,
     SettingsField.BRIGHT, SettingsField.DIM_BRIGHT,
     SettingsField.DIM_S, SettingsField.SLEEP_S, SettingsField.OFF_MIN,
     SettingsField.STALE_S,
@@ -25,7 +25,6 @@ val SettingsField.label: String
     get() = when (this) {
         SettingsField.TOL -> "Tolerance (green)"
         SettingsField.NEAR -> "Near band (amber)"
-        SettingsField.TARGET -> "Target angle"
         SettingsField.MODE -> "Mode at start"
         SettingsField.BRIGHT -> "Brightness"
         SettingsField.DIM_BRIGHT -> "Dimmed brightness"
@@ -41,7 +40,6 @@ val SettingsField.help: String
     get() = when (this) {
         SettingsField.TOL -> "Shown green within this deviation."
         SettingsField.NEAR -> "Shown amber within this deviation. At least the tolerance."
-        SettingsField.TARGET -> "Angle mode: the elevation to drill at."
         SettingsField.MODE -> ""
         SettingsField.BRIGHT -> ""
         SettingsField.DIM_BRIGHT -> "At most the brightness."
@@ -55,12 +53,12 @@ val SettingsField.help: String
 
 /** Whether the field holds whole numbers (all but the angles). */
 val SettingsField.isInteger: Boolean
-    get() = this != SettingsField.TOL && this != SettingsField.NEAR && this != SettingsField.TARGET
+    get() = this != SettingsField.TOL && this != SettingsField.NEAR
 
 /** The unit typed values are in. */
 val SettingsField.unit: String
     get() = when (this) {
-        SettingsField.TOL, SettingsField.NEAR, SettingsField.TARGET -> "°"
+        SettingsField.TOL, SettingsField.NEAR -> "°"
         SettingsField.BRIGHT, SettingsField.DIM_BRIGHT -> "%"
         SettingsField.DIM_S, SettingsField.SLEEP_S, SettingsField.STALE_S -> "s"
         SettingsField.OFF_MIN -> "min"
@@ -71,7 +69,6 @@ val SettingsField.unit: String
 fun DeviceSettings.display(field: SettingsField): String = when (field) {
     SettingsField.TOL -> formatFixed(toleranceDeg, 2, suffix = "°")
     SettingsField.NEAR -> formatFixed(nearDeg, 2, suffix = "°")
-    SettingsField.TARGET -> formatFixed(targetDeg, 1, suffix = "°")
     SettingsField.BRIGHT -> "$brightnessPct %"
     SettingsField.DIM_BRIGHT -> "$dimBrightnessPct %"
     SettingsField.DIM_S -> formatDuration(dimAfterS)
@@ -87,7 +84,6 @@ fun DeviceSettings.display(field: SettingsField): String = when (field) {
 fun DeviceSettings.rawValue(field: SettingsField): Float = when (field) {
     SettingsField.TOL -> toleranceDeg
     SettingsField.NEAR -> nearDeg
-    SettingsField.TARGET -> targetDeg
     SettingsField.BRIGHT -> brightnessPct.toFloat()
     SettingsField.DIM_BRIGHT -> dimBrightnessPct.toFloat()
     SettingsField.DIM_S -> dimAfterS.toFloat()
@@ -106,7 +102,6 @@ fun DeviceSettings.range(field: SettingsField): ClosedFloatingPointRange<Float> 
     when (field) {
         SettingsField.TOL -> TOL_MIN_DEG..TOL_MAX_DEG
         SettingsField.NEAR -> toleranceDeg..NEAR_MAX_DEG
-        SettingsField.TARGET -> -TARGET_MAX_DEG..TARGET_MAX_DEG
         SettingsField.BRIGHT -> BRIGHT_MIN_PCT.toFloat()..BRIGHT_MAX_PCT.toFloat()
         SettingsField.DIM_BRIGHT -> DIM_BRIGHT_MIN_PCT.toFloat()..brightnessPct.toFloat()
         SettingsField.DIM_S -> DIM_MIN_S.toFloat()..DIM_MAX_S.toFloat()
@@ -118,13 +113,12 @@ fun DeviceSettings.range(field: SettingsField): ClosedFloatingPointRange<Float> 
 }
 
 /**
- * [v] on the grid the screen shows: 0.01° for tol and near, 0.1° for target, rounded like
+ * [v] on the grid the screen shows: 0.01° for tol and near, rounded like
  * formatFixed() (half away from zero), so a stored value is the one displayed.
  */
 fun SettingsField.round(v: Float): Float {
     val scale = when (this) {
         SettingsField.TOL, SettingsField.NEAR -> 100f
-        SettingsField.TARGET -> 10f
         else -> return v
     }
     val n = (abs(v) * scale).roundToLong()
@@ -135,7 +129,6 @@ fun SettingsField.round(v: Float): Float {
 fun DeviceSettings.with(field: SettingsField, v: Float): DeviceSettings = when (field) {
     SettingsField.TOL -> copy(toleranceDeg = field.round(v))
     SettingsField.NEAR -> copy(nearDeg = field.round(v))
-    SettingsField.TARGET -> copy(targetDeg = field.round(v))
     SettingsField.BRIGHT -> copy(brightnessPct = v.roundToInt())
     SettingsField.DIM_BRIGHT -> copy(dimBrightnessPct = v.roundToInt())
     SettingsField.DIM_S -> copy(dimAfterS = v.roundToInt())
@@ -162,10 +155,9 @@ fun parseEntry(text: String): Float? = text.trim().replace(',', '.').toFloatOrNu
 fun rangeText(field: SettingsField, r: ClosedFloatingPointRange<Float>) =
     "${plainValue(field, r.start)} to ${plainValue(field, r.endInclusive)} ${field.unit}"
 
-/** A value as typed: "0.50", "45.0", "30". */
+/** A value as typed: "0.50", "30". */
 fun plainValue(field: SettingsField, v: Float): String = when (field) {
     SettingsField.TOL, SettingsField.NEAR -> formatFixed(v, 2)
-    SettingsField.TARGET -> formatFixed(v, 1)
     else -> v.roundToInt().toString()
 }
 
@@ -194,10 +186,6 @@ fun DeviceSettings.step(field: SettingsField, dir: Int): DeviceSettings = with(S
             val t = (nearDeg * 100f).roundToInt()
             val step = if (if (up) t < 500 else t <= 500) 25 else 100
             copy(nearDeg = minOf(NEAR_MAX_DEG, maxOf(toleranceDeg, gridStep(t, step, d) / 100f)))
-        }
-        SettingsField.TARGET -> {
-            val max = (TARGET_MAX_DEG * 10f).roundToInt()
-            copy(targetDeg = gridStep((targetDeg * 10f).roundToInt(), 10, d).coerceIn(-max, max) / 10f)
         }
         SettingsField.BRIGHT -> copy(brightnessPct = gridStep(brightnessPct, 10, d).coerceIn(BRIGHT_MIN_PCT, BRIGHT_MAX_PCT))
         // Not on the device's screen: steps of 5 %

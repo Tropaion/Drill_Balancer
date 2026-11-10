@@ -5,7 +5,7 @@ import unittest
 
 from simtest import DeviceTest
 
-DEFAULTS = {"tol": 0.5, "near": 2, "target": 45, "mode": "wall", "bright": 100,
+DEFAULTS = {"tol": 0.5, "near": 2, "mode": "wall", "bright": 100,
             "dim_bright": 20, "dim_s": 30, "sleep_s": 120, "off_min": 60, "ble": True,
             "stale_s": 60, "dot_inv": False, "cal": {"mount": False, "accel": False}, "ver": 1}
 
@@ -15,7 +15,7 @@ class ConfigTest(DeviceTest):
         self.assertEqual(self.config(), DEFAULTS)
 
     def test_round_trip_and_persistence(self):
-        upd = {"tol": 0.2, "near": 1.5, "target": -12.5, "mode": "floor", "bright": 80,
+        upd = {"tol": 0.2, "near": 1.5, "mode": "floor", "bright": 80,
                "dim_bright": 10, "dim_s": 15, "sleep_s": 300, "off_min": 0, "stale_s": 120,
                "dot_inv": True}
         self.assertEqual(self.write_config(**upd), 0)
@@ -91,11 +91,16 @@ class ConfigTest(DeviceTest):
         self.connect(trusted=False)
         self.assertEqual(json.loads(first + self.dev.read_char("config", 22))["mode"], "wall")
 
+    def test_target_write_is_ignored(self):
+        # An older app still sends it: the write succeeds, the JSON has no target.
+        self.assertEqual(self.write_config(target=30), 0)
+        self.assertEqual(self.config(), DEFAULTS)
+
     def test_device_settings_screen(self):
         # As the device's own settings screen: merged onto the stored settings.
         self.assertEqual(self.dev.ui_settings('{"tol":3,"near":3}'), 0)
         cfg = self.config()
-        self.assertEqual((cfg["tol"], cfg["near"], cfg["target"]), (3, 3, 45))
+        self.assertEqual((cfg["tol"], cfg["near"]), (3, 3))
         # A BLE write made against the old values now breaks near >= tol.
         self.assertEqual(self.write_config(near=2.5), 0x82)
         self.assertEqual(self.dev.ui_settings('{"near":1}'), 1)

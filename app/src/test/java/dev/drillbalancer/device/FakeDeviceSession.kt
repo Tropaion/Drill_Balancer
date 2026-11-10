@@ -538,8 +538,7 @@ class FakeDeviceSession(
         val by = bubbleY - (z?.get(3) ?: 0f)
         val s = stored
         val deviation = when (s.mode) {
-            LevelMode.WALL -> el
-            LevelMode.ANGLE -> el - s.targetDeg
+            LevelMode.WALL, LevelMode.ANGLE -> el   // the device no longer has an angle target
             LevelMode.FLOOR -> hypot(bx, by)
         }
         var flags = 0

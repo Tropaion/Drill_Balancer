@@ -24,7 +24,6 @@ static const char *TAG = "ui_settings";
 static const char *const FIELD_NAMES[UI_FIELD_COUNT] = {
     [UI_FIELD_TOLERANCE] = "Tolerance (green)",
     [UI_FIELD_NEAR] = "Near band (amber)",
-    [UI_FIELD_TARGET] = "Target angle",
     [UI_FIELD_BRIGHTNESS] = "Brightness",
     [UI_FIELD_DIM_S] = "Dim after",
     [UI_FIELD_SLEEP_S] = "Sleep after",
@@ -355,7 +354,6 @@ lv_obj_t *ui_settings_create(void)
 
     stepper_new(UI_FIELD_TOLERANCE);
     stepper_new(UI_FIELD_NEAR);
-    stepper_new(UI_FIELD_TARGET);
     s.dot_sw = switch_row_new("Invert dot", &s.edit.dot_invert, UI_C_GREEN);
     stepper_new(UI_FIELD_BRIGHTNESS);
     stepper_new(UI_FIELD_DIM_S);

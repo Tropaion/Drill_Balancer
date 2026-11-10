@@ -87,7 +87,7 @@ class FakeDeviceSessionTest {
         s.sendCommand(Command.SetMode(LevelMode.ANGLE))   // shares the zero with WALL
         assertTrue(s.angle.value!!.zeroSet)
         assertEquals(LevelMode.ANGLE, s.settings.value!!.mode)
-        assertEquals(-45f, s.angle.value!!.deviationDeg, 0.01f)
+        assertEquals(0f, s.angle.value!!.deviationDeg, 0.01f)   // no target any more: the elevation
         s.sendCommand(Command.SetMode(LevelMode.FLOOR))   // other family: zero cleared
         assertFalse(s.angle.value!!.zeroSet)
         s.sendCommand(Command.Zero)

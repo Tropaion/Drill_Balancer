@@ -403,8 +403,8 @@ function drawStatusBar(s) {
 // (ui_settings_format(), in the snapshot) but are not mirrored; the action
 // buttons work. In ui_field_t order.
 const FIELDS = [
-  "Tolerance (green)", "Near band (amber)", "Target angle", "Brightness", "Dim after",
-  "Sleep after", "Power off after sleep",
+  "Tolerance (green)", "Near band (amber)", "Brightness", "Dim after", "Sleep after",
+  "Power off after sleep",
 ];
 
 function drawSettings(s, view) {
@@ -421,8 +421,8 @@ function drawSettings(s, view) {
     {h: 19, kind: "ver"},
     {h: 66, kind: "act", id: "set_back", str: "Back", back: true, color: COL.green, nominal: 300, min: 240},
   ];
-  // ui_settings.c: the dot switch follows the target stepper
-  rows.splice(2 + 3, 0, {h: 72, kind: "switch", str: "Invert dot", key: "dot_inv", color: COL.green, nominal: 330, min: 280});
+  // ui_settings.c: the dot switch follows the near stepper
+  rows.splice(2 + 2, 0, {h: 72, kind: "switch", str: "Invert dot", key: "dot_inv", color: COL.green, nominal: 330, min: 280});
   let y = 70;
   for (const row of rows) { row.y = y; y += row.h + 30; }
   settingsContentH = y - 30 + 150;

@@ -51,7 +51,6 @@ class SettingsFieldsTest {
         assertEquals(0, d.copy(offAfterMin = 15).step(SettingsField.OFF_MIN, -1).offAfterMin)
         assertEquals(1440, d.copy(offAfterMin = 1440).step(SettingsField.OFF_MIN, 1).offAfterMin)
         assertEquals(10, d.copy(yawStaleS = 10).step(SettingsField.STALE_S, -1).yawStaleS)
-        assertEquals(-90f, d.steps(SettingsField.TARGET, -1, 200).targetDeg)
         assertEquals(1, d.copy(dimBrightnessPct = 5).step(SettingsField.DIM_BRIGHT, -1).dimBrightnessPct)
         // brightness down to 10 % pulls the dimmed brightness with it
         assertEquals(10, d.steps(SettingsField.BRIGHT, -1, 10).dimBrightnessPct)
@@ -74,7 +73,7 @@ class SettingsFieldsTest {
         fun i(lo: Int, hi: Int) = rnd.nextInt(lo, hi + 1)
         repeat(2000) {
             val s = d.copy(
-                toleranceDeg = f(-1f, 7f), nearDeg = f(-1f, 25f), targetDeg = f(-100f, 100f),
+                toleranceDeg = f(-1f, 7f), nearDeg = f(-1f, 25f),
                 brightnessPct = i(-5, 110), dimBrightnessPct = i(-5, 110),
                 dimAfterS = i(0, 700), sleepAfterS = i(0, 4000), offAfterMin = i(-5, 1500), yawStaleS = i(0, 700),
             )
@@ -91,8 +90,8 @@ class SettingsFieldsTest {
         assertEquals("Enter a value from 0.50 to 20.00 °.", d.entryError(SettingsField.NEAR, "0.4"))
         assertEquals("Enter a whole number.", d.entryError(SettingsField.DIM_S, "12.5"))
         assertEquals("Enter a number.", d.entryError(SettingsField.BRIGHT, "abc"))
-        assertEquals("Enter a number.", d.entryError(SettingsField.TARGET, "NaN"))
-        assertNull(d.entryError(SettingsField.TARGET, "-90"))
+        assertEquals("Enter a number.", d.entryError(SettingsField.TOL, "NaN"))
+        assertNull(d.entryError(SettingsField.TOL, "5"))
         assertEquals(d.copy(sleepAfterS = 600, dimAfterS = 600), d.with(SettingsField.DIM_S, 600f))
     }
 
@@ -100,8 +99,6 @@ class SettingsFieldsTest {
     fun typedAnglesAreRoundedToWhatTheScreenShows() {
         assertEquals(0.33f, d.with(SettingsField.TOL, 0.333f).toleranceDeg)
         assertEquals(2.47f, d.with(SettingsField.NEAR, 2.4689f).nearDeg)
-        assertEquals(12.3f, d.with(SettingsField.TARGET, 12.34f).targetDeg)
-        assertEquals(-12.4f, d.with(SettingsField.TARGET, -12.36f).targetDeg)
         // An off-grid tolerance set by another client: the near range reads as displayed,
         // and its own lower end is accepted (fixup() then lifts near to the tolerance).
         val off = d.copy(toleranceDeg = 0.333f)
@@ -115,7 +112,6 @@ class SettingsFieldsTest {
     @Test
     fun displayLikeTheDevice() {
         assertEquals("0.50°", d.display(SettingsField.TOL))
-        assertEquals("45.0°", d.display(SettingsField.TARGET))
         assertEquals("2 min", d.display(SettingsField.SLEEP_S))
         assertEquals("1 h", d.display(SettingsField.OFF_MIN))
         assertEquals("Never", d.copy(offAfterMin = 0).display(SettingsField.OFF_MIN))

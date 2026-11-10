@@ -76,9 +76,8 @@ fun LiveScreen(
             when {
                 !state.hasAngle -> Waiting()
                 !state.imuOk -> NoSensor()
-                state.mode == LevelMode.WALL -> Wall(state, angle)
                 state.mode == LevelMode.FLOOR -> Floor(state, angle)
-                else -> AngleMode(state, angle)
+                else -> Wall(state, angle)   // WALL, and ANGLE from older firmware
             }
         }
         Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -228,34 +227,6 @@ private fun BubbleXY(angle: () -> AnglePacket?) {
         "X ${formatDeg(a.bubbleXDeg, showPlus = true)}   Y ${formatDeg(a.bubbleYDeg, showPlus = true)}",
         style = MaterialTheme.typography.titleMedium,
         color = MaterialTheme.colorScheme.onSurfaceVariant,
-    )
-}
-
-// ---- angle: elevation against the target ----
-
-@Composable
-private fun AngleMode(state: LiveUiState, angle: () -> AnglePacket?) {
-    Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        StatusLine(angle)
-        Text(
-            "TARGET  ${formatDeg(state.targetDeg)}",
-            style = MaterialTheme.typography.headlineSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-        AngleNumbers(angle)
-    }
-}
-
-@Composable
-private fun AngleNumbers(angle: () -> AnglePacket?) {
-    val a = angle() ?: return
-    val c = DrillBalancerTheme.status.of(a.status)
-    FitNumber(formatDeg(a.elevationDeg), c)
-    Text(
-        "${formatDeg(a.deviationDeg, showPlus = true)} from target",
-        style = MaterialTheme.typography.headlineMedium,
-        color = c,
-        textAlign = TextAlign.Center,
     )
 }
 

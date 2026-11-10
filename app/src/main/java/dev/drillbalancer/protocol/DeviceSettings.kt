@@ -14,7 +14,6 @@ object SettingsLimits {
     const val TOL_MIN_DEG = 0.05f
     const val TOL_MAX_DEG = 5.0f
     const val NEAR_MAX_DEG = 20.0f       // minimum is the tolerance
-    const val TARGET_MAX_DEG = 90.0f     // target is -max .. max
     const val BRIGHT_MIN_PCT = 10
     const val BRIGHT_MAX_PCT = 100
     const val DIM_BRIGHT_MIN_PCT = 1     // maximum is the brightness
@@ -30,7 +29,6 @@ object SettingsLimits {
 enum class SettingsField(val key: String) {
     TOL("tol"),
     NEAR("near"),
-    TARGET("target"),
     MODE("mode"),
     BRIGHT("bright"),
     DIM_BRIGHT("dim_bright"),
@@ -54,7 +52,6 @@ data class CalState(val mount: Boolean = false, val accel: Boolean = false)
 data class DeviceSettings(
     @SerialName("tol") val toleranceDeg: Float,
     @SerialName("near") val nearDeg: Float,
-    @SerialName("target") val targetDeg: Float,
     @SerialName("mode") val mode: LevelMode,
     @SerialName("bright") val brightnessPct: Int,
     @SerialName("dim_bright") val dimBrightnessPct: Int,
@@ -77,7 +74,6 @@ data class DeviceSettings(
         buildSet {
             if (!inRange(toleranceDeg, TOL_MIN_DEG, TOL_MAX_DEG)) add(SettingsField.TOL)
             if (!inRange(nearDeg, toleranceDeg, NEAR_MAX_DEG)) add(SettingsField.NEAR)
-            if (!inRange(targetDeg, -TARGET_MAX_DEG, TARGET_MAX_DEG)) add(SettingsField.TARGET)
             if (brightnessPct !in BRIGHT_MIN_PCT..BRIGHT_MAX_PCT) add(SettingsField.BRIGHT)
             if (dimBrightnessPct !in DIM_BRIGHT_MIN_PCT..brightnessPct) add(SettingsField.DIM_BRIGHT)
             if (dimAfterS !in DIM_MIN_S..DIM_MAX_S) add(SettingsField.DIM_S)
@@ -104,7 +100,6 @@ data class DeviceSettings(
         val DEFAULTS = DeviceSettings(
             toleranceDeg = 0.5f,
             nearDeg = 2.0f,
-            targetDeg = 45.0f,
             mode = LevelMode.WALL,
             brightnessPct = 100,
             dimBrightnessPct = 20,
@@ -165,7 +160,6 @@ class SettingsUpdate(fields: Set<SettingsField>, val values: DeviceSettings) {
 private fun SettingsField.differs(a: DeviceSettings, b: DeviceSettings): Boolean = when (this) {
     SettingsField.TOL -> a.toleranceDeg != b.toleranceDeg
     SettingsField.NEAR -> a.nearDeg != b.nearDeg
-    SettingsField.TARGET -> a.targetDeg != b.targetDeg
     SettingsField.MODE -> a.mode != b.mode
     SettingsField.BRIGHT -> a.brightnessPct != b.brightnessPct
     SettingsField.DIM_BRIGHT -> a.dimBrightnessPct != b.dimBrightnessPct
@@ -180,7 +174,6 @@ private fun SettingsField.differs(a: DeviceSettings, b: DeviceSettings): Boolean
 private fun SettingsField.json(s: DeviceSettings): String = when (this) {
     SettingsField.TOL -> formatFloat(s.toleranceDeg)
     SettingsField.NEAR -> formatFloat(s.nearDeg)
-    SettingsField.TARGET -> formatFloat(s.targetDeg)
     SettingsField.MODE -> "\"${s.mode.key}\""
     SettingsField.BRIGHT -> s.brightnessPct.toString()
     SettingsField.DIM_BRIGHT -> s.dimBrightnessPct.toString()
@@ -195,7 +188,6 @@ private fun SettingsField.json(s: DeviceSettings): String = when (this) {
 private fun SettingsField.copy(from: DeviceSettings, to: DeviceSettings): DeviceSettings = when (this) {
     SettingsField.TOL -> to.copy(toleranceDeg = from.toleranceDeg)
     SettingsField.NEAR -> to.copy(nearDeg = from.nearDeg)
-    SettingsField.TARGET -> to.copy(targetDeg = from.targetDeg)
     SettingsField.MODE -> to.copy(mode = from.mode)
     SettingsField.BRIGHT -> to.copy(brightnessPct = from.brightnessPct)
     SettingsField.DIM_BRIGHT -> to.copy(dimBrightnessPct = from.dimBrightnessPct)

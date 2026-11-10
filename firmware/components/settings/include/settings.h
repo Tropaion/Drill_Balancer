@@ -8,7 +8,6 @@
 // ranges are the SETTINGS_*_MIN/MAX limits below:
 //   "tol"        float  deg   0.05 .. 5      tolerance (green)
 //   "near"       float  deg   tol .. 20      near band (amber)
-//   "target"     float  deg   -90 .. 90      elevation target, angle mode
 //   "mode"       string       "wall" | "floor" | "angle"
 //   "bright"     int    %     10 .. 100      active brightness
 //   "dim_bright" int    %     1 .. bright    dimmed brightness
@@ -42,7 +41,6 @@ extern "C" {
 #define SETTINGS_TOL_MIN_DEG 0.05f
 #define SETTINGS_TOL_MAX_DEG 5.0f
 #define SETTINGS_NEAR_MAX_DEG 20.0f
-#define SETTINGS_TARGET_MAX_DEG 90.0f      // target is -max .. max
 #define SETTINGS_BRIGHT_MIN_PCT 10
 #define SETTINGS_BRIGHT_MAX_PCT 100
 #define SETTINGS_DIM_BRIGHT_MIN_PCT 1
@@ -61,7 +59,10 @@ extern "C" {
 typedef struct {
     float tolerance_deg;
     float near_deg;
-    float target_deg;
+    // Stored by older firmware as the angle-mode target and never used now. It stays
+    // in the struct as it was, so an OTA rollback still loads the blob and a save
+    // writes it back unchanged. Only settings.c reads it.
+    float legacy_target_deg;
     level_mode_t mode;
 
     uint8_t brightness_pct;

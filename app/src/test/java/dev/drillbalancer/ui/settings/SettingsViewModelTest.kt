@@ -83,15 +83,15 @@ class SettingsViewModelTest {
     @Test
     fun editsSurviveChangesFromElsewhere() = runTest(main.dispatcher) {
         val (fake, _, vm) = setUp()
-        vm.step(SettingsField.TARGET, 1)        // 45.0 -> 46.0
+        vm.step(SettingsField.TOL, 1)           // 0.50 -> 0.55
         fake.sendCommand(Command.SetMode(LevelMode.FLOOR))
         val s = vm.state.value
         assertEquals(LevelMode.FLOOR, s.base!!.mode)
         assertEquals(LevelMode.FLOOR, s.edited!!.mode)
-        assertEquals(46f, s.edited.targetDeg)
-        assertEquals(setOf(SettingsField.TARGET), s.changed)
+        assertEquals(0.55f, s.edited.toleranceDeg)
+        assertEquals(setOf(SettingsField.TOL), s.changed)
         vm.save()
-        assertEquals("""{"target":46}""", fake.updates.single().toJson())
+        assertEquals("""{"tol":0.55}""", fake.updates.single().toJson())
     }
 
     @Test

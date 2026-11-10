@@ -313,22 +313,6 @@ static void test_near_never_below_tolerance(void)
     TEST_ASSERT_FALSE(ui_settings_step(&s, UI_FIELD_NEAR, +1));
 }
 
-static void test_target_steps_whole_degrees_within_range(void)
-{
-    s.target_deg = 89.0f;
-    ui_settings_step(&s, UI_FIELD_TARGET, +1);
-    TEST_ASSERT_FLOAT_WITHIN(1e-5f, 90.0f, s.target_deg);
-    TEST_ASSERT_FALSE(ui_settings_step(&s, UI_FIELD_TARGET, +1));
-    s.target_deg = -0.5f;
-    ui_settings_step(&s, UI_FIELD_TARGET, -1);
-    TEST_ASSERT_FLOAT_WITHIN(1e-5f, -1.0f, s.target_deg);
-    s.target_deg = -0.5f;
-    ui_settings_step(&s, UI_FIELD_TARGET, +1);
-    TEST_ASSERT_FLOAT_WITHIN(1e-5f, 0.0f, s.target_deg);
-    s.target_deg = -90.0f;
-    TEST_ASSERT_FALSE(ui_settings_step(&s, UI_FIELD_TARGET, -1));
-}
-
 static void test_brightness_drags_dim_brightness_down(void)
 {
     s.brightness_pct = 30;
@@ -409,10 +393,6 @@ static void test_steppers_reach_every_limit(void)
     TEST_ASSERT_EQUAL_FLOAT(SETTINGS_NEAR_MAX_DEG, s.near_deg);
     step_to_end(UI_FIELD_TOLERANCE, +1);
     TEST_ASSERT_EQUAL_FLOAT(SETTINGS_TOL_MAX_DEG, s.tolerance_deg);
-    step_to_end(UI_FIELD_TARGET, +1);
-    TEST_ASSERT_EQUAL_FLOAT(SETTINGS_TARGET_MAX_DEG, s.target_deg);
-    step_to_end(UI_FIELD_TARGET, -1);
-    TEST_ASSERT_EQUAL_FLOAT(-SETTINGS_TARGET_MAX_DEG, s.target_deg);
     step_to_end(UI_FIELD_BRIGHTNESS, -1);
     TEST_ASSERT_EQUAL_UINT8(SETTINGS_BRIGHT_MIN_PCT, s.brightness_pct);
     step_to_end(UI_FIELD_BRIGHTNESS, +1);
@@ -434,8 +414,6 @@ static void test_format_fields(void)
 {
     ui_settings_format(&s, UI_FIELD_TOLERANCE, buf, sizeof(buf));
     TEST_ASSERT_EQUAL_STRING("0.50" DEG, buf);
-    ui_settings_format(&s, UI_FIELD_TARGET, buf, sizeof(buf));
-    TEST_ASSERT_EQUAL_STRING("45.0" DEG, buf);
     ui_settings_format(&s, UI_FIELD_BRIGHTNESS, buf, sizeof(buf));
     TEST_ASSERT_EQUAL_STRING("100 %", buf);
     s.dim_after_s = 45;
@@ -785,7 +763,6 @@ int main(void)
     RUN_TEST(test_tolerance_steps_and_limits);
     RUN_TEST(test_tolerance_above_near_pushes_near);
     RUN_TEST(test_near_never_below_tolerance);
-    RUN_TEST(test_target_steps_whole_degrees_within_range);
     RUN_TEST(test_brightness_drags_dim_brightness_down);
     RUN_TEST(test_times_use_presets_and_keep_sleep_after_dim);
     RUN_TEST(test_random_steps_always_validate);

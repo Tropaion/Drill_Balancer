@@ -84,7 +84,7 @@ fun SettingsScreen(state: SettingsUiState, actions: SettingsActions, modifier: M
                 return@Column
             }
             SectionTitle("Level")
-            for (f in listOf(SettingsField.TOL, SettingsField.NEAR, SettingsField.TARGET)) {
+            for (f in listOf(SettingsField.TOL, SettingsField.NEAR)) {
                 NumberRow(f, s, state, actions) { entry = f }
             }
             ModeRow(s.mode, SettingsField.MODE in state.changed, actions.setMode)

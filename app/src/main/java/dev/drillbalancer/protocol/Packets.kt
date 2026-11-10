@@ -12,7 +12,7 @@ import kotlin.math.abs
 enum class LevelMode(val wire: Int, val key: String) {
     @SerialName("wall") WALL(0, "wall"),     // horizontal hole: elevation 0 plus relative yaw
     @SerialName("floor") FLOOR(1, "floor"),  // vertical hole (floor or ceiling): 2D bubble
-    @SerialName("angle") ANGLE(2, "angle");  // elevation against the target angle
+    @SerialName("angle") ANGLE(2, "angle");  // reserved, never produced now; shown as the wall view
 
     companion object {
         fun fromWire(v: Int): LevelMode? = entries.firstOrNull { it.wire == v }

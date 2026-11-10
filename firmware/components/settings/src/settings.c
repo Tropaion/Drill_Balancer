@@ -17,6 +17,10 @@ _Static_assert(offsetof(settings_t, yaw_stale_s) == offsetof(settings_t, ble_ena
 #define MAX_MOUNT_OFFSET_DEG SETTINGS_MAX_MOUNT_OFFSET_DEG
 #define UNIT_TOLERANCE 1e-3f
 
+// The range the stored legacy target was checked against, so a blob that loaded
+// before still loads. The value is otherwise unused.
+#define LEGACY_TARGET_MAX_DEG 90.0f
+
 static const char *const MODE_NAMES[LEVEL_MODE_COUNT] = {
     [LEVEL_MODE_WALL] = "wall",
     [LEVEL_MODE_FLOOR] = "floor",
@@ -28,7 +32,7 @@ settings_t settings_defaults(void)
     return (settings_t){
         .tolerance_deg = 0.5f,
         .near_deg = 2.0f,
-        .target_deg = 45.0f,
+        .legacy_target_deg = 45.0f,
         .mode = LEVEL_MODE_WALL,
         .brightness_pct = 100,
         .dim_brightness_pct = 20,
@@ -76,7 +80,7 @@ bool settings_validate(const settings_t *s)
 {
     if (!in_range(s->tolerance_deg, SETTINGS_TOL_MIN_DEG, SETTINGS_TOL_MAX_DEG) ||
         !in_range(s->near_deg, s->tolerance_deg, SETTINGS_NEAR_MAX_DEG) ||
-        !in_range(s->target_deg, -SETTINGS_TARGET_MAX_DEG, SETTINGS_TARGET_MAX_DEG) ||
+        !in_range(s->legacy_target_deg, -LEGACY_TARGET_MAX_DEG, LEGACY_TARGET_MAX_DEG) ||
         (unsigned)s->mode >= LEVEL_MODE_COUNT) {
         return false;
     }
@@ -105,7 +109,7 @@ bool settings_validate(const settings_t *s)
 bool settings_equal(const settings_t *a, const settings_t *b)
 {
     return a->tolerance_deg == b->tolerance_deg && a->near_deg == b->near_deg &&
-           a->target_deg == b->target_deg && a->mode == b->mode &&
+           a->mode == b->mode &&
            a->brightness_pct == b->brightness_pct &&
            a->dim_brightness_pct == b->dim_brightness_pct && a->dim_after_s == b->dim_after_s &&
            a->sleep_after_s == b->sleep_after_s && a->off_after_min == b->off_after_min &&
@@ -160,18 +164,17 @@ int settings_to_json(const settings_t *s, char *buf, size_t buf_len)
     if (buf == NULL || buf_len == 0) {
         return -1;
     }
-    char tol[24], near[24], target[24];
+    char tol[24], near[24];
     format_float(tol, sizeof(tol), s->tolerance_deg);
     format_float(near, sizeof(near), s->near_deg);
-    format_float(target, sizeof(target), s->target_deg);
     const char *mode = (unsigned)s->mode < LEVEL_MODE_COUNT ? MODE_NAMES[s->mode] : "wall";
 
     int n = snprintf(buf, buf_len,
-                     "{\"tol\":%s,\"near\":%s,\"target\":%s,\"mode\":\"%s\","
+                     "{\"tol\":%s,\"near\":%s,\"mode\":\"%s\","
                      "\"bright\":%u,\"dim_bright\":%u,\"dim_s\":%u,\"sleep_s\":%u,"
                      "\"off_min\":%u,\"ble\":%s,\"stale_s\":%u,\"dot_inv\":%s,"
                      "\"cal\":{\"mount\":%s,\"accel\":%s},\"ver\":%d}",
-                     tol, near, target, mode,
+                     tol, near, mode,
                      (unsigned)s->brightness_pct, (unsigned)s->dim_brightness_pct,
                      (unsigned)s->dim_after_s, (unsigned)s->sleep_after_s,
                      (unsigned)s->off_after_min, s->ble_enabled ? "true" : "false",
@@ -328,7 +331,6 @@ static settings_json_result_t apply_object(settings_t *t, const cJSON *o)
 #define READ(call) do { if ((r = (call)) != SETTINGS_JSON_OK) return r; } while (0)
     READ(read_float(o, "tol", &t->tolerance_deg));
     READ(read_float(o, "near", &t->near_deg));
-    READ(read_float(o, "target", &t->target_deg));
     READ(read_mode(o, "mode", &t->mode));
     READ(read_u8(o, "bright", &t->brightness_pct));
     READ(read_u8(o, "dim_bright", &t->dim_brightness_pct));

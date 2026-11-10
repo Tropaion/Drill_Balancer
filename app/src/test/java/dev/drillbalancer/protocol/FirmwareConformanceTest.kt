@@ -208,7 +208,6 @@ class FirmwareConformanceTest {
         assertEquals(SettingsLimits.TOL_MIN_DEG, f["SETTINGS_TOL_MIN_DEG"])
         assertEquals(SettingsLimits.TOL_MAX_DEG, f["SETTINGS_TOL_MAX_DEG"])
         assertEquals(SettingsLimits.NEAR_MAX_DEG, f["SETTINGS_NEAR_MAX_DEG"])
-        assertEquals(SettingsLimits.TARGET_MAX_DEG, f["SETTINGS_TARGET_MAX_DEG"])
         val i = FirmwareSources.intDefines(settingsH).filterKeys { it.startsWith("SETTINGS_") && it != "SETTINGS_JSON_MAX" }
         assertSameMap(
             "SETTINGS_* int limits", i,
@@ -223,7 +222,7 @@ class FirmwareConformanceTest {
         )
         // Every float limit of the header is covered above (plus the mount offset, not a setting).
         assertEquals(
-            setOf("SETTINGS_TOL_MIN_DEG", "SETTINGS_TOL_MAX_DEG", "SETTINGS_NEAR_MAX_DEG", "SETTINGS_TARGET_MAX_DEG", "SETTINGS_MAX_MOUNT_OFFSET_DEG"),
+            setOf("SETTINGS_TOL_MIN_DEG", "SETTINGS_TOL_MAX_DEG", "SETTINGS_NEAR_MAX_DEG", "SETTINGS_MAX_MOUNT_OFFSET_DEG"),
             f.keys,
         )
     }
@@ -253,7 +252,6 @@ class FirmwareConformanceTest {
         val d = DeviceSettings.DEFAULTS
         assertEquals(v["tolerance_deg"]!!.removeSuffix("f").toFloat(), d.toleranceDeg)
         assertEquals(v["near_deg"]!!.removeSuffix("f").toFloat(), d.nearDeg)
-        assertEquals(v["target_deg"]!!.removeSuffix("f").toFloat(), d.targetDeg)
         assertEquals(v["mode"], "LEVEL_MODE_${d.mode.name}")
         assertEquals(v["brightness_pct"]!!.toInt(), d.brightnessPct)
         assertEquals(v["dim_brightness_pct"]!!.toInt(), d.dimBrightnessPct)

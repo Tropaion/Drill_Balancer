@@ -342,12 +342,11 @@ static const uint16_t OFF_PRESETS_MIN[] = {0, 15, 30, 60, 120, 240, 480, 720, 14
 // The step grids work in integer hundredths / tenths of a degree.
 #define TOL_MIN_H ((int32_t)lroundf(SETTINGS_TOL_MIN_DEG * 100.0f))
 #define TOL_MAX_H ((int32_t)lroundf(SETTINGS_TOL_MAX_DEG * 100.0f))
-#define TARGET_MAX_T ((int32_t)lroundf(SETTINGS_TARGET_MAX_DEG * 10.0f))
 
 static bool edited_fields_equal(const settings_t *a, const settings_t *b)
 {
     return a->tolerance_deg == b->tolerance_deg && a->near_deg == b->near_deg &&
-           a->target_deg == b->target_deg && a->brightness_pct == b->brightness_pct &&
+           a->brightness_pct == b->brightness_pct &&
            a->dim_brightness_pct == b->dim_brightness_pct && a->dim_after_s == b->dim_after_s &&
            a->sleep_after_s == b->sleep_after_s && a->off_after_min == b->off_after_min &&
            a->ble_enabled == b->ble_enabled && a->dot_invert == b->dot_invert;
@@ -372,12 +371,6 @@ bool ui_settings_step(settings_t *s, ui_field_t f, int dir)
         int32_t step = (dir > 0 ? t < 500 : t <= 500) ? 25 : 100;
         float v = (float)grid_step(t, step, dir) / 100.0f;
         s->near_deg = fminf(SETTINGS_NEAR_MAX_DEG, fmaxf(s->tolerance_deg, v));
-        break;
-    }
-    case UI_FIELD_TARGET: {
-        int32_t t = (int32_t)lroundf(s->target_deg * 10.0f);
-        t = clamp_i32(grid_step(t, 10, dir), -TARGET_MAX_T, TARGET_MAX_T);
-        s->target_deg = (float)t / 10.0f;
         break;
     }
     case UI_FIELD_BRIGHTNESS:
@@ -427,9 +420,6 @@ void ui_settings_format(const settings_t *s, ui_field_t f, char *buf, size_t len
     case UI_FIELD_NEAR:
         ui_fmt_fixed(buf, len, s->near_deg, 2, false, DEG_SIGN);
         break;
-    case UI_FIELD_TARGET:
-        ui_fmt_deg(buf, len, s->target_deg, false);
-        break;
     case UI_FIELD_BRIGHTNESS:
         snprintf(buf, len, "%u %%", (unsigned)s->brightness_pct);
         break;
@@ -464,7 +454,6 @@ void ui_settings_merge(settings_t *cur, const settings_t *base, const settings_t
 {
     MERGE_FIELD(tolerance_deg);
     MERGE_FIELD(near_deg);
-    MERGE_FIELD(target_deg);
     MERGE_FIELD(brightness_pct);
     MERGE_FIELD(dim_brightness_pct);
     MERGE_FIELD(dim_after_s);
