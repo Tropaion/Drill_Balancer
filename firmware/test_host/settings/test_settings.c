@@ -61,7 +61,6 @@ static void test_level_config(void)
     level_config_t c = settings_level_config(&s);
     TEST_ASSERT_EQUAL_FLOAT(0.3f, c.tolerance_deg);
     TEST_ASSERT_EQUAL_FLOAT(1.5f, c.near_deg);
-    TEST_ASSERT_EQUAL_FLOAT(-30.0f, c.target_deg);
     TEST_ASSERT_EQUAL_UINT32(90000, c.yaw_stale_ms);
     // Not calibrated: the measured axis is ignored.
     TEST_ASSERT_EQUAL_FLOAT(0.0f, c.drill_axis.x);

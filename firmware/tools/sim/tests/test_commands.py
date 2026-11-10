@@ -38,8 +38,9 @@ class CommandTest(DeviceTest):
         self.assertEqual(self.cmd("clear-zero"), 0)
         self.assertFalse(self.angle().flags & F["zero_set"])
 
+        # The stored mode no longer drives the view: the pose does (wall here).
         self.assertEqual(self.cmd("set-mode", "angle"), 0)
-        self.assertEqual(self.angle().mode, 2)
+        self.assertEqual(self.angle().mode, 0)
         self.assertEqual(self.config()["mode"], "angle")
 
         self.assertEqual(self.cmd("mount-cal-start"), 0)
@@ -66,6 +67,37 @@ class CommandTest(DeviceTest):
         # A finish without a start does nothing.
         self.assertEqual(self.cmd("mount-cal-finish"), 0)
         self.assertEqual(self.status().cal_last_result, 1)
+
+    def test_view_follows_the_pose(self):
+        self.settle()
+        self.assertEqual(self.angle().mode, 0)
+        self.assertEqual(self.cmd("zero"), 0)
+        self.dev.physics.set_drill(elevation=-90.0)     # flat: bit down
+        self.settle()
+        self.assertEqual(self.angle().mode, 1)
+        self.assertEqual(self.cmd("zero"), 0)           # zero is refused here
+        self.assertTrue(self.angle().flags & F["zero_set"])
+        self.dev.physics.set_drill(elevation=0.0)       # upright again
+        self.settle()
+        a = self.angle()
+        self.assertEqual(a.mode, 0)
+        self.assertTrue(a.flags & F["zero_set"], "the wall zero survives the trip")
+        self.dev.physics.set_drill(elevation=-90.0)
+        self.settle()
+        self.assertEqual(self.cmd("clear-zero"), 0)
+        self.assertFalse(self.angle().flags & F["zero_set"])
+        self.assertEqual(self.cmd("zero"), 0)
+        self.assertFalse(self.angle().flags & F["zero_set"], "no zero in the bubble view")
+
+    def test_view_kept_while_imu_lost(self):
+        self.dev.physics.set_drill(elevation=-90.0)
+        self.settle()
+        self.assertEqual(self.angle().mode, 1)
+        self.dev.imu_present = False
+        self.settle(300)
+        a = self.angle()
+        self.assertFalse(a.flags & F["imu_ok"])
+        self.assertEqual(a.mode, 1)
 
     def test_ble_calibration_cancelled_on_disconnect(self):
         self.connect()

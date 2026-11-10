@@ -318,6 +318,7 @@ static void sensor_task(void *arg)
         bool still = false;
         float z[3];
         const float *zero = NULL;      // read with the reading
+        int view_from = -1, view_to = -1;
 
         lock();
         bool turning = process_batch_locked(smp, n, dt);
@@ -325,11 +326,20 @@ static void sensor_task(void *arg)
         if (ready) {
             q = s_fusion.q;
             still = fusion_is_still(&s_fusion);
+            // The view only changes with a fresh orientation: without one
+            // (IMU lost) it stays as it is.
+            view_from = (int)s_level.mode;
+            if (level_update_view(&s_level, q)) {
+                view_to = (int)s_level.mode;
+            }
             reading = level_compute(&s_level, q, now);
             zero = level_zero_of(&s_level, z);
             mount_add_locked(now);
         }
         unlock();
+        if (view_to >= 0) {
+            ESP_LOGI(TAG, "view %d -> %d", view_from, view_to);
+        }
 
         vib_state_t was = vib_state(&s_vib);
         for (size_t i = 0; i < n; i++) {
@@ -379,7 +389,6 @@ esp_err_t sensor_start(const settings_t *s, bool imu_ok)
     s_win_max_rate = 0.0f;
     level_config_t cfg = settings_level_config(s);
     level_init(&s_level, &cfg);
-    level_set_mode(&s_level, s->mode);   // an invalid stored mode stays WALL
     s_acal_valid = s->accel_cal_valid;
     s_acal = s->accel_cal;
     s_cal = (app_cal_status_t){.kind = APP_CAL_IDLE, .last_result = APP_CAL_RESULT_NONE,
@@ -446,10 +455,6 @@ void sensor_apply_settings(const settings_t *s)
         ESP_LOGI(TAG, "sensor calibration changed, zero cleared");
         level_clear_zero(&s_level);
     }
-    level_mode_t from = s_level.mode;
-    if (level_set_mode(&s_level, s->mode)) {
-        ESP_LOGI(TAG, "mode %d -> %d, zero cleared", (int)from, (int)s->mode);
-    }
     s_acal_valid = s->accel_cal_valid;
     s_acal = s->accel_cal;
     unlock();
@@ -458,10 +463,8 @@ void sensor_apply_settings(const settings_t *s)
 bool sensor_zero(void)
 {
     lock();
-    bool ok = s_fusion_ready;   // only while the IMU runs
-    if (ok) {
-        level_zero(&s_level, s_fusion.q, app_now_ms());
-    }
+    // Only while the IMU runs, and not in the bubble view (it has no zero).
+    bool ok = s_fusion_ready && level_zero(&s_level, s_fusion.q, app_now_ms());
     unlock();
     return ok;
 }

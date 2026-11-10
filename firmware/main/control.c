@@ -316,7 +316,7 @@ static void handle_cmd(const app_cmd_t *cmd)
     switch (cmd->id) {
     case APP_CMD_ZERO:
         if (!sensor_zero()) {
-            ESP_LOGW(TAG, "zero ignored: no orientation");
+            ESP_LOGW(TAG, "zero ignored: no orientation or the bubble shows");
         }
         break;
     case APP_CMD_CLEAR_ZERO:

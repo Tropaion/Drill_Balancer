@@ -71,12 +71,10 @@ class PanelTest(DeviceTest):
         self.assertEqual(self.touch("hold"), "zero")
         self.assertTrue(self.snap()["zero_set"])
         self.assertEqual(self.panel.screen.screen, "level")
-        self.touch("swipe", dir="left")
-        self.assertEqual(self.snap()["reading"]["mode"], 1)
-        self.touch("swipe", dir="right")
-        self.assertEqual(self.snap()["reading"]["mode"], 0)
-        self.touch("swipe", dir="up")
-        self.assertEqual(self.snap()["reading"]["mode"], 0)
+        # The view follows the pose, not swipes.
+        for d in ("left", "right", "up"):
+            self.touch("swipe", dir=d)
+            self.assertEqual(self.snap()["reading"]["mode"], 0)
         self.boot()
         self.assertEqual(self.panel.screen.screen, "settings")
         self.touch("swipe", dir="right")

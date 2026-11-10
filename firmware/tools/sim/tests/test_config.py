@@ -22,7 +22,7 @@ class ConfigTest(DeviceTest):
         cfg = self.config()
         for k, v in upd.items():
             self.assertEqual(cfg[k], v, k)
-        self.assertEqual(self.angle().mode, 1)          # the sensor picked up the reload
+        self.assertEqual(self.angle().mode, 0)          # the stored mode doesn't pick the view
         self.assertEqual(self.snap()["brightness"], 80)
         # Partial update keeps the rest.
         self.assertEqual(self.write_config(tol=0.3), 0)
@@ -31,7 +31,7 @@ class ConfigTest(DeviceTest):
         raw = self.dev.read_char("config")
         self.dev = self.new_device()
         self.assertEqual(self.dev.read_char("config"), raw)
-        self.assertEqual(self.angle().mode, 1)
+        self.assertEqual(self.angle().mode, 0)
 
     def test_att_errors(self):
         w = lambda data: self.dev.write_char("config", data)

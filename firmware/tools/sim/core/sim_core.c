@@ -808,7 +808,6 @@ static void sensor_start(const settings_t *s, bool imu_ok)
     turn_init(&s_turn, &turn_cfg);
     level_config_t cfg = settings_level_config(s);
     level_init(&s_level, &cfg);
-    level_set_mode(&s_level, s->mode);
     s_acal_valid = s->accel_cal_valid;
     s_acal = s->accel_cal;
     s_cal = (app_cal_status_t){.kind = APP_CAL_IDLE, .last_result = APP_CAL_RESULT_NONE,
@@ -921,6 +920,10 @@ void sim_sensor_pass(uint32_t now_ms, const float *samples, int n, float dt, int
     if (ready) {
         q = s_fusion.q;
         still = fusion_is_still(&s_fusion);
+        level_mode_t view_from = s_level.mode;
+        if (level_update_view(&s_level, q)) {
+            LOGI("view %d -> %d", (int)view_from, (int)s_level.mode);
+        }
         reading = level_compute(&s_level, q, now);
         zero = level_zero_of(&s_level, z);
         mount_add_locked(now);
@@ -966,21 +969,13 @@ static void sensor_apply_settings(const settings_t *s)
         LOGI("sensor calibration changed, zero cleared");
         level_clear_zero(&s_level);
     }
-    level_mode_t from = s_level.mode;
-    if (level_set_mode(&s_level, s->mode)) {
-        LOGI("mode %d -> %d, zero cleared", (int)from, (int)s->mode);
-    }
     s_acal_valid = s->accel_cal_valid;
     s_acal = s->accel_cal;
 }
 
 static bool sensor_zero(void)
 {
-    bool ok = s_fusion_ready;
-    if (ok) {
-        level_zero(&s_level, s_fusion.q, app_now_ms());
-    }
-    return ok;
+    return s_fusion_ready && level_zero(&s_level, s_fusion.q, app_now_ms());
 }
 
 static void sensor_clear_zero(void)
@@ -2841,7 +2836,7 @@ static void handle_cmd(const app_cmd_t *cmd)
     switch (cmd->id) {
     case APP_CMD_ZERO:
         if (!sensor_zero()) {
-            LOGW("zero ignored: no orientation");
+            LOGW("zero ignored: no orientation or the bubble shows");
         }
         break;
     case APP_CMD_CLEAR_ZERO:

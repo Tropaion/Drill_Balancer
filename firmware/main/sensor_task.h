@@ -35,14 +35,14 @@ esp_err_t sensor_start(const settings_t *s, bool imu_ok);
 // Blocks until the task has stopped (at most about a second).
 void sensor_stop(void);
 
-// Level config, mode and accel calibration from the settings. The zero is
-// kept unless the drill axis (level_set_config()) or the accel calibration
-// changed, or the mode moved between FLOOR and WALL/ANGLE (level_set_mode()).
-// The only way the mode changes: the control task stores it and applies the
-// reloaded settings.
+// Level config and accel calibration from the settings. The zero is kept
+// unless the drill axis (level_set_config()) or the accel calibration
+// changed. The level view is not a setting: the sensor task picks it from
+// the pose.
 void sensor_apply_settings(const settings_t *s);
 
-// False if there is no orientation yet (IMU missing or not started).
+// False if there is no orientation yet (IMU missing or not started) or the
+// bubble view shows (it has no zero); nothing changes then.
 bool sensor_zero(void);
 void sensor_clear_zero(void);
 

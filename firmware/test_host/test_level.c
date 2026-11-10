@@ -80,8 +80,8 @@ static void test_zero_of_gives_the_zero_in_effect(void)
     level_zero(&lv, pose_wall_aimed(7.0f, 0.0f), 0);
     TEST_ASSERT_EQUAL_PTR(z, level_zero_of(&lv, z));
     TEST_ASSERT_FLOAT_WITHIN(0.01f, 7.0f, z[0]);
-    TEST_ASSERT_EQUAL_FLOAT(lv.zero_bubble_x_deg, z[1]);
-    TEST_ASSERT_EQUAL_FLOAT(lv.zero_bubble_y_deg, z[2]);
+    TEST_ASSERT_EQUAL_FLOAT(0.0f, z[1]);
+    TEST_ASSERT_EQUAL_FLOAT(0.0f, z[2]);
     level_clear_zero(&lv);
     TEST_ASSERT_NULL(level_zero_of(&lv, z));
 }
@@ -103,7 +103,7 @@ static void test_yaw_invalid_when_bit_vertical(void)
 static void test_floor_pose_is_on_target(void)
 {
     // Identity: screen up, bit pointing straight down.
-    level_set_mode(&lv, LEVEL_MODE_FLOOR);
+    level_update_view(&lv, quat_identity());
     level_reading_t r = level_compute(&lv, quat_identity(), 0);
     TEST_ASSERT_EQUAL(LEVEL_MODE_FLOOR, r.mode);
     TEST_ASSERT_FLOAT_WITHIN(0.01f, 0.0f, r.deviation_deg);
@@ -115,7 +115,7 @@ static void test_floor_pose_is_on_target(void)
 static void test_floor_bubble_moves_towards_high_side(void)
 {
     // Tilt about X: the screen's top edge (+Y) goes up.
-    level_set_mode(&lv, LEVEL_MODE_FLOOR);
+    level_update_view(&lv, quat_identity());
     level_reading_t r = level_compute(&lv, rot_deg(AXIS_X, 5.0f), 0);
     TEST_ASSERT_FLOAT_WITHIN(0.01f, 5.0f, r.deviation_deg);
     TEST_ASSERT_FLOAT_WITHIN(0.01f, 0.0f, r.bubble_x_deg);
@@ -130,21 +130,10 @@ static void test_floor_bubble_moves_towards_high_side(void)
 static void test_ceiling_pose_is_on_target(void)
 {
     // Screen facing down at the user, bit pointing straight up.
-    level_set_mode(&lv, LEVEL_MODE_FLOOR);
+    level_update_view(&lv, rot_deg(AXIS_X, 180.0f));
     level_reading_t r = level_compute(&lv, rot_deg(AXIS_X, 180.0f), 0);
     TEST_ASSERT_FLOAT_WITHIN(0.01f, 0.0f, r.deviation_deg);
     TEST_ASSERT_EQUAL(LEVEL_STATUS_ON_TARGET, r.status);
-}
-
-static void test_angle_mode_measures_against_target(void)
-{
-    lv.cfg.target_deg = 45.0f;
-    level_set_mode(&lv, LEVEL_MODE_ANGLE);
-    level_reading_t r = level_compute(&lv, pose_wall_aimed(44.0f, 0.0f), 0);
-    TEST_ASSERT_EQUAL(LEVEL_MODE_ANGLE, r.mode);
-    TEST_ASSERT_FLOAT_WITHIN(0.01f, 44.0f, r.elevation_deg);
-    TEST_ASSERT_FLOAT_WITHIN(0.01f, -1.0f, r.deviation_deg);
-    TEST_ASSERT_EQUAL(LEVEL_STATUS_NEAR, r.status);
 }
 
 static void test_status_bands(void)
@@ -153,79 +142,6 @@ static void test_status_bands(void)
     TEST_ASSERT_EQUAL(LEVEL_STATUS_ON_TARGET, level_status_for(&cfg, -cfg.tolerance_deg));
     TEST_ASSERT_EQUAL(LEVEL_STATUS_NEAR, level_status_for(&cfg, -cfg.near_deg));
     TEST_ASSERT_EQUAL(LEVEL_STATUS_OFF, level_status_for(&cfg, cfg.near_deg + 0.01f));
-}
-
-static void test_init_starts_in_wall_mode(void)
-{
-    TEST_ASSERT_EQUAL(LEVEL_MODE_WALL, lv.mode);
-    TEST_ASSERT_EQUAL(LEVEL_MODE_WALL, level_compute(&lv, pose_wall(), 0).mode);
-}
-
-static void test_wall_zero_cleared_when_switching_to_floor(void)
-{
-    // A wall zero (bit horizontal) stores a bubble zero of about 90 degrees;
-    // carried into floor mode it would pin the bubble at the rim.
-    level_zero(&lv, pose_wall(), 0);
-    TEST_ASSERT_TRUE(level_set_mode(&lv, LEVEL_MODE_FLOOR));
-    TEST_ASSERT_FALSE(lv.zero_set);
-    TEST_ASSERT_EQUAL(LEVEL_MODE_FLOOR, lv.mode);
-    level_reading_t r = level_compute(&lv, quat_identity(), 0);
-    TEST_ASSERT_FLOAT_WITHIN(0.01f, 0.0f, r.deviation_deg);
-    TEST_ASSERT_EQUAL(LEVEL_STATUS_ON_TARGET, r.status);
-}
-
-static void test_floor_zero_cleared_when_switching_to_wall(void)
-{
-    // A floor zero (bit down) stores elevation -90.
-    level_set_mode(&lv, LEVEL_MODE_FLOOR);
-    level_zero(&lv, quat_identity(), 0);
-    TEST_ASSERT_TRUE(level_set_mode(&lv, LEVEL_MODE_WALL));
-    level_reading_t r = level_compute(&lv, pose_wall(), 0);
-    TEST_ASSERT_FLOAT_WITHIN(0.01f, 0.0f, r.elevation_deg);
-}
-
-static void test_floor_zero_cleared_when_switching_to_angle(void)
-{
-    level_set_mode(&lv, LEVEL_MODE_FLOOR);
-    level_zero(&lv, quat_identity(), 0);
-    TEST_ASSERT_TRUE(level_set_mode(&lv, LEVEL_MODE_ANGLE));
-    TEST_ASSERT_FALSE(lv.zero_set);
-}
-
-static void test_zero_kept_between_wall_and_angle(void)
-{
-    // Both judge the elevation, so the zero means the same in both.
-    level_zero(&lv, pose_wall_aimed(7.0f, 0.0f), 0);
-    TEST_ASSERT_FALSE(level_set_mode(&lv, LEVEL_MODE_ANGLE));
-    TEST_ASSERT_FALSE(level_set_mode(&lv, LEVEL_MODE_WALL));
-    TEST_ASSERT_FALSE(level_set_mode(&lv, LEVEL_MODE_WALL));
-    TEST_ASSERT_FALSE(level_set_mode(&lv, LEVEL_MODE_ANGLE));
-    TEST_ASSERT_TRUE(lv.zero_set);
-    level_reading_t r = level_compute(&lv, pose_wall_aimed(7.3f, 0.0f), 0);
-    TEST_ASSERT_FLOAT_WITHIN(0.01f, 0.3f, r.elevation_deg);
-}
-
-static void test_zero_kept_from_floor_to_floor(void)
-{
-    level_set_mode(&lv, LEVEL_MODE_FLOOR);
-    level_zero(&lv, rot_deg(AXIS_X, 3.0f), 0);
-    TEST_ASSERT_FALSE(level_set_mode(&lv, LEVEL_MODE_FLOOR));
-    TEST_ASSERT_TRUE(lv.zero_set);
-}
-
-static void test_mode_change_without_zero_reports_nothing_cleared(void)
-{
-    TEST_ASSERT_FALSE(level_set_mode(&lv, LEVEL_MODE_FLOOR));
-    TEST_ASSERT_EQUAL(LEVEL_MODE_FLOOR, lv.mode);
-}
-
-static void test_invalid_mode_is_ignored(void)
-{
-    level_zero(&lv, pose_wall(), 0);
-    TEST_ASSERT_FALSE(level_set_mode(&lv, LEVEL_MODE_COUNT));
-    TEST_ASSERT_FALSE(level_set_mode(&lv, (level_mode_t)-1));
-    TEST_ASSERT_EQUAL(LEVEL_MODE_WALL, lv.mode);
-    TEST_ASSERT_TRUE(lv.zero_set);
 }
 
 static void test_new_drill_axis_clears_zero(void)
@@ -244,18 +160,15 @@ static void test_new_drill_axis_clears_zero(void)
 
 static void test_other_config_changes_keep_zero(void)
 {
-    level_set_mode(&lv, LEVEL_MODE_ANGLE);
     level_zero(&lv, pose_wall_aimed(7.0f, 0.0f), 0);
     level_config_t c = cfg;
     c.tolerance_deg = 1.0f;
     c.near_deg = 3.0f;
-    c.target_deg = 30.0f;
     c.yaw_stale_ms = 1000;
     TEST_ASSERT_FALSE(level_set_config(&lv, &c));
     TEST_ASSERT_TRUE(lv.zero_set);
-    TEST_ASSERT_EQUAL(LEVEL_MODE_ANGLE, lv.mode);
     level_reading_t r = level_compute(&lv, pose_wall_aimed(7.0f, 0.0f), 0);
-    TEST_ASSERT_FLOAT_WITHIN(0.01f, -30.0f, r.deviation_deg);
+    TEST_ASSERT_FLOAT_WITHIN(0.01f, 0.0f, r.deviation_deg);
 }
 
 static void test_heading_reset_keeps_gravity_zero(void)
@@ -271,6 +184,139 @@ static void test_heading_reset_keeps_gravity_zero(void)
 
     level_zero(&lv, pose_wall(), 0);
     TEST_ASSERT_TRUE(level_compute(&lv, pose_wall(), 0).yaw_valid);
+}
+
+// --- the view follows the pose ---
+
+static quat_t aimed(float elev_deg)
+{
+    return pose_wall_aimed(elev_deg, 0.0f);
+}
+
+static quat_t pose_floor(void)
+{
+    return quat_identity();
+}
+
+static quat_t pose_ceiling(void)
+{
+    return rot_deg(AXIS_X, 180.0f);
+}
+
+static void test_view_first_pick_is_the_nearer_one(void)
+{
+    TEST_ASSERT_TRUE(level_update_view(&lv, aimed(-46.0f)));
+    TEST_ASSERT_EQUAL(LEVEL_MODE_FLOOR, lv.mode);
+
+    level_init(&lv, &cfg);
+    level_update_view(&lv, aimed(-44.0f));
+    TEST_ASSERT_EQUAL(LEVEL_MODE_WALL, lv.mode);
+    TEST_ASSERT_TRUE(lv.view_set);
+}
+
+static void test_view_switches_to_floor_at_55(void)
+{
+    level_update_view(&lv, aimed(0.0f));
+    TEST_ASSERT_EQUAL(LEVEL_MODE_WALL, lv.mode);
+    TEST_ASSERT_FALSE(level_update_view(&lv, aimed(-54.9f)));
+    TEST_ASSERT_EQUAL(LEVEL_MODE_WALL, lv.mode);
+    TEST_ASSERT_TRUE(level_update_view(&lv, aimed(-55.0f)));
+    TEST_ASSERT_EQUAL(LEVEL_MODE_FLOOR, lv.mode);
+}
+
+static void test_view_switches_back_to_wall_below_35(void)
+{
+    level_update_view(&lv, aimed(-80.0f));
+    TEST_ASSERT_EQUAL(LEVEL_MODE_FLOOR, lv.mode);
+    TEST_ASSERT_FALSE(level_update_view(&lv, aimed(-35.0f)));
+    TEST_ASSERT_EQUAL(LEVEL_MODE_FLOOR, lv.mode);
+    TEST_ASSERT_TRUE(level_update_view(&lv, aimed(-34.9f)));
+    TEST_ASSERT_EQUAL(LEVEL_MODE_WALL, lv.mode);
+}
+
+static void test_view_counts_bit_up_as_vertical(void)
+{
+    level_update_view(&lv, aimed(80.0f));
+    TEST_ASSERT_EQUAL(LEVEL_MODE_FLOOR, lv.mode);
+    level_update_view(&lv, pose_ceiling());
+    TEST_ASSERT_EQUAL(LEVEL_MODE_FLOOR, lv.mode);
+    level_reading_t r = level_compute(&lv, pose_ceiling(), 0);
+    TEST_ASSERT_FLOAT_WITHIN(0.01f, 0.0f, r.deviation_deg);
+    TEST_ASSERT_EQUAL(LEVEL_STATUS_ON_TARGET, r.status);
+}
+
+static void test_view_ignores_jitter_inside_the_band(void)
+{
+    level_update_view(&lv, aimed(0.0f));
+    int changes = 0;
+    for (int i = 0; i < 40; i++) {
+        changes += level_update_view(&lv, aimed((i & 1) ? -58.0f : -52.0f));
+    }
+    TEST_ASSERT_EQUAL(1, changes);
+    TEST_ASSERT_EQUAL(LEVEL_MODE_FLOOR, lv.mode);
+    for (int i = 0; i < 40; i++) {
+        changes += level_update_view(&lv, aimed((i & 1) ? -32.0f : -38.0f));
+    }
+    TEST_ASSERT_EQUAL(2, changes);
+    TEST_ASSERT_EQUAL(LEVEL_MODE_WALL, lv.mode);
+}
+
+static void test_zero_refused_in_the_bubble_view(void)
+{
+    level_update_view(&lv, pose_floor());
+    TEST_ASSERT_FALSE(level_zero(&lv, pose_floor(), 0));
+    TEST_ASSERT_FALSE(lv.zero_set);
+}
+
+static void test_wall_zero_survives_a_bubble_trip(void)
+{
+    level_update_view(&lv, aimed(0.0f));
+    TEST_ASSERT_TRUE(level_zero(&lv, aimed(0.0f), 0));
+    level_update_view(&lv, pose_floor());
+    TEST_ASSERT_EQUAL(LEVEL_MODE_FLOOR, lv.mode);
+    level_update_view(&lv, aimed(0.0f));
+    TEST_ASSERT_EQUAL(LEVEL_MODE_WALL, lv.mode);
+    level_reading_t r = level_compute(&lv, pose_wall_aimed(2.0f, 5.0f), 0);
+    TEST_ASSERT_TRUE(lv.zero_set);
+    TEST_ASSERT_FLOAT_WITHIN(0.01f, 2.0f, r.elevation_deg);
+    TEST_ASSERT_TRUE(r.yaw_valid);
+    TEST_ASSERT_FLOAT_WITHIN(0.01f, -5.0f, r.yaw_deg);
+}
+
+static void test_bubble_reads_the_board_face(void)
+{
+    // A calibrated drill axis tilts the crosshair, never the bubble.
+    cfg.drill_axis = vec3_normalize((vec3_t){0.0f, sinf(LEVEL_DEG2RAD(5.0f)),
+                                             -cosf(LEVEL_DEG2RAD(5.0f))});
+    level_set_config(&lv, &cfg);
+    level_update_view(&lv, pose_floor());
+    level_reading_t r = level_compute(&lv, pose_floor(), 0);
+    TEST_ASSERT_EQUAL(LEVEL_MODE_FLOOR, r.mode);
+    TEST_ASSERT_FLOAT_WITHIN(0.01f, 0.0f, r.bubble_x_deg);
+    TEST_ASSERT_FLOAT_WITHIN(0.01f, 0.0f, r.bubble_y_deg);
+    TEST_ASSERT_FLOAT_WITHIN(0.01f, 0.0f, r.deviation_deg);
+    TEST_ASSERT_EQUAL(LEVEL_STATUS_ON_TARGET, r.status);
+}
+
+static void test_crosshair_reads_the_drill_axis(void)
+{
+    cfg.drill_axis = vec3_normalize((vec3_t){0.0f, sinf(LEVEL_DEG2RAD(5.0f)),
+                                             -cosf(LEVEL_DEG2RAD(5.0f))});
+    level_set_config(&lv, &cfg);
+    // The board pitched so that this axis, not -Z, is horizontal.
+    quat_t q = pose_wall_aimed(-5.0f, 0.0f);
+    level_reading_t r = level_compute(&lv, q, 0);
+    TEST_ASSERT_FLOAT_WITHIN(0.01f, 0.0f, r.elevation_deg);
+}
+
+static void test_zero_of_has_no_bubble_zero(void)
+{
+    level_zero(&lv, pose_wall_aimed(3.0f, 0.0f), 0);
+    float z[3] = {9.0f, 9.0f, 9.0f};
+    TEST_ASSERT_NOT_NULL(level_zero_of(&lv, z));
+    TEST_ASSERT_FLOAT_WITHIN(0.01f, 3.0f, z[0]);
+    TEST_ASSERT_EQUAL_FLOAT(0.0f, z[1]);
+    TEST_ASSERT_EQUAL_FLOAT(0.0f, z[2]);
 }
 
 // --- mount calibration ---
@@ -483,19 +529,20 @@ int main(void)
     RUN_TEST(test_floor_pose_is_on_target);
     RUN_TEST(test_floor_bubble_moves_towards_high_side);
     RUN_TEST(test_ceiling_pose_is_on_target);
-    RUN_TEST(test_angle_mode_measures_against_target);
     RUN_TEST(test_status_bands);
-    RUN_TEST(test_init_starts_in_wall_mode);
-    RUN_TEST(test_wall_zero_cleared_when_switching_to_floor);
-    RUN_TEST(test_floor_zero_cleared_when_switching_to_wall);
-    RUN_TEST(test_floor_zero_cleared_when_switching_to_angle);
-    RUN_TEST(test_zero_kept_between_wall_and_angle);
-    RUN_TEST(test_zero_kept_from_floor_to_floor);
-    RUN_TEST(test_mode_change_without_zero_reports_nothing_cleared);
-    RUN_TEST(test_invalid_mode_is_ignored);
     RUN_TEST(test_new_drill_axis_clears_zero);
     RUN_TEST(test_other_config_changes_keep_zero);
     RUN_TEST(test_heading_reset_keeps_gravity_zero);
+    RUN_TEST(test_view_first_pick_is_the_nearer_one);
+    RUN_TEST(test_view_switches_to_floor_at_55);
+    RUN_TEST(test_view_switches_back_to_wall_below_35);
+    RUN_TEST(test_view_counts_bit_up_as_vertical);
+    RUN_TEST(test_view_ignores_jitter_inside_the_band);
+    RUN_TEST(test_zero_refused_in_the_bubble_view);
+    RUN_TEST(test_wall_zero_survives_a_bubble_trip);
+    RUN_TEST(test_bubble_reads_the_board_face);
+    RUN_TEST(test_crosshair_reads_the_drill_axis);
+    RUN_TEST(test_zero_of_has_no_bubble_zero);
     RUN_TEST(test_mount_cal_finds_drill_axis);
     RUN_TEST(test_mount_cal_corrects_elevation);
     RUN_TEST(test_mount_cal_rejects_too_little_roll);

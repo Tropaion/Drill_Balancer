@@ -1,7 +1,7 @@
 #pragma once
 
-// Drill angles from the fused orientation: modes, zero, target, tolerance
-// and mount calibration.
+// Drill angles from the fused orientation: the view the device picks, zero,
+// tolerance and mount calibration.
 //
 // The drill bit points along drill_axis in the board frame. With a perfect
 // mount that is -Z (the device sits on the back of the drill, screen towards
@@ -16,11 +16,19 @@ extern "C" {
 #endif
 
 typedef enum {
-    LEVEL_MODE_WALL = 0,  // horizontal hole: elevation 0 plus relative yaw
-    LEVEL_MODE_FLOOR,     // vertical hole (floor or ceiling): 2D bubble
-    LEVEL_MODE_ANGLE,     // elevation against a target angle
+    LEVEL_MODE_WALL = 0,  // the crosshair view: elevation plus relative yaw
+    LEVEL_MODE_FLOOR,     // the bubble view: 2D bubble on the board face
+    LEVEL_MODE_ANGLE,     // reserved, never used (kept so the values stay put)
     LEVEL_MODE_COUNT
 } level_mode_t;
+
+// The view follows the bit's |elevation| (mount calibration included, zero
+// not): the bubble from LEVEL_VIEW_FLOOR_DEG up, the crosshair below
+// LEVEL_VIEW_WALL_DEG, and in between the current view stays, so vibration
+// around a threshold doesn't make it flicker.
+#define LEVEL_VIEW_FLOOR_DEG 55.0f   // |elevation| at or above: the bubble
+#define LEVEL_VIEW_WALL_DEG  35.0f   // |elevation| below: the crosshair
+#define LEVEL_VIEW_FIRST_DEG 45.0f   // with no view yet: the bubble at or above
 
 typedef enum {
     LEVEL_STATUS_ON_TARGET = 0,  // |error| <= tolerance (green)
@@ -32,19 +40,17 @@ typedef struct {
     vec3_t drill_axis;       // unit vector, board frame
     float tolerance_deg;
     float near_deg;
-    float target_deg;        // elevation target in LEVEL_MODE_ANGLE
     uint32_t yaw_stale_ms;   // yaw is flagged stale this long after zero
 } level_config_t;
 
 typedef struct {
     level_config_t cfg;
-    level_mode_t mode;
+    level_mode_t mode;       // the view in use
+    bool view_set;           // false until level_update_view() has picked one
     bool zero_set;
     float zero_elevation_deg;
     float zero_heading_deg;
     bool zero_heading_valid;  // false if zeroed with the bit near vertical
-    float zero_bubble_x_deg;
-    float zero_bubble_y_deg;
     uint32_t zero_time_ms;
 } level_t;
 
@@ -52,9 +58,9 @@ typedef struct {
     level_mode_t mode;
     float elevation_deg;     // bit above horizontal is positive (relative after zero)
     float yaw_deg;           // turned right since zero is positive
-    float bubble_x_deg;      // tilt from vertical along the screen X axis
-    float bubble_y_deg;      // tilt from vertical along the screen Y axis
-    float deviation_deg;     // the error the mode judges against tolerance
+    float bubble_x_deg;      // board face tilt from level along the screen X axis
+    float bubble_y_deg;      // board face tilt from level along the screen Y axis
+    float deviation_deg;     // the error the view judges against tolerance
     level_status_t status;   // status of deviation_deg
     level_status_t yaw_status;
     bool yaw_valid;          // zero set and drill not close to vertical
@@ -63,36 +69,38 @@ typedef struct {
 
 level_config_t level_default_config(void);
 
-// Starts in LEVEL_MODE_WALL with no zero.
+// Starts in LEVEL_MODE_WALL with no view picked yet and no zero.
 void level_init(level_t *lv, const level_config_t *cfg);
 
-// Changes the mode; out-of-range values are ignored. WALL and ANGLE judge
-// the elevation and share a zero; FLOOR judges the bubble. A zero taken in
-// the other family is about 90 degrees off (a wall zero stores a bubble zero
-// with the bit horizontal, a floor zero an elevation of -90), so it is
-// cleared. Returns true if a zero was cleared.
-bool level_set_mode(level_t *lv, level_mode_t mode);
+// Picks the view for the pose q (see LEVEL_VIEW_*) and stores it in lv->mode.
+// Call it only with a fresh orientation: without one the view stays. Returns
+// true if lv->mode changed. The zero is kept: it belongs to the crosshair and
+// is not touched by a trip through the bubble view.
+bool level_update_view(level_t *lv, quat_t q);
 
 // Replaces the config. The zero angles were measured about the old drill
 // axis, so a new axis clears the zero; the other fields keep it. Returns
 // true if a zero was cleared.
 bool level_set_config(level_t *lv, const level_config_t *cfg);
 
-// Captures the current orientation as the reference. Elevation, bubble and
-// yaw are reported relative to it until level_clear_zero().
-void level_zero(level_t *lv, quat_t q, uint32_t now_ms);
+// Captures the current orientation as the reference. Elevation and yaw are
+// reported relative to it until level_clear_zero(). Only the crosshair view
+// has a zero: in the bubble view nothing changes and false is returned.
+bool level_zero(level_t *lv, quat_t q, uint32_t now_ms);
 void level_clear_zero(level_t *lv);
 
-// The zero in effect as out = {elevation, bubble x, bubble y} (degrees),
-// returned; NULL without one. For app_state_set_motion().
+// The zero in effect as out = {elevation, 0, 0} (degrees; the two bubble
+// slots stay for the LEVEL record layout), returned; NULL without one. For
+// app_state_set_motion().
 const float *level_zero_of(const level_t *lv, float out[3]);
 
 // The fusion restarted at yaw 0, so the zero heading belongs to the old yaw
-// frame. Elevation and bubble zeros are gravity based and stay valid; yaw
-// reads invalid until the next zero.
+// frame. The elevation zero is gravity based and stays valid; yaw reads
+// invalid until the next zero.
 void level_reset_heading(level_t *lv);
 
-// Reading for lv->mode.
+// Reading for lv->mode. The crosshair judges the elevation of the drill axis
+// (relative after a zero), the bubble the tilt of the board face (absolute).
 level_reading_t level_compute(const level_t *lv, quat_t q, uint32_t now_ms);
 
 level_status_t level_status_for(const level_config_t *cfg, float error_deg);

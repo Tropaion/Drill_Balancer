@@ -47,7 +47,8 @@ class CoreTest(unittest.TestCase):
         self.assertTrue(a.flags & F["imu_ok"] and a.flags & F["still"])
         snap = self.core.snapshot()
         self.assertEqual(snap["fw_version"], "1.0.0")
-        self.assertEqual(snap["ui"]["mode_title"], self.core.ui_text(0, 0))
+        # Flat, bit down: the device picked the bubble view.
+        self.assertEqual(snap["ui"]["mode_title"], self.core.ui_text(0, 1))
         # Empty reads: lost after 200 ms, the IMU_OK flag goes.
         for _ in range(11):
             self.now += 20

@@ -137,7 +137,6 @@ level_config_t settings_level_config(const settings_t *s)
     }
     c.tolerance_deg = s->tolerance_deg;
     c.near_deg = s->near_deg;
-    c.target_deg = s->target_deg;
     c.yaw_stale_ms = (uint32_t)s->yaw_stale_s * 1000u;
     return c;
 }

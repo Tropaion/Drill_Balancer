@@ -42,14 +42,6 @@ class LevelTest(DeviceTest):
         self.assertTrue(self.pose(elevation=0.3).flags & F["near"])
         self.assertFalse(self.pose(elevation=1.5).flags & (F["near"] | F["on_target"]))
 
-    def test_angle_mode_judges_against_target(self):
-        self.assertEqual(self.write_config(target=30.0), 0)
-        self.assertEqual(self.cmd("set-mode", "angle"), 0)
-        a = self.pose(elevation=29.8)
-        self.assertEqual(a.mode, 2)
-        self.assertClose(a.deviation, -0.2, 0.1)
-        self.assertTrue(a.flags & F["on_target"])
-
     def test_yaw_after_zero(self):
         self.dev.physics.gyro_bias = [0.004, -0.003, 0.002]
         self.pose(ms=5000, elevation=5.0, yaw=0.0)   # fusion learns the gyro bias
@@ -80,7 +72,6 @@ class LevelTest(DeviceTest):
         self.assertFalse(self.angle().flags & F["zero_set"])
 
     def test_floor_bubble(self):
-        self.assertEqual(self.cmd("set-mode", "floor"), 0)
         a = self.pose(elevation=-90.0)
         self.assertEqual(a.mode, 1)
         self.assertClose(a.deviation, 0.0, 0.1)

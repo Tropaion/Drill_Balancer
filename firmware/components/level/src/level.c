@@ -17,7 +17,6 @@ level_config_t level_default_config(void)
         .drill_axis = {0.0f, 0.0f, -1.0f},
         .tolerance_deg = 0.5f,
         .near_deg = 2.0f,
-        .target_deg = 45.0f,
         .yaw_stale_ms = 60000,
     };
 }
@@ -52,28 +51,47 @@ static raw_angles_t raw_angles(const level_config_t *cfg, quat_t q)
     r.heading_valid = hypotf(dw.x, dw.y) >= YAW_MIN_HORIZONTAL;
     r.heading_deg = LEVEL_RAD2DEG(atan2f(dw.y, dw.x));
 
-    // Screen axes perpendicular to the drill axis (X and Y for a perfect
-    // mount). The bubble moves towards the higher side, for floor and
-    // ceiling alike.
-    vec3_t e1 = vec3_normalize(vec3_sub((vec3_t){1.0f, 0.0f, 0.0f},
-                                        vec3_scale(d, d.x)));
-    vec3_t e2 = vec3_cross(e1, d);
-    float along = fabsf(vec3_dot(up, d));
+    // The bubble sits on the board face, whatever the mount calibration says
+    // about the drill axis: screen X and Y, face axis -Z. It moves towards
+    // the higher side, for floor and ceiling alike.
+    const vec3_t face = {0.0f, 0.0f, -1.0f};
+    const vec3_t e1 = {1.0f, 0.0f, 0.0f};
+    const vec3_t e2 = vec3_cross(e1, face);
+    float along = fabsf(vec3_dot(up, face));
     r.bubble_x_deg = LEVEL_RAD2DEG(atan2f(vec3_dot(up, e1), along));
     r.bubble_y_deg = LEVEL_RAD2DEG(atan2f(vec3_dot(up, e2), along));
     return r;
 }
 
-void level_zero(level_t *lv, quat_t q, uint32_t now_ms)
+bool level_update_view(level_t *lv, quat_t q)
 {
+    float elev = fabsf(raw_angles(&lv->cfg, q).elevation_deg);
+    level_mode_t want = lv->mode;
+    if (!lv->view_set) {
+        want = elev >= LEVEL_VIEW_FIRST_DEG ? LEVEL_MODE_FLOOR : LEVEL_MODE_WALL;
+    } else if (elev >= LEVEL_VIEW_FLOOR_DEG) {
+        want = LEVEL_MODE_FLOOR;
+    } else if (elev < LEVEL_VIEW_WALL_DEG) {
+        want = LEVEL_MODE_WALL;
+    }
+    lv->view_set = true;
+    bool changed = want != lv->mode;
+    lv->mode = want;
+    return changed;
+}
+
+bool level_zero(level_t *lv, quat_t q, uint32_t now_ms)
+{
+    if (lv->mode == LEVEL_MODE_FLOOR) {
+        return false;
+    }
     raw_angles_t r = raw_angles(&lv->cfg, q);
     lv->zero_set = true;
     lv->zero_elevation_deg = r.elevation_deg;
     lv->zero_heading_deg = r.heading_deg;
     lv->zero_heading_valid = r.heading_valid;
-    lv->zero_bubble_x_deg = r.bubble_x_deg;
-    lv->zero_bubble_y_deg = r.bubble_y_deg;
     lv->zero_time_ms = now_ms;
+    return true;
 }
 
 void level_clear_zero(level_t *lv)
@@ -87,8 +105,8 @@ const float *level_zero_of(const level_t *lv, float out[3])
         return NULL;
     }
     out[0] = lv->zero_elevation_deg;
-    out[1] = lv->zero_bubble_x_deg;
-    out[2] = lv->zero_bubble_y_deg;
+    out[1] = 0.0f;
+    out[2] = 0.0f;
     return out;
 }
 
@@ -103,21 +121,6 @@ static bool drop_zero(level_t *lv)
     bool was_set = lv->zero_set;
     level_clear_zero(lv);
     return was_set;
-}
-
-static bool floor_family(level_mode_t m)
-{
-    return m == LEVEL_MODE_FLOOR;
-}
-
-bool level_set_mode(level_t *lv, level_mode_t mode)
-{
-    if ((unsigned)mode >= LEVEL_MODE_COUNT) {
-        return false;
-    }
-    bool cross = floor_family(lv->mode) != floor_family(mode);
-    lv->mode = mode;
-    return cross && drop_zero(lv);
 }
 
 bool level_set_config(level_t *lv, const level_config_t *cfg)
@@ -149,8 +152,6 @@ level_reading_t level_compute(const level_t *lv, quat_t q, uint32_t now_ms)
     out.bubble_y_deg = r.bubble_y_deg;
     if (lv->zero_set) {
         out.elevation_deg -= lv->zero_elevation_deg;
-        out.bubble_x_deg -= lv->zero_bubble_x_deg;
-        out.bubble_y_deg -= lv->zero_bubble_y_deg;
 
         out.yaw_valid = lv->zero_heading_valid && r.heading_valid;
         // Heading is counter-clockwise from above; report turning right as positive.
@@ -159,17 +160,10 @@ level_reading_t level_compute(const level_t *lv, quat_t q, uint32_t now_ms)
     }
     out.yaw_status = out.yaw_valid ? level_status_for(&lv->cfg, out.yaw_deg) : LEVEL_STATUS_OFF;
 
-    switch (lv->mode) {
-    case LEVEL_MODE_FLOOR:
+    if (lv->mode == LEVEL_MODE_FLOOR) {
         out.deviation_deg = hypotf(out.bubble_x_deg, out.bubble_y_deg);
-        break;
-    case LEVEL_MODE_ANGLE:
-        out.deviation_deg = out.elevation_deg - lv->cfg.target_deg;
-        break;
-    case LEVEL_MODE_WALL:
-    default:
+    } else {
         out.deviation_deg = out.elevation_deg;
-        break;
     }
     out.status = level_status_for(&lv->cfg, out.deviation_deg);
     return out;
