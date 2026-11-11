@@ -15,7 +15,7 @@ training data (raw IMU and both microphones) for a future on-device model.
 > [bring-up checklist](firmware/README.md#bring-up-checklist-hardware).
 
 <p align="center">
-  <img src="docs/images/device-overview.png" alt="Device screen renders of the level screen and the settings list" width="720">
+  <img src="docs/images/device-overview.png" alt="Device screen renders: the wall view, the level view, a wall view with the yaw drift warning, and the settings list" width="720">
 </p>
 <p align="center"><sub>Device screens rendered on the PC from the real UI code
 (<code>firmware/test_host/ui_preview</code>), with simulated readings. Not photos of hardware.</sub></p>
