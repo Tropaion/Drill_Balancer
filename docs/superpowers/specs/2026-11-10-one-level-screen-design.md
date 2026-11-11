@@ -252,6 +252,7 @@ user doesn't have to choose.
   loads, and they are left out of the settings comparison.
 - **No hint on the hold in the bubble view.** The hold does nothing there and
   shows nothing, the second "Left to the builder" item.
-- **The device-overview and device-floor/-angle images in `docs/images` are
-  renders from before this change.** `device-angle.png` is no longer
-  referenced by the wiki.
+- **The screen images in `docs/images` were regenerated from the current UI
+  preview** (device-overview, device-floor, device-floor-off and the two
+  settings images; the other screens did not change). `device-angle.png` was
+  removed with the angle mode.
