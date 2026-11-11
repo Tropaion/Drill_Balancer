@@ -504,20 +504,15 @@ static void test_cmd_simple_opcodes(void)
     }
 }
 
-static void test_cmd_set_mode(void)
+// SET_MODE (0x03) is gone: the device picks the view itself. The opcode stays
+// reserved, so an older app's write is refused as unknown, with or without its
+// argument.
+static void test_set_mode_is_unknown(void)
 {
-    for (uint8_t m = 0; m < LEVEL_MODE_COUNT; m++) {
-        const uint8_t b[] = {DB_CMD_SET_MODE, m};
-        expect_cmd(b, 2, APP_CMD_SET_MODE, m);
-    }
-    const uint8_t bad[] = {DB_CMD_SET_MODE, LEVEL_MODE_COUNT};
-    TEST_ASSERT_EQUAL_HEX8(DB_ATT_ERR_BAD_ARG, parse_err(bad, 2));
-    const uint8_t bad2[] = {DB_CMD_SET_MODE, 0xFF};
-    TEST_ASSERT_EQUAL_HEX8(DB_ATT_ERR_BAD_ARG, parse_err(bad2, 2));
-    const uint8_t no_arg[] = {DB_CMD_SET_MODE};
-    TEST_ASSERT_EQUAL_HEX8(BLE_CODEC_ATT_INVALID_LEN, parse_err(no_arg, 1));
-    const uint8_t extra[] = {DB_CMD_SET_MODE, 0, 0};
-    TEST_ASSERT_EQUAL_HEX8(BLE_CODEC_ATT_INVALID_LEN, parse_err(extra, 3));
+    const uint8_t with_arg[] = {0x03, 0x00};
+    TEST_ASSERT_EQUAL_HEX8(DB_ATT_ERR_UNKNOWN_CMD, parse_err(with_arg, 2));
+    const uint8_t no_arg[] = {0x03};
+    TEST_ASSERT_EQUAL_HEX8(DB_ATT_ERR_UNKNOWN_CMD, parse_err(no_arg, 1));
 }
 
 static void test_cmd_factory_reset_needs_confirmation(void)
@@ -548,7 +543,7 @@ static void test_cmd_error_leaves_outputs_alone(void)
 {
     app_cmd_id_t id = APP_CMD_REBOOT;
     int32_t arg = 77;
-    const uint8_t bad[] = {DB_CMD_SET_MODE, 9};
+    const uint8_t bad[] = {DB_CMD_FACTORY_RESET, 0x5A};
     TEST_ASSERT_NOT_EQUAL(0, ble_codec_parse_cmd(bad, 2, &id, &arg));
     TEST_ASSERT_EQUAL(APP_CMD_REBOOT, id);
     TEST_ASSERT_EQUAL_INT32(77, arg);
@@ -882,7 +877,7 @@ int main(void)
     RUN_TEST(test_link_holds_awake_only_trusted_and_recent);
     RUN_TEST(test_link_idle_unauth);
     RUN_TEST(test_cmd_simple_opcodes);
-    RUN_TEST(test_cmd_set_mode);
+    RUN_TEST(test_set_mode_is_unknown);
     RUN_TEST(test_cmd_factory_reset_needs_confirmation);
     RUN_TEST(test_cmd_unknown_and_empty);
     RUN_TEST(test_cmd_error_leaves_outputs_alone);

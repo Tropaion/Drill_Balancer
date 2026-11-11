@@ -99,7 +99,6 @@ CAL_KINDS = ["idle", "mount", "accel"]                # app_cal_kind_t
 CMDS = {
     "zero": 0x01,
     "clear-zero": 0x02,
-    "set-mode": 0x03,
     "mount-cal-start": 0x10,
     "mount-cal-finish": 0x11,
     "accel-cal-start": 0x12,
@@ -415,19 +414,10 @@ def decode_status(data: bytes) -> Status:
     return Status(*struct.unpack(STATUS_FMT, data))
 
 
-def encode_cmd(name: str, arg: Optional[str] = None) -> bytes:
+def encode_cmd(name: str) -> bytes:
     if name not in CMDS:
         raise ValueError(f"unknown command {name!r}; one of: {', '.join(CMDS)}")
     op = CMDS[name]
-    if name == "set-mode":
-        if arg is None:
-            raise ValueError("set-mode needs a mode: " + "|".join(MODES))
-        mode = MODES.index(arg) if arg in MODES else int(arg)
-        if not 0 <= mode < len(MODES):
-            raise ValueError(f"mode out of range: {arg}")
-        return bytes([op, mode])
-    if arg is not None:
-        raise ValueError(f"{name} takes no argument")
     if name == "factory-reset":
         return bytes([op, FACTORY_RESET_CONFIRM])
     return bytes([op])
@@ -698,13 +688,7 @@ def self_check(verbose: bool = True) -> bool:
             check(True, f"{fn.__name__} rejects {len(bad)} bytes")
 
     check(encode_cmd("zero") == b"\x01", "cmd zero")
-    check(encode_cmd("set-mode", "angle") == b"\x03\x02", "cmd set-mode angle")
     check(encode_cmd("factory-reset") == b"\x23\xa5", "cmd factory-reset carries 0xA5")
-    try:
-        encode_cmd("set-mode", "3")
-        check(False, "set-mode 3 rejected")
-    except ValueError:
-        check(True, "set-mode 3 rejected")
 
     check(encode_rec("open") == b"\x01", "rec open")
     ts = encode_rec("take-start", profile=2, mic_mask=3, gain_db=6, max_s=1200, take_id=0x12345678)
@@ -954,7 +938,7 @@ async def cmd_set_config(args):
 
 async def cmd_cmd(args):
     try:
-        payload = encode_cmd(args.name, args.arg)
+        payload = encode_cmd(args.name)
     except ValueError as e:
         sys.exit(str(e))
     if args.name == "factory-reset" and not args.yes:
@@ -1286,11 +1270,10 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("-d", "--duration", type=float, help="stop after this many seconds")
     s.add_argument("--status-only", action="store_true")
     sub.add_parser("get-config", help="read the settings JSON")
-    s = sub.add_parser("set-config", help="write settings, e.g. tol=0.2 mode=floor ble=true")
+    s = sub.add_parser("set-config", help="write settings, e.g. tol=0.2 near=1.5 ble=true")
     s.add_argument("pairs", nargs="+", metavar="key=value")
     s = sub.add_parser("cmd", help="send a command: " + ", ".join(CMDS))
     s.add_argument("name", choices=list(CMDS))
-    s.add_argument("arg", nargs="?", help="set-mode: wall|floor|angle")
     s.add_argument("--yes", action="store_true", help="confirm factory-reset")
     s = sub.add_parser("ota", help="firmware update over BLE")
     s.add_argument("file", help="app image, e.g. build/drillbalancer.bin")

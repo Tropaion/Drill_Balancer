@@ -295,11 +295,11 @@ class BleLogTest(unittest.IsolatedAsyncioTestCase):
             opts = {"device": PHONE, "mtu": 247, "link": "LE"}
             p.gatt_write("command", b"\x01", opts)
             with self.assertRaises(Exception):
-                p.gatt_write("command", b"\x03\x09", opts)    # SET_MODE 9: BAD_ARG
+                p.gatt_write("command", b"\x03\x00", opts)    # the former SET_MODE: reserved
             p.gatt_read("config", opts)
             msgs = [e["msg"] for e in panel.log]
             self.assertIn("write command ZERO", msgs)
-            self.assertIn("write command SET_MODE 9 -> 0x85 BAD_ARG", msgs)
+            self.assertIn("write command 0x03 00 -> 0x84 UNKNOWN_CMD", msgs)
             self.assertTrue(any(m.startswith("read config (") for m in msgs))
             st = p.status()
             self.assertEqual((st["peer"], st["paired"], st["bonded"]), ("AA:BB:CC:DD:EE:FF", True, True))

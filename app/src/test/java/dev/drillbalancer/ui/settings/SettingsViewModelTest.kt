@@ -9,7 +9,6 @@ import dev.drillbalancer.device.SettingsWrite
 import dev.drillbalancer.protocol.AttError
 import dev.drillbalancer.protocol.Command
 import dev.drillbalancer.protocol.DeviceSettings
-import dev.drillbalancer.protocol.LevelMode
 import dev.drillbalancer.protocol.SettingsField
 import dev.drillbalancer.protocol.SettingsUpdate
 import dev.drillbalancer.ui.MainDispatcherRule
@@ -84,10 +83,12 @@ class SettingsViewModelTest {
     fun editsSurviveChangesFromElsewhere() = runTest(main.dispatcher) {
         val (fake, _, vm) = setUp()
         vm.step(SettingsField.TOL, 1)           // 0.50 -> 0.55
-        fake.sendCommand(Command.SetMode(LevelMode.FLOOR))
+        // A mount calibration finishes on the calibration tab.
+        fake.sendCommand(Command.MountCalStart)
+        fake.sendCommand(Command.MountCalFinish)
         val s = vm.state.value
-        assertEquals(LevelMode.FLOOR, s.base!!.mode)
-        assertEquals(LevelMode.FLOOR, s.edited!!.mode)
+        assertTrue(s.base!!.cal.mount)
+        assertTrue(s.edited!!.cal.mount)
         assertEquals(0.55f, s.edited.toleranceDeg)
         assertEquals(setOf(SettingsField.TOL), s.changed)
         vm.save()
@@ -137,7 +138,7 @@ class SettingsViewModelTest {
     @Test
     fun discardAndReload() = runTest(main.dispatcher) {
         val (fake, _, vm) = setUp()
-        vm.setMode(LevelMode.ANGLE)
+        vm.step(SettingsField.TOL, 1)
         vm.discard()
         assertTrue(vm.state.value.changed.isEmpty())
         // Changed in the device's own menu (not notified): a reload shows it and keeps the edits.
@@ -247,12 +248,12 @@ class SettingsViewModelTest {
         vm.step(SettingsField.TOL, -1)
         vm.save()
         assertTrue(vm.state.value.saving)
-        vm.setMode(LevelMode.ANGLE)
+        vm.setBle(false)
         write.complete(Unit)
         val s = vm.state.value
         assertEquals(0.45f, s.base!!.toleranceDeg)
-        assertEquals(LevelMode.ANGLE, s.edited!!.mode)
-        assertEquals(setOf(SettingsField.MODE), s.changed)
+        assertFalse(s.edited!!.bleEnabled)
+        assertEquals(setOf(SettingsField.BLE), s.changed)
     }
 
     @Test

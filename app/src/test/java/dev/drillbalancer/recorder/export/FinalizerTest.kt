@@ -1,6 +1,10 @@
 package dev.drillbalancer.recorder.export
 
+import dev.drillbalancer.protocol.AngleFlags
+import dev.drillbalancer.protocol.LevelMode
 import dev.drillbalancer.protocol.RecReason
+import dev.drillbalancer.protocol.put16
+import dev.drillbalancer.protocol.put64
 import dev.drillbalancer.recorder.AppInfo
 import dev.drillbalancer.recorder.JournalState
 import dev.drillbalancer.recorder.Labeler
@@ -12,10 +16,12 @@ import dev.drillbalancer.recorder.TakeSettings
 import dev.drillbalancer.recorder.TestStream
 import dev.drillbalancer.recorder.label.ReviewRepository
 import dev.drillbalancer.recorder.label.ReviewSource
+import dev.drillbalancer.recorder.stream.RecStream
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.double
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
@@ -214,6 +220,44 @@ class FinalizerTest {
         File(store.dir(id), Finalizer.AUDIO).writeText("stale")
         store.finalize(id)
         assertFalse(File(store.dir(id), Finalizer.AUDIO).exists())
+    }
+
+    /** A LEVEL record (rec_level_t) at [hostUs] in view [mode], 0.3° off. */
+    private fun level(seq: Long, hostUs: Long, mode: LevelMode): ByteArray {
+        val p = ByteArray(RecStream.LEVEL_LEN)
+        p.put64(0, hostUs)
+        p[8] = mode.wire.toByte()
+        p[9] = AngleFlags.IMU_OK.toByte()
+        p.put16(10, 30)     // elevation_cdeg
+        p.put16(18, 30)     // deviation_cdeg
+        return RecStream.encode(RecStream.T_LEVEL, 1, seq, p)
+    }
+
+    @Test
+    fun levelMetaFromTheFirstLevelRow() {
+        // The device picks the view: its SESSION settings have no mode or target, and the
+        // LEVEL rows carry the view in use, here the bubble first, then the crosshair.
+        val id = "20261026T143012Z_k7q2_bbbb"
+        var seq = 0L
+        var t = TestStream.T0
+        var ts = 1000L
+        var bytes = TestStream.session(seq++, 7, startUs = t, micMask = 0, tail = """{"settings":{"tol":0.5,"near":2}}""")
+        repeat(10) { i ->
+            bytes += TestStream.imu(seq++, ts, 9, t + 9 * 2230)
+            bytes += level(seq++, t + 9 * 2230, if (i < 5) LevelMode.FLOOR else LevelMode.WALL)
+            ts += 9
+            t += 9 * 2230
+        }
+        bytes += TestStream.end(seq, t)
+        install(journal(id), bytes)
+        store.finalize(id)!!
+        val m = meta(id)
+        val level = m["level"]!!.jsonObject
+        assertEquals("floor", level["mode"]!!.jsonPrimitive.content)
+        assertEquals(0.0, level["target_deg"]!!.jsonPrimitive.double, 0.0)
+        assertEquals(0.5, level["tol_deg"]!!.jsonPrimitive.double, 0.0)
+        assertEquals(2.0, level["near_deg"]!!.jsonPrimitive.double, 0.0)
+        assertEquals(emptyList<String>(), metaSchema.problems(m))
     }
 
     @Test

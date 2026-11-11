@@ -4,7 +4,7 @@ package dev.drillbalancer.protocol
 object CommandOpcode {
     const val ZERO = 0x01
     const val CLEAR_ZERO = 0x02
-    const val SET_MODE = 0x03            // u8 mode
+    // 0x03 reserved (was SET_MODE: the device picks the view itself)
     const val MOUNT_CAL_START = 0x10
     const val MOUNT_CAL_FINISH = 0x11
     const val ACCEL_CAL_START = 0x12
@@ -24,7 +24,6 @@ object CommandOpcode {
 sealed interface Command {
     data object Zero : Command
     data object ClearZero : Command
-    data class SetMode(val mode: LevelMode) : Command
     data object MountCalStart : Command
     data object MountCalFinish : Command
     data object AccelCalStart : Command
@@ -40,7 +39,6 @@ sealed interface Command {
     fun encode(): ByteArray = when (this) {
         Zero -> op(CommandOpcode.ZERO)
         ClearZero -> op(CommandOpcode.CLEAR_ZERO)
-        is SetMode -> op(CommandOpcode.SET_MODE, mode.wire)
         MountCalStart -> op(CommandOpcode.MOUNT_CAL_START)
         MountCalFinish -> op(CommandOpcode.MOUNT_CAL_FINISH)
         AccelCalStart -> op(CommandOpcode.ACCEL_CAL_START)

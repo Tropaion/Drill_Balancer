@@ -1,6 +1,8 @@
 package dev.drillbalancer.ui.live
 
+import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.junit4.v2.createComposeRule
+import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.onRoot
 import com.github.takahirom.roborazzi.captureRoboImage
 import dev.drillbalancer.device.DisconnectReason
@@ -35,7 +37,7 @@ class LiveScreenshotTest {
     private fun shot(state: LiveUiState, packet: AnglePacket?, fontScale: Float = 1f, shell: ShellState = SHELL) {
         compose.setContent {
             Themed(fontScale) {
-                InFrame(Tab.LIVE, shell) { m -> LiveScreen(state, { packet }, {}, {}, {}, {}, m) }
+                InFrame(Tab.LIVE, shell) { m -> LiveScreen(state, { packet }, {}, {}, {}, m) }
             }
         }
         compose.onRoot().captureRoboImage()
@@ -90,6 +92,15 @@ class LiveScreenshotTest {
         LiveUiState(mode = LevelMode.FLOOR, hasAngle = true, dotInvert = true),
         AnglePacket.of(LevelMode.FLOOR, base or AngleFlags.NEAR, bubbleXDeg = 1.1f, bubbleYDeg = 0.8f, deviationDeg = 1.36f),
     )
+
+    // Firmware from before the one level screen still reports ANGLE: the wall view.
+    @Test
+    fun angleFromOldFirmware() {
+        shot(LiveUiState(mode = LevelMode.ANGLE, hasAngle = true), AnglePacket.of(LevelMode.ANGLE, base, elevationDeg = 3.2f, deviationDeg = 3.2f))
+        compose.onNodeWithText("Wall").assertExists()
+        compose.onNodeWithText("No zero set", substring = true).assertExists()
+        compose.onNodeWithText("Zero").assertIsEnabled()
+    }
 
     @Test
     fun imuNotOk() = shot(

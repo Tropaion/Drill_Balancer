@@ -9,7 +9,7 @@ import kotlin.random.Random
 class DeviceSettingsTest {
     // settings_to_json(settings_defaults()), as test_settings.c expects it.
     private val defaultsJson =
-        "{\"tol\":0.5,\"near\":2,\"mode\":\"wall\",\"bright\":100,\"dim_bright\":20," +
+        "{\"tol\":0.5,\"near\":2,\"bright\":100,\"dim_bright\":20," +
             "\"dim_s\":30,\"sleep_s\":120,\"off_min\":60,\"ble\":true,\"stale_s\":60,\"dot_inv\":false," +
             "\"cal\":{\"mount\":false,\"accel\":false},\"ver\":1}"
 
@@ -26,26 +26,25 @@ class DeviceSettingsTest {
     }
 
     @Test
-    fun parsesWithoutTarget() {
-        // The device no longer sends "target": the JSON is complete without it.
-        assertTrue(!defaultsJson.contains("target"))
+    fun parsesWithoutModeOrTarget() {
+        // The device no longer sends "mode" or "target": the JSON is complete without them.
+        assertFalse(defaultsJson.contains("mode") || defaultsJson.contains("target"))
         assertTrue(DeviceSettings.parse(defaultsJson) is Decoded.Ok)
         assertTrue(parse(defaultsJson).isValid)
-        // Older firmware still sends it: it is ignored.
-        val old = defaultsJson.replace("\"mode\"", "\"target\":45,\"mode\"")
+        // Older firmware still sends them: they are ignored.
+        val old = defaultsJson.replace("\"bright\"", "\"mode\":\"angle\",\"target\":45,\"bright\"")
         assertEquals(d, parse(old))
     }
 
     @Test
     fun parsesNonDefaultDeviceOutput() {
         // %.6g / %.9g output of settings_to_json, calibrations stored
-        val json = "{\"tol\":0.0512345678,\"near\":19.987654,\"mode\":\"angle\",\"bright\":10," +
+        val json = "{\"tol\":0.0512345678,\"near\":19.987654,\"bright\":10," +
             "\"dim_bright\":1,\"dim_s\":600,\"sleep_s\":3600,\"off_min\":0,\"ble\":false,\"stale_s\":600," +
             "\"dot_inv\":true,\"cal\":{\"mount\":true,\"accel\":true},\"ver\":1}"
         val s = parse(json)
         assertEquals(0.0512345678f, s.toleranceDeg)
         assertEquals(19.987654f, s.nearDeg)
-        assertEquals(LevelMode.ANGLE, s.mode)
         assertEquals(CalState(mount = true, accel = true), s.cal)
         assertFalse(s.bleEnabled)
         assertTrue(s.dotInvert)
@@ -68,7 +67,6 @@ class DeviceSettingsTest {
     fun rejectsBrokenJson() {
         for (bad in listOf(
             "", "[]", "{\"tol\":0.5", "not json",
-            defaultsJson.replace("\"mode\":\"wall\"", "\"mode\":\"ceiling\""),
             defaultsJson.replace("\"bright\":100,", ""),     // a writable key missing
             defaultsJson.replace("\"tol\":0.5", "\"tol\":null"),
         )) {
@@ -154,10 +152,10 @@ class DeviceSettingsTest {
 
     @Test
     fun updateContainsOnlyChangedKeys() {
-        val edited = d.copy(toleranceDeg = 0.3f, mode = LevelMode.FLOOR)
+        val edited = d.copy(toleranceDeg = 0.3f, bleEnabled = false)
         val u = SettingsUpdate.diff(d, edited)
-        assertEquals(setOf(SettingsField.TOL, SettingsField.MODE), u.fields)
-        assertEquals("{\"tol\":0.3,\"mode\":\"floor\"}", u.toJson())
+        assertEquals(setOf(SettingsField.TOL, SettingsField.BLE), u.fields)
+        assertEquals("{\"tol\":0.3,\"ble\":false}", u.toJson())
         assertTrue(SettingsUpdate.diff(d, d).isEmpty)
         assertEquals("{}", SettingsUpdate.diff(d, d).toJson())
     }
@@ -165,12 +163,12 @@ class DeviceSettingsTest {
     @Test
     fun everyFieldEncodes() {
         val edited = d.copy(
-            toleranceDeg = 1.25f, nearDeg = 7.5f, mode = LevelMode.ANGLE, brightnessPct = 80,
+            toleranceDeg = 1.25f, nearDeg = 7.5f, brightnessPct = 80,
             dimBrightnessPct = 5, dimAfterS = 45, sleepAfterS = 300, offAfterMin = 0, bleEnabled = false, yawStaleS = 120,
             dotInvert = true,
         )
         assertEquals(
-            "{\"tol\":1.25,\"near\":7.5,\"mode\":\"angle\",\"bright\":80,\"dim_bright\":5," +
+            "{\"tol\":1.25,\"near\":7.5,\"bright\":80,\"dim_bright\":5," +
                 "\"dim_s\":45,\"sleep_s\":300,\"off_min\":0,\"ble\":false,\"stale_s\":120,\"dot_inv\":true}",
             SettingsUpdate.diff(d, edited).toJson(),
         )
@@ -180,12 +178,12 @@ class DeviceSettingsTest {
 
     @Test
     fun updateKeepsFieldsChangedOnTheDevice() {
-        // The phone edited brightness; meanwhile the device switched to floor mode.
+        // The phone edited brightness; meanwhile the device's own menu changed the tolerance.
         val base = d
         val edited = base.copy(brightnessPct = 60)
-        val onDevice = base.copy(mode = LevelMode.FLOOR)
+        val onDevice = base.copy(toleranceDeg = 0.3f)
         val stored = SettingsUpdate.diff(base, edited).applyTo(onDevice)
-        assertEquals(LevelMode.FLOOR, stored.mode)
+        assertEquals(0.3f, stored.toleranceDeg)
         assertEquals(60, stored.brightnessPct)
     }
 

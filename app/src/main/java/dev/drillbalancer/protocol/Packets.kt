@@ -1,18 +1,15 @@
 package dev.drillbalancer.protocol
 
-import kotlinx.serialization.SerialName
-import kotlinx.serialization.Serializable
 import kotlin.math.abs
 
 // Angle and status packets of the DrillBalancer service (ble_protocol.h).
 // Angles are int16 centi-degrees on the wire.
 
-/** level_mode_t; [key] is the settings JSON name. */
-@Serializable
-enum class LevelMode(val wire: Int, val key: String) {
-    @SerialName("wall") WALL(0, "wall"),     // horizontal hole: elevation 0 plus relative yaw
-    @SerialName("floor") FLOOR(1, "floor"),  // vertical hole (floor or ceiling): 2D bubble
-    @SerialName("angle") ANGLE(2, "angle");  // reserved, never produced now; shown as the wall view
+/** level_mode_t: the view the device picked from how it sits. */
+enum class LevelMode(val wire: Int) {
+    WALL(0),    // the crosshair, bit away from vertical: elevation 0 plus relative yaw
+    FLOOR(1),   // the bubble, bit near vertical (floor or ceiling)
+    ANGLE(2);   // reserved, only older firmware sends it; shown as the wall view
 
     companion object {
         fun fromWire(v: Int): LevelMode? = entries.firstOrNull { it.wire == v }
@@ -46,7 +43,7 @@ object AngleFlags {
     const val NEAR = 1 shl 1
     const val YAW_VALID = 1 shl 2
     const val YAW_STALE = 1 shl 3
-    const val ZERO_SET = 1 shl 4    // any mode, also with the bit vertical (YAW_VALID clear)
+    const val ZERO_SET = 1 shl 4    // any view, also with the bit vertical (YAW_VALID clear)
     const val STILL = 1 shl 5
     const val IMU_OK = 1 shl 6      // without it only ZERO_SET can be set; angles meaningless
 }
@@ -78,7 +75,7 @@ data class AnglePacket(
     val yawDeg: Float get() = yawCdeg / 100f               // turned right since zero is positive
     val bubbleXDeg: Float get() = bubbleXCdeg / 100f
     val bubbleYDeg: Float get() = bubbleYCdeg / 100f
-    val deviationDeg: Float get() = deviationCdeg / 100f   // what the mode judges
+    val deviationDeg: Float get() = deviationCdeg / 100f   // what the view judges
 
     val onTarget: Boolean get() = has(AngleFlags.ON_TARGET)
     val near: Boolean get() = has(AngleFlags.NEAR)

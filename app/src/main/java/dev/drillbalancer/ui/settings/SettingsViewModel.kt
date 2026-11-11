@@ -6,7 +6,6 @@ import dev.drillbalancer.device.DeviceError
 import dev.drillbalancer.device.DeviceSession
 import dev.drillbalancer.protocol.AttError
 import dev.drillbalancer.protocol.DeviceSettings
-import dev.drillbalancer.protocol.LevelMode
 import dev.drillbalancer.protocol.SettingsField
 import dev.drillbalancer.protocol.SettingsUpdate
 import dev.drillbalancer.ui.PairingGate
@@ -38,7 +37,7 @@ class SettingsViewModel(private val session: DeviceSession, private val gate: Pa
     val state: StateFlow<SettingsUiState> = _state.asStateFlow()
 
     init {
-        // Changes from elsewhere (mode tab, device screen) show up; the user's edits stay.
+        // Changes from elsewhere (calibration, device screen) show up; the user's edits stay.
         viewModelScope.launch {
             session.settings.collect { s -> if (s != null) rebase(s) }
         }
@@ -49,8 +48,6 @@ class SettingsViewModel(private val session: DeviceSession, private val gate: Pa
 
     /** A typed value, already checked with entryError(). */
     fun set(field: SettingsField, value: Float) = edit { it.with(field, value) }
-
-    fun setMode(mode: LevelMode) = edit { it.copy(mode = mode) }
 
     fun setBle(enabled: Boolean) = edit { it.copy(bleEnabled = enabled) }
     fun setDotInvert(inverted: Boolean) = edit { it.copy(dotInvert = inverted) }

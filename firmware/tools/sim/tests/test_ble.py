@@ -182,21 +182,21 @@ class BleTest(unittest.IsolatedAsyncioTestCase):
     async def test_long_config_read_is_consistent(self):
         self.connect()
         first = self.read("config", mtu=23)[:22]   # Read Request: MTU - 1 bytes
-        self.write("command", b"\x03\x02")          # SET_MODE angle between the blobs
+        self.assertEqual(self.dev.ui_settings('{"bright":50}'), 0)   # the device screen, between the blobs
         self.dev.advance(10)
         rest = self.read("config", 22, mtu=23)       # Read Blob
-        self.assertEqual(json.loads(first + rest)["mode"], "wall")
-        self.assertEqual(json.loads(self.read("config"))["mode"], "angle")
+        self.assertEqual(json.loads(first + rest)["bright"], 100)
+        self.assertEqual(json.loads(self.read("config"))["bright"], 50)
         whole = self.read("config")
         self.assertEqual(self.att(self.read, "config", len(whole) + 1), 0x07)
 
     async def test_write_errors_map_to_att_codes(self):
         self.connect()
         self.assertEqual(self.att(self.write, "config", b"nope"), 0x80)
-        self.assertEqual(self.att(self.write, "config", b'{"mode":5}'), 0x81)
+        self.assertEqual(self.att(self.write, "config", b'{"tol":"x"}'), 0x81)
         self.assertEqual(self.att(self.write, "command", b""), 0x0D)
         self.assertEqual(self.att(self.write, "command", b"\x99"), 0x84)
-        self.assertEqual(self.att(self.write, "command", b"\x03\x07"), 0x85)
+        self.assertEqual(self.att(self.write, "command", b"\x23\x00"), 0x85)
         self.dev.busy_next_commands(1)
         self.assertEqual(self.att(self.write, "command", b"\x01"), 0x86)
         self.assertEqual(self.att(self.write, "command", b"\x01"), 0)
@@ -204,6 +204,17 @@ class BleTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.att(self.write, "config", b"{}", offset=18), 0x07)
         self.dev.store_fail = True
         self.assertEqual(self.att(self.write, "config", b'{"tol":0.3}'), 0x83)
+
+    async def test_mode_write_from_an_older_app_is_ignored(self):
+        # The device picks the view: an older app's mode is taken without an error,
+        # changes nothing and is not read back.
+        self.connect()
+        before = json.loads(self.read("config"))
+        self.assertEqual(self.att(self.write, "config", b'{"mode":"floor"}'), 0)
+        self.dev.advance(10)
+        after = json.loads(self.read("config"))
+        self.assertNotIn("mode", after)
+        self.assertEqual(after, before)
 
     async def test_protected_write_proves_authentication(self):
         self.connect()
@@ -246,15 +257,16 @@ class BleTest(unittest.IsolatedAsyncioTestCase):
             self.p.gatt_write("ota_data", b"\x00\x00" + bytes(16), {**other, "type": "command"})
             self.assertEqual(self.dev.ota_rx_bytes, rx)
             self.assertEqual(self.att(self.p.gatt_write, "config", b'{"tol":0.4}', other), 0x0E)
-            self.assertEqual(self.att(self.p.gatt_write, "command", b"\x03\x02", other), 0x0E)
+            self.assertEqual(self.att(self.p.gatt_write, "command", b"\x10", other), 0x0E)   # MOUNT_CAL_START
             self.assertEqual(self.att(self.p.gatt_read, "config", other), 0x0E)
             self.assertEqual(self.dev.mtu, mtu)
             self.dev.advance(10)
             self.assertEqual(json.loads(self.dev.read_char("config")), json.loads(cfg))
+            self.assertEqual(dc.decode_status(self.dev.read_char("status")).cal_kind, 0)
             if linked:
                 self.disconnect()
         # Without a link, not even the last peer gets through.
-        self.assertEqual(self.att(self.write, "command", b"\x03\x02"), 0x0E)
+        self.assertEqual(self.att(self.write, "command", b"\x10"), 0x0E)
 
     async def test_mtu_from_options(self):
         self.connect()

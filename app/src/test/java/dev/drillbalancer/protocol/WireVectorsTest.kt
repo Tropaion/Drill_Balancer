@@ -164,8 +164,6 @@ class WireVectorsTest {
     fun commandBytes() {
         val cases = mapOf(
             Command.Zero to "01", Command.ClearZero to "02",
-            Command.SetMode(LevelMode.WALL) to "0300", Command.SetMode(LevelMode.FLOOR) to "0301",
-            Command.SetMode(LevelMode.ANGLE) to "0302",
             Command.MountCalStart to "10", Command.MountCalFinish to "11",
             Command.AccelCalStart to "12", Command.AccelCalFinish to "13", Command.CalCancel to "14",
             Command.Sleep to "20", Command.PowerOff to "21", Command.Reboot to "22",

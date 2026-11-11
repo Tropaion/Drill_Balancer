@@ -8,7 +8,6 @@ import dev.drillbalancer.protocol.Command
 import dev.drillbalancer.protocol.DeviceSettings
 import dev.drillbalancer.protocol.LevelMode
 import dev.drillbalancer.ui.PairingGate
-import dev.drillbalancer.ui.attempt
 import dev.drillbalancer.ui.runCommand
 import dev.drillbalancer.ui.components.UiMessage
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -24,11 +23,11 @@ import kotlinx.coroutines.flow.transformLatest
 import kotlinx.coroutines.launch
 
 /**
- * What the live screen lays out by. Only changes when the mode or a flag changes, not with
+ * What the live screen lays out by. Only changes when the view or a flag changes, not with
  * every angle packet; the numbers come straight from [LiveViewModel.angle].
  */
 data class LiveUiState(
-    val mode: LevelMode = LevelMode.WALL,   // the selected tab: a pending request, else the device's
+    val mode: LevelMode = LevelMode.WALL,   // the view the angle packets report; WALL without them
     val hasAngle: Boolean = false,
     val imuOk: Boolean = true,
     val zeroSet: Boolean = false,
@@ -70,14 +69,13 @@ class LiveViewModel(private val session: DeviceSession, private val gate: Pairin
     private val layout = angle
         .map { a -> a?.let { Layout(it.mode, it.imuOk, it.zeroSet, it.yawValid, it.yawStale) } }
         .distinctUntilChanged()
-    private val pendingMode = MutableStateFlow<LevelMode?>(null)
     private val busy = MutableStateFlow(false)
     private val message = MutableStateFlow<UiMessage?>(null)
 
-    val state: StateFlow<LiveUiState> = combine(layout, session.settings, pendingMode, busy, message) { l, s, p, b, m ->
+    val state: StateFlow<LiveUiState> = combine(layout, session.settings, busy, message) { l, s, b, m ->
         val cfg = s ?: DeviceSettings.DEFAULTS
         LiveUiState(
-            mode = p ?: l?.mode ?: cfg.mode,
+            mode = l?.mode ?: LevelMode.WALL,
             hasAngle = l != null,
             imuOk = l?.imuOk ?: true,
             zeroSet = l?.zeroSet == true,
@@ -90,27 +88,6 @@ class LiveViewModel(private val session: DeviceSession, private val gate: Pairin
             message = m,
         )
     }.stateIn(viewModelScope, SharingStarted.Eagerly, LiveUiState())
-
-    init {
-        // The tab follows the device again once it reports the requested mode.
-        viewModelScope.launch {
-            layout.collect { l -> if (l != null && l.mode == pendingMode.value) pendingMode.value = null }
-        }
-    }
-
-    fun setMode(mode: LevelMode) {
-        if (mode == state.value.mode) return
-        pendingMode.value = mode
-        viewModelScope.launch {
-            val sent = gate.attempt(::show) { session.sendCommand(Command.SetMode(mode)) }
-            if (sent == null) {
-                pendingMode.value = null
-                return@launch
-            }
-            delay(MODE_WAIT_MS)
-            if (pendingMode.value == mode) pendingMode.value = null
-        }
-    }
 
     fun zero() = command(Command.Zero)
 
@@ -125,12 +102,7 @@ class LiveViewModel(private val session: DeviceSession, private val gate: Pairin
         viewModelScope.launch { gate.runCommand(command, { busy.value = it }, { message.value = it }) }
     }
 
-    private fun show(m: UiMessage) {
-        message.value = m
-    }
-
     private companion object {
-        const val MODE_WAIT_MS = 3_000L
         const val STALE_MS = 1_000L
     }
 }

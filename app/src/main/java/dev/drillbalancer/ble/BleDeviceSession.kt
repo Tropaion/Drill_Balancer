@@ -119,10 +119,7 @@ class BleDeviceSession(
         object : DrillBalancerManager.Events {
             // Undecodable packets are dropped; the next one comes within 100 ms / 1 s.
             override fun onAngle(value: ByteArray) {
-                AnglePacket.decode(value).getOrNull()?.let {
-                    _angle.value = it
-                    syncMode(it)
-                }
+                AnglePacket.decode(value).getOrNull()?.let { _angle.value = it }
             }
 
             override fun onStatus(value: ByteArray) {
@@ -252,8 +249,6 @@ class BleDeviceSession(
     override suspend fun sendCommand(command: Command) {
         requireReady()
         withExpectedDrop(expectedDrop(command)) { gatt(GattOp.COMMAND) { writeCommand(command.encode()) } }
-        // SET_MODE is stored in the settings (control.c); config is not notified.
-        if (command is Command.SetMode) _settings.update { it?.copy(mode = command.mode) }
     }
 
     // One at a time: a stopped transfer may still be sending ABORT, and its clean-up
@@ -416,12 +411,6 @@ class BleDeviceSession(
             if (retry) startReconnect(was.address, error)
             return
         }
-    }
-
-    // The settings' mode follows the angle packets: a mode change on the device is stored
-    // as the start mode (control.c change_mode), and the config is not notified.
-    private fun syncMode(a: AnglePacket) = _settings.update { s ->
-        if (s == null || s.mode == a.mode) s else s.copy(mode = a.mode)
     }
 
     // The settings' calibration state follows the status flags (same source on the device).

@@ -29,7 +29,6 @@ object SettingsLimits {
 enum class SettingsField(val key: String) {
     TOL("tol"),
     NEAR("near"),
-    MODE("mode"),
     BRIGHT("bright"),
     DIM_BRIGHT("dim_bright"),
     DIM_S("dim_s"),
@@ -46,13 +45,13 @@ data class CalState(val mount: Boolean = false, val accel: Boolean = false)
 
 /**
  * The device settings as the config characteristic reads them (settings.h). [cal] and
- * [schemaVersion] are read-only: the device ignores them on write.
+ * [schemaVersion] are read-only: the device ignores them on write. Older firmware also
+ * sends its start mode and target ("mode", "target"); they are ignored here.
  */
 @Serializable
 data class DeviceSettings(
     @SerialName("tol") val toleranceDeg: Float,
     @SerialName("near") val nearDeg: Float,
-    @SerialName("mode") val mode: LevelMode,
     @SerialName("bright") val brightnessPct: Int,
     @SerialName("dim_bright") val dimBrightnessPct: Int,
     @SerialName("dim_s") val dimAfterS: Int,
@@ -100,7 +99,6 @@ data class DeviceSettings(
         val DEFAULTS = DeviceSettings(
             toleranceDeg = 0.5f,
             nearDeg = 2.0f,
-            mode = LevelMode.WALL,
             brightnessPct = 100,
             dimBrightnessPct = 20,
             dimAfterS = 30,
@@ -160,7 +158,6 @@ class SettingsUpdate(fields: Set<SettingsField>, val values: DeviceSettings) {
 private fun SettingsField.differs(a: DeviceSettings, b: DeviceSettings): Boolean = when (this) {
     SettingsField.TOL -> a.toleranceDeg != b.toleranceDeg
     SettingsField.NEAR -> a.nearDeg != b.nearDeg
-    SettingsField.MODE -> a.mode != b.mode
     SettingsField.BRIGHT -> a.brightnessPct != b.brightnessPct
     SettingsField.DIM_BRIGHT -> a.dimBrightnessPct != b.dimBrightnessPct
     SettingsField.DIM_S -> a.dimAfterS != b.dimAfterS
@@ -174,7 +171,6 @@ private fun SettingsField.differs(a: DeviceSettings, b: DeviceSettings): Boolean
 private fun SettingsField.json(s: DeviceSettings): String = when (this) {
     SettingsField.TOL -> formatFloat(s.toleranceDeg)
     SettingsField.NEAR -> formatFloat(s.nearDeg)
-    SettingsField.MODE -> "\"${s.mode.key}\""
     SettingsField.BRIGHT -> s.brightnessPct.toString()
     SettingsField.DIM_BRIGHT -> s.dimBrightnessPct.toString()
     SettingsField.DIM_S -> s.dimAfterS.toString()
@@ -188,7 +184,6 @@ private fun SettingsField.json(s: DeviceSettings): String = when (this) {
 private fun SettingsField.copy(from: DeviceSettings, to: DeviceSettings): DeviceSettings = when (this) {
     SettingsField.TOL -> to.copy(toleranceDeg = from.toleranceDeg)
     SettingsField.NEAR -> to.copy(nearDeg = from.nearDeg)
-    SettingsField.MODE -> to.copy(mode = from.mode)
     SettingsField.BRIGHT -> to.copy(brightnessPct = from.brightnessPct)
     SettingsField.DIM_BRIGHT -> to.copy(dimBrightnessPct = from.dimBrightnessPct)
     SettingsField.DIM_S -> to.copy(dimAfterS = from.dimAfterS)

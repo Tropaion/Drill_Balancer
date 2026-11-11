@@ -110,7 +110,6 @@ class FirmwareConformanceTest {
     fun commandOpcodes() {
         val kotlin = mapOf(
             "DB_CMD_ZERO" to Command.Zero, "DB_CMD_CLEAR_ZERO" to Command.ClearZero,
-            "DB_CMD_SET_MODE" to Command.SetMode(LevelMode.WALL),
             "DB_CMD_MOUNT_CAL_START" to Command.MountCalStart, "DB_CMD_MOUNT_CAL_FINISH" to Command.MountCalFinish,
             "DB_CMD_ACCEL_CAL_START" to Command.AccelCalStart, "DB_CMD_ACCEL_CAL_FINISH" to Command.AccelCalFinish,
             "DB_CMD_CAL_CANCEL" to Command.CalCancel, "DB_CMD_SLEEP" to Command.Sleep,
@@ -237,11 +236,9 @@ class FirmwareConformanceTest {
         val read = Regex("""READ\(read_\w+\(o, "(\w+)"""").findAll(FirmwareSources.code(settingsC)).map { it.groupValues[1] }.toList()
         assertEquals(SettingsField.entries.map { it.key }, read)
 
-        val names = Regex("""\[(LEVEL_MODE_\w+)\] = "(\w+)"""").findAll(FirmwareSources.code(settingsC))
-            .associate { it.groupValues[1] to it.groupValues[2] }
-        assertEquals(LevelMode.entries.associate { "LEVEL_MODE_${it.name}" to it.key }, names)
-        val serial = LevelMode.serializer().descriptor
-        for (m in LevelMode.entries) assertEquals(m.key, serial.getElementName(m.ordinal))
+        // The views by name, in level.h order.
+        val modes = FirmwareSources.enum("components/level/include/level.h", "level_mode_t").keys - "LEVEL_MODE_COUNT"
+        assertEquals(LevelMode.entries.map { "LEVEL_MODE_${it.name}" }, modes.toList())
     }
 
     @Test
@@ -252,7 +249,6 @@ class FirmwareConformanceTest {
         val d = DeviceSettings.DEFAULTS
         assertEquals(v["tolerance_deg"]!!.removeSuffix("f").toFloat(), d.toleranceDeg)
         assertEquals(v["near_deg"]!!.removeSuffix("f").toFloat(), d.nearDeg)
-        assertEquals(v["mode"], "LEVEL_MODE_${d.mode.name}")
         assertEquals(v["brightness_pct"]!!.toInt(), d.brightnessPct)
         assertEquals(v["dim_brightness_pct"]!!.toInt(), d.dimBrightnessPct)
         assertEquals(v["dim_after_s"]!!.toInt(), d.dimAfterS)

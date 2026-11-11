@@ -263,7 +263,7 @@ private fun ConnectedApp(
                 val state by vm.state.collectAsStateWithLifecycle()
                 val angle = vm.angle.collectAsStateWithLifecycle()
                 val read = remember(angle) { { angle.value } }
-                LiveScreen(state, read, vm::setMode, vm::zero, vm::clearZero, vm::dismissMessage, banner = { FirmwareNotice(updates) })
+                LiveScreen(state, read, vm::zero, vm::clearZero, vm::dismissMessage, banner = { FirmwareNotice(updates) })
             }
             composable<Dest.Settings> {
                 val vm = viewModel { SettingsViewModel(session, gate) }
@@ -278,8 +278,7 @@ private fun ConnectedApp(
                 SettingsScreen(
                     state,
                     SettingsActions(
-                        step = vm::step, set = vm::set, setMode = vm::setMode, setBle = vm::setBle,
-                        setDotInvert = vm::setDotInvert,
+                        step = vm::step, set = vm::set, setBle = vm::setBle, setDotInvert = vm::setDotInvert,
                         save = vm::save, discard = vm::discard, reload = vm::reload, dismissMessage = vm::dismissMessage,
                     ),
                 )

@@ -36,7 +36,7 @@ PUSH_MS = 66                  # ui_priv.h UI_TICK_MS: the device redraws at this
 LOG_LEN = 600
 
 # ble_protocol.h
-CMD_NAMES = {0x01: "ZERO", 0x02: "CLEAR_ZERO", 0x03: "SET_MODE", 0x10: "MOUNT_CAL_START",
+CMD_NAMES = {0x01: "ZERO", 0x02: "CLEAR_ZERO", 0x10: "MOUNT_CAL_START",
              0x11: "MOUNT_CAL_FINISH", 0x12: "ACCEL_CAL_START", 0x13: "ACCEL_CAL_FINISH",
              0x14: "CAL_CANCEL", 0x20: "SLEEP", 0x21: "POWER_OFF", 0x22: "REBOOT",
              0x23: "FACTORY_RESET"}
@@ -46,7 +46,6 @@ ATT_NAMES = {0x05: "insufficient authentication", 0x07: "invalid offset",
              0x81: "JSON_TYPE", 0x82: "JSON_RANGE", 0x83: "STORE", 0x84: "UNKNOWN_CMD",
              0x85: "BAD_ARG", 0x86: "BUSY", 0x87: "UNAVAILABLE", 0x88: "REC_STATE",
              0x89: "REC_RADIO", 0x8A: "REC_BATTERY"}
-MODES = ("wall", "floor", "angle")
 PRESETS = {"wall": 0.0, "floor": -90.0, "ceiling": 90.0, "deg45": 45.0}   # elevation
 BUTTONS = ("cal_left", "cal_right", "set_mount", "set_sensor", "set_clear_zero", "set_reset",
            "set_back", "confirm_cancel", "confirm_reset", "rec_pill")
@@ -119,8 +118,6 @@ def describe_write(char: str, value: bytes) -> str:
     """A GATT write as the log shows it."""
     if char == "command" and value:
         name = CMD_NAMES.get(value[0], f"0x{value[0]:02X}")
-        if value[0] == 0x03 and len(value) > 1:
-            return f"command {name} {MODES[value[1]] if value[1] < 3 else value[1]}"
         return f"command {name}" + (f" {value[1:].hex()}" if len(value) > 1 else "")
     if char == "ota_ctrl" and value:
         op = OTA_OPS.get(value[0], f"0x{value[0]:02X}")

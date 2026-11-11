@@ -104,7 +104,7 @@ static void load_cfg(void)
 
 // settings_update() callback: only the fields the user changed on this
 // screen (edit against base) go on top of the stored settings, under the
-// store mutex, so a mode change, calibration or BLE write stored meanwhile
+// store mutex, so a calibration or BLE write stored meanwhile
 // (or at the same moment), even one to another field of this screen, is not
 // overwritten. A BLE write to the same field the user changed loses.
 static bool merge_edit(settings_t *cur, void *ctx)

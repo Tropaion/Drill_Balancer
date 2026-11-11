@@ -303,13 +303,14 @@ class Writer:
 
 
 def realistic(seconds=3.0, loss_every=9, drop_seq=None, end=True, period_us=2230.0, audio_rate=16000.4,
-              imu_delay_us=0):
+              imu_delay_us=0, tail=None, view=lambda i: 0):
     """IMU reads every ~20 ms with one sample lost in read mode per read (except every loss_every-th),
     audio blocks of 256 frames, LEVEL at 10 Hz, STATS at 1 Hz, a MARK, END. drop_seq: the first
     IMU record from that seq on is dropped (as by a full ring). imu_delay_us: no IMU record before
-    (the profile switch at the take start)."""
+    (the profile switch at the take start). tail: the SESSION tail (session_payload). view: the
+    level_mode_t of LEVEL row i."""
     w = Writer()
-    w.rec(dbrec.T_SESSION, session_payload())
+    w.rec(dbrec.T_SESSION, session_payload(tail=tail))
     rng = np.random.default_rng(3)
     ts0 = 0x00FFF000
     n_samples = int(seconds * 1e6 / period_us)
@@ -339,7 +340,8 @@ def realistic(seconds=3.0, loss_every=9, drop_seq=None, end=True, period_us=2230
             w.audio(a_next * 256, int(T + round((a_next + 1) * 256 / audio_rate * 1e6)), s)
             a_next += 1
         while lvl_next * 100000 <= t_now:
-            w.rec(dbrec.T_LEVEL, dbrec.LEVEL.pack(T + lvl_next * 100000, 0, 0x40, 30, 0, 0, 0, 30, 0, 0, 0))
+            w.rec(dbrec.T_LEVEL, dbrec.LEVEL.pack(T + lvl_next * 100000, view(lvl_next), 0x40, 30, 0, 0, 0, 30,
+                                                  0, 0, 0))
             if lvl_next % 10 == 5:
                 w.rec(dbrec.T_STATS, dbrec.STATS.pack(T + lvl_next * 100000, k, k // 10, 2230000, 0, 0, 0, 0, 5000,
                                                       4 << 20, 0, 0, 3900, 70 - lvl_next // 10, 1))
@@ -377,6 +379,18 @@ class RealisticExportTest(TempDirTest):
         rec = dio.read_recording(dest)
         self.assertAlmostEqual(rec.filled.mean(), 1 / 9.5, delta=0.03)
         self.assertEqual(rec.device_events["code"].tolist(), ["MARK"])
+
+    def test_level_meta_without_mode_in_settings(self):
+        # The device picks the view: its settings have no mode or target, and the LEVEL rows carry
+        # the view in use, the bubble first, then the crosshair (the app's FinalizerTest
+        # levelMetaFromTheFirstLevelRow gives the same meta.level).
+        meta, dest, _ = self.export(realistic(tail={"settings": {"tol": 0.5, "near": 2}},
+                                              view=lambda i: 1 if i < 15 else 0))
+        self.assertEqual(meta["level"], {"mode": "floor", "target_deg": 0.0, "tol_deg": 0.5, "near_deg": 2.0})
+        rec = dio.read_recording(dest)
+        self.assertEqual(sorted(set(rec.level["mode"])), [0, 1])
+        rep = validate_recording(dest)
+        self.assertEqual(rep.errors, [], rep.to_dict())
 
     def test_dropped_imu_record_is_a_transport_gap(self):
         meta, dest, st = self.export(realistic(drop_seq=40))

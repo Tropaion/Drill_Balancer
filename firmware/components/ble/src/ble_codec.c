@@ -228,10 +228,6 @@ uint8_t ble_codec_parse_cmd(const uint8_t *data, size_t len, app_cmd_id_t *id, i
     case DB_CMD_SLEEP:            cmd = APP_CMD_SLEEP; break;
     case DB_CMD_POWER_OFF:        cmd = APP_CMD_POWER_OFF; break;
     case DB_CMD_REBOOT:           cmd = APP_CMD_REBOOT; break;
-    case DB_CMD_SET_MODE:
-        cmd = APP_CMD_SET_MODE;
-        want_len = 2;
-        break;
     case DB_CMD_FACTORY_RESET:
         cmd = APP_CMD_FACTORY_RESET;
         want_len = 2;
@@ -243,12 +239,7 @@ uint8_t ble_codec_parse_cmd(const uint8_t *data, size_t len, app_cmd_id_t *id, i
     if (len != want_len) {
         return BLE_CODEC_ATT_INVALID_LEN;
     }
-    if (cmd == APP_CMD_SET_MODE) {
-        if (data[1] >= LEVEL_MODE_COUNT) {
-            return DB_ATT_ERR_BAD_ARG;
-        }
-        value = data[1];
-    } else if (cmd == APP_CMD_FACTORY_RESET && data[1] != DB_CMD_FACTORY_RESET_CONFIRM) {
+    if (cmd == APP_CMD_FACTORY_RESET && data[1] != DB_CMD_FACTORY_RESET_CONFIRM) {
         return DB_ATT_ERR_BAD_ARG;
     }
 

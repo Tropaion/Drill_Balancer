@@ -5,7 +5,6 @@ import dev.drillbalancer.device.DisconnectReason
 import dev.drillbalancer.protocol.AttError
 import dev.drillbalancer.protocol.Command
 import dev.drillbalancer.protocol.DeviceSettings
-import dev.drillbalancer.protocol.LevelMode
 import dev.drillbalancer.protocol.SettingsUpdate
 import no.nordicsemi.android.ble.callback.FailCallback
 import no.nordicsemi.android.ble.observer.ConnectionObserver
@@ -234,7 +233,7 @@ class GattErrorsTest {
         assertEquals(DisconnectReason.REBOOT, expectedDrop(Command.Reboot))
         assertEquals(DisconnectReason.FACTORY_RESET, expectedDrop(Command.FactoryReset))
         assertNull(expectedDrop(Command.Zero))
-        assertNull(expectedDrop(Command.SetMode(LevelMode.FLOOR)))
+        assertNull(expectedDrop(Command.ClearZero))
 
         val base = DeviceSettings.DEFAULTS
         assertEquals(DisconnectReason.BLE_DISABLED, expectedDrop(SettingsUpdate.diff(base, base.copy(bleEnabled = false))))

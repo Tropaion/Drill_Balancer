@@ -75,22 +75,27 @@ class FakeDeviceSessionTest {
     }
 
     @Test
-    fun zeroAndModes() = runTest {
+    fun zeroAndViews() = runTest {
         val s = FakeDeviceSession()
-        s.setOrientation(5f, yawDeg = 10f)
+        s.setOrientation(5f, yawDeg = 10f, bubbleXDeg = 1f)
         assertEquals(LevelStatus.OFF, s.angle.value!!.status)
         s.sendCommand(Command.Zero)
         val a = s.angle.value!!
         assertTrue(a.zeroSet && a.yawValid)
         assertEquals(0f, a.elevationDeg, 0f)
         assertEquals(LevelStatus.ON_TARGET, a.status)
-        s.sendCommand(Command.SetMode(LevelMode.ANGLE))   // shares the zero with WALL
-        assertTrue(s.angle.value!!.zeroSet)
-        assertEquals(LevelMode.ANGLE, s.settings.value!!.mode)
-        assertEquals(0f, s.angle.value!!.deviationDeg, 0.01f)   // no target any more: the elevation
-        s.sendCommand(Command.SetMode(LevelMode.FLOOR))   // other family: zero cleared
-        assertFalse(s.angle.value!!.zeroSet)
-        s.sendCommand(Command.Zero)
+        s.setView(LevelMode.ANGLE)   // as older firmware reports it: the wall view
+        assertEquals(LevelMode.ANGLE, s.angle.value!!.mode)
+        assertTrue(s.angle.value!!.yawValid)
+        assertEquals(0f, s.angle.value!!.deviationDeg, 0.01f)   // no target: the elevation
+        s.setView(LevelMode.FLOOR)   // the bubble: no yaw, and the zero kept for the crosshair
+        val f = s.angle.value!!
+        assertEquals(LevelMode.FLOOR, f.mode)
+        assertTrue(f.zeroSet)
+        assertFalse(f.yawValid)
+        assertEquals(1f, f.bubbleXDeg, 0.01f)   // the bubble has no zero
+        s.setView(LevelMode.WALL)
+        assertTrue(s.angle.value!!.yawValid)
         s.sendCommand(Command.ClearZero)
         assertFalse(s.angle.value!!.zeroSet)
     }
@@ -99,11 +104,11 @@ class FakeDeviceSessionTest {
     fun settingsWriteAppliesOnlyChangedKeys() = runTest {
         val s = FakeDeviceSession()
         val base = s.readSettings()
-        // Meanwhile the device changed the mode.
-        s.sendCommand(Command.SetMode(LevelMode.FLOOR))
+        // Meanwhile the tolerance was changed on the device.
+        s.changeOnDevice { it.copy(toleranceDeg = 0.3f) }
         val stored = s.writeSettings(SettingsUpdate.diff(base, base.copy(brightnessPct = 50))).settings
         assertEquals(50, stored.brightnessPct)
-        assertEquals(LevelMode.FLOOR, stored.mode)
+        assertEquals(0.3f, stored.toleranceDeg, 0f)
         assertEquals(stored, s.settings.value)
 
         // A write that breaks a cross-field rule with the stored values: ATT 0x82.

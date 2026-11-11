@@ -77,7 +77,7 @@ extern "C" {
 #define DB_ANGLE_FLAG_NEAR       (1u << 1)
 #define DB_ANGLE_FLAG_YAW_VALID  (1u << 2)
 #define DB_ANGLE_FLAG_YAW_STALE  (1u << 3)
-#define DB_ANGLE_FLAG_ZERO_SET   (1u << 4)   // a zero is set (any mode; also with the bit
+#define DB_ANGLE_FLAG_ZERO_SET   (1u << 4)   // a zero is set (any view; also with the bit
                                              // vertical, where YAW_VALID stays clear)
 #define DB_ANGLE_FLAG_STILL      (1u << 5)
 #define DB_ANGLE_FLAG_IMU_OK     (1u << 6)
@@ -125,7 +125,7 @@ typedef struct __attribute__((packed)) {
 // command characteristic: u8 opcode, then args
 #define DB_CMD_ZERO             0x01
 #define DB_CMD_CLEAR_ZERO       0x02
-#define DB_CMD_SET_MODE         0x03   // u8 mode
+// 0x03 reserved (was SET_MODE)
 // A calibration started over BLE is cancelled when the link drops. Any
 // calibration is cancelled after a long idle time (sleep_s + 5 min).
 #define DB_CMD_MOUNT_CAL_START  0x10
@@ -220,7 +220,7 @@ typedef struct __attribute__((packed)) {
 #define DB_ATT_ERR_JSON_RANGE   0x82   // config: a value or combination is out of range
 #define DB_ATT_ERR_STORE        0x83   // config: saving to flash failed, nothing changed
 #define DB_ATT_ERR_UNKNOWN_CMD  0x84   // command: unknown opcode
-#define DB_ATT_ERR_BAD_ARG      0x85   // command: bad mode, or FACTORY_RESET without 0xA5
+#define DB_ATT_ERR_BAD_ARG      0x85   // command: FACTORY_RESET without 0xA5
 #define DB_ATT_ERR_BUSY         0x86   // command: queue full, try again; a calibration
                                        // START while a recording session or an OTA
                                        // update runs (OTA, calibration and a session

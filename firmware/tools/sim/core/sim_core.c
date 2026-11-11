@@ -2692,30 +2692,6 @@ static void enter_off(void)
     halt(SIM_STATE_OFF, SIM_EV_POWER_OFF);
 }
 
-typedef struct {
-    int32_t arg;
-} mode_change_t;
-
-static bool apply_mode(settings_t *s, void *ctx)
-{
-    const mode_change_t *c = ctx;
-    const int32_t n = LEVEL_MODE_COUNT;
-    int32_t m = c->arg;
-    if (m < 0 || m >= n) {
-        return false;
-    }
-    s->mode = (level_mode_t)m;
-    return true;
-}
-
-static void change_mode(int32_t arg)
-{
-    mode_change_t c = {.arg = arg};
-    if (settings_update(apply_mode, &c) != 0) {
-        LOGW("mode not changed");
-    }
-}
-
 // OTA, calibration and a recording session exclude each other
 // (app_excl_acquire()); a refused start is counted for the screen.
 static void start_cal(app_cal_kind_t kind, int32_t arg)
@@ -2840,9 +2816,6 @@ static void handle_cmd(const app_cmd_t *cmd)
         break;
     case APP_CMD_CLEAR_ZERO:
         sensor_clear_zero();
-        break;
-    case APP_CMD_SET_MODE:
-        change_mode(cmd->arg);
         break;
     case APP_CMD_MOUNT_CAL_START:
         start_cal(APP_CAL_MOUNT, cmd->arg);

@@ -14,9 +14,9 @@ class CommandTest(DeviceTest):
         self.assertEqual(w(b""), 0x0D)
         self.assertEqual(w(b"\x99"), 0x84)
         self.assertEqual(w(b"\x01\x00"), 0x0D)          # ZERO takes no argument
-        self.assertEqual(w(b"\x03"), 0x0D)              # SET_MODE needs one
-        self.assertEqual(w(b"\x03\x03"), 0x85)          # mode out of range
-        self.assertEqual(w(b"\x03\x01\x00"), 0x0D)
+        # SET_MODE is gone (the device picks the view): its opcode is reserved.
+        self.assertEqual(w(b"\x03\x00"), 0x84)
+        self.assertEqual(w(b"\x03"), 0x84)
         self.assertEqual(w(b"\x23"), 0x0D)              # FACTORY_RESET needs 0xA5
         self.assertEqual(w(b"\x23\x00"), 0x85)
         self.assertEqual(w(b"\x10" * 513), 0x0D)
@@ -31,17 +31,12 @@ class CommandTest(DeviceTest):
         self.dev.advance(250)   # the next control pass empties the queue
         self.assertEqual(w(b"\x01"), 0)
 
-    def test_zero_mode_and_cal_commands(self):
+    def test_zero_and_cal_commands(self):
         self.settle()
         self.assertEqual(self.cmd("zero"), 0)
         self.assertTrue(self.angle().flags & F["zero_set"])
         self.assertEqual(self.cmd("clear-zero"), 0)
         self.assertFalse(self.angle().flags & F["zero_set"])
-
-        # The stored mode no longer drives the view: the pose does (wall here).
-        self.assertEqual(self.cmd("set-mode", "angle"), 0)
-        self.assertEqual(self.angle().mode, 0)
-        self.assertEqual(self.config()["mode"], "angle")
 
         self.assertEqual(self.cmd("mount-cal-start"), 0)
         st = self.status()
@@ -151,14 +146,14 @@ class CommandTest(DeviceTest):
     def test_factory_reset(self):
         self.connect()
         self.settle()
-        self.assertEqual(self.write_config(tol=0.3, mode="floor"), 0)
+        self.assertEqual(self.write_config(tol=0.3, bright=50), 0)
         self.assertEqual(self.cmd("zero"), 0)
         self.assertEqual(self.cmd("mount-cal-start"), 0)
         self.assertEqual(self.cmd("factory-reset"), 0)
         self.assertTrue(self.names("clear_bonds"))
         self.assertIn("factory_reset", [d["reason"] for _, d in self.names("disconnect_request")])
         cfg = self.config()
-        self.assertEqual((cfg["tol"], cfg["mode"]), (0.5, "wall"))
+        self.assertEqual((cfg["tol"], cfg["bright"]), (0.5, 100))
         a = self.angle()
         self.assertFalse(a.flags & F["zero_set"])
         self.assertEqual(self.status().cal_kind, 0)

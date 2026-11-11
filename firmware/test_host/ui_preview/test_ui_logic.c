@@ -93,7 +93,7 @@ static void test_dot_is_bubble_on_floor_and_aim_point_otherwise(void)
     ui_dot_deg(&r, false, &x, &y);
     TEST_ASSERT_EQUAL_FLOAT(5.0f, x);
     TEST_ASSERT_EQUAL_FLOAT(1.5f, y);
-    // Angle: the error against the target; no yaw without a zero.
+    // The reserved ANGLE reads as the wall view; no yaw without a zero.
     r.mode = LEVEL_MODE_ANGLE;
     r.deviation_deg = -0.8f;
     r.yaw_valid = false;
@@ -439,7 +439,7 @@ static void test_format_fields(void)
     TEST_ASSERT_EQUAL_STRING("30 min", buf);
 }
 
-static void test_merge_keeps_calibration_and_mode(void)
+static void test_merge_keeps_calibration(void)
 {
     settings_t edit = settings_defaults();
     edit.tolerance_deg = 1.0f;
@@ -448,7 +448,6 @@ static void test_merge_keeps_calibration_and_mode(void)
 
     settings_t loaded = settings_defaults();
     settings_t cur = settings_defaults();
-    cur.mode = LEVEL_MODE_FLOOR;
     cur.mount_cal_valid = true;
     cur.drill_axis = (vec3_t){0.0f, 0.1f, -0.99498744f};
     ui_settings_merge(&cur, &loaded, &edit);
@@ -456,7 +455,6 @@ static void test_merge_keeps_calibration_and_mode(void)
     TEST_ASSERT_EQUAL_FLOAT(1.0f, cur.tolerance_deg);
     TEST_ASSERT_EQUAL(edit.ble_enabled, cur.ble_enabled);
     TEST_ASSERT_EQUAL_UINT16(0, cur.off_after_min);
-    TEST_ASSERT_EQUAL(LEVEL_MODE_FLOOR, cur.mode);
     TEST_ASSERT_TRUE(cur.mount_cal_valid);
     TEST_ASSERT_EQUAL_FLOAT(0.1f, cur.drill_axis.y);
     TEST_ASSERT_TRUE(settings_validate(&cur));
@@ -768,7 +766,7 @@ int main(void)
     RUN_TEST(test_random_steps_always_validate);
     RUN_TEST(test_steppers_reach_every_limit);
     RUN_TEST(test_format_fields);
-    RUN_TEST(test_merge_keeps_calibration_and_mode);
+    RUN_TEST(test_merge_keeps_calibration);
     RUN_TEST(test_merge_keeps_screen_fields_changed_elsewhere);
     RUN_TEST(test_merge_carries_fields_moved_by_fixup);
     RUN_TEST(test_merge_repairs_cross_field_rules);

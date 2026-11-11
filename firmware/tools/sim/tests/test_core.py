@@ -59,7 +59,7 @@ class CoreTest(unittest.TestCase):
     def test_state_file_round_trip_and_bad_files(self):
         self.boot()
         self.assertFalse((self.dir / "state.json").exists(), "nothing stored before a change")
-        self.assertEqual(self.core.config_write(b'{"tol":0.25,"mode":"angle"}', self.now), 0)
+        self.assertEqual(self.core.config_write(b'{"tol":0.25}', self.now), 0)
         state = json.loads((self.dir / "state.json").read_text())
         self.assertEqual(state["settings"]["tol"], 0.25)
         self.assertEqual(state["drill_axis"], [0, 0, -1])
@@ -79,7 +79,7 @@ class CoreTest(unittest.TestCase):
         self.assertEqual(json.loads(self.core.config_read())["tol"], 0.5)
         (self.dir / "state.json").write_text("{not json")
         self.boot()
-        self.assertEqual(json.loads(self.core.config_read())["mode"], "wall")
+        self.assertEqual(json.loads(self.core.config_read())["tol"], 0.5)
 
     def test_vibration_flag(self):
         # vibration.c through the sensor-task mirror: a 0.2 g, 100 Hz vector

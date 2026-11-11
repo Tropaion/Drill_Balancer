@@ -104,7 +104,7 @@ typedef struct {
     bool still;
     bool vibrating;              // a running motor (vibration.h VIB_RUNNING):
                                  // counts for the power FSM's vibration hold
-    level_reading_t reading;     // for the current mode
+    level_reading_t reading;     // for the view in use
     uint32_t reading_ms;
     bool zero_set;               // a zero is set (also with the bit vertical,
                                  // where reading.yaw_valid stays false)
@@ -211,7 +211,6 @@ void app_state_set_rec(const app_rec_status_t *rec);
 typedef enum {
     APP_CMD_ZERO = 0,           // zero on the current orientation
     APP_CMD_CLEAR_ZERO,
-    APP_CMD_SET_MODE,           // arg = level_mode_t
     APP_CMD_MOUNT_CAL_START,    // arg = APP_CMD_ARG_FROM_BLE or 0 (UI)
     APP_CMD_MOUNT_CAL_FINISH,   // solve, store on success
     APP_CMD_ACCEL_CAL_START,    // arg as for MOUNT_CAL_START

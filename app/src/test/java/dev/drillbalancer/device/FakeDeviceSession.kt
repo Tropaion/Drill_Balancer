@@ -81,14 +81,16 @@ class FakeDeviceSession(
     private var battery = batteryPct
     private var charging = false
     private var imuOk = true
+    private var view = LevelMode.WALL               // level_t.mode: the view the device picked
 
-    // Absolute orientation; the packet reports it relative to the zero.
+    // Absolute orientation; the packet reports the elevation and yaw relative to the zero.
+    // The bubble has no zero: it always reads the board's face.
     private var elevation = 0.3f
     private var yaw = 0f
     private var bubbleX = 0.2f
     private var bubbleY = -0.1f
     private var wobble = 0f
-    private var zero: FloatArray? = null            // elevation, yaw, bubble x, bubble y
+    private var zero: FloatArray? = null            // elevation, yaw
     private var seq = 0
 
     private var calKind = CalKind.IDLE
@@ -245,7 +247,6 @@ class FakeDeviceSession(
         val next = update.applyTo(stored)
         if (!next.isValid) throw DeviceError.Att(AttError.JSON_RANGE.code)
         writtenUpdates += update
-        if (next.mode.isFloor != stored.mode.isFloor) zero = null
         val bleOff = stored.bleEnabled && !next.bleEnabled
         stored = next
         publishAngle()
@@ -259,13 +260,8 @@ class FakeDeviceSession(
         requireLink(secure = true)
         sentCommands += command
         when (command) {
-            Command.Zero -> zero = floatArrayOf(elevation + wobble, yaw, bubbleX + wobble, bubbleY)
+            Command.Zero -> zero = floatArrayOf(elevation + wobble, yaw)
             Command.ClearZero -> zero = null
-            is Command.SetMode -> {
-                if (command.mode.isFloor != stored.mode.isFloor) zero = null
-                stored = stored.copy(mode = command.mode)
-                _settings.value = stored
-            }
             Command.MountCalStart -> startCal(CalKind.MOUNT, fromBle = true)
             Command.AccelCalStart -> startCal(CalKind.ACCEL, fromBle = true)
             Command.MountCalFinish -> if (calKind == CalKind.MOUNT) {
@@ -439,6 +435,15 @@ class FakeDeviceSession(
         publishAngle()
     }
 
+    /**
+     * The view the device picked from how it sits, or ANGLE as older firmware reported it.
+     * The zero is kept: it belongs to the crosshair (level_update_view()).
+     */
+    fun setView(view: LevelMode) {
+        this.view = view
+        publishAngle()
+    }
+
     /** A calibration started on the device's own screen (not cancelled by a drop). */
     fun startCalOnDevice(kind: CalKind) {
         startCal(kind, fromBle = false)
@@ -534,15 +539,13 @@ class FakeDeviceSession(
         val z = zero
         val el = elevation + wobble - (z?.get(0) ?: 0f)
         val yw = yaw - (z?.get(1) ?: 0f)
-        val bx = bubbleX + wobble - (z?.get(2) ?: 0f)
-        val by = bubbleY - (z?.get(3) ?: 0f)
+        val bx = bubbleX + wobble
+        val by = bubbleY
         val s = stored
-        val deviation = when (s.mode) {
-            LevelMode.WALL, LevelMode.ANGLE -> el   // the device no longer has an angle target
-            LevelMode.FLOOR -> hypot(bx, by)
-        }
+        val floor = view == LevelMode.FLOOR
+        val deviation = if (floor) hypot(bx, by) else el
         var flags = 0
-        val yawValid = z != null && !s.mode.isFloor
+        val yawValid = z != null && !floor
         if (imuOk) {
             flags = flags or AngleFlags.IMU_OK or AngleFlags.STILL
             flags = flags or when {
@@ -553,7 +556,7 @@ class FakeDeviceSession(
             if (yawValid) flags = flags or AngleFlags.YAW_VALID
         }
         if (z != null) flags = flags or AngleFlags.ZERO_SET
-        _angle.value = AnglePacket.of(s.mode, flags, seq, el, if (yawValid) yw else 0f, bx, by, deviation)
+        _angle.value = AnglePacket.of(view, flags, seq, el, if (yawValid) yw else 0f, bx, by, deviation)
     }
 
     private fun publishStatus() {
@@ -595,7 +598,3 @@ data class FakeRecorderEndpoint(
 ) {
     val tokenHex: String get() = token.joinToString("") { "%02x".format(it.toInt() and 0xFF) }
 }
-
-// FLOOR judges the bubble, WALL and ANGLE the elevation: a change between the two
-// families clears the zero (level_set_mode()).
-private val LevelMode.isFloor get() = this == LevelMode.FLOOR

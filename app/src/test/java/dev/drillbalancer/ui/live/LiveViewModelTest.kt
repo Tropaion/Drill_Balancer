@@ -3,13 +3,12 @@ package dev.drillbalancer.ui.live
 import dev.drillbalancer.device.DeviceError
 import dev.drillbalancer.device.DisconnectReason
 import dev.drillbalancer.device.FakeDeviceSession
-import dev.drillbalancer.protocol.AttError
 import dev.drillbalancer.protocol.Command
 import dev.drillbalancer.protocol.DeviceSettings
 import dev.drillbalancer.protocol.LevelMode
 import dev.drillbalancer.ui.MainDispatcherRule
 import dev.drillbalancer.ui.PairingGate
-import dev.drillbalancer.ui.PairingPrompt
+import dev.drillbalancer.ui.components.title
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.advanceTimeBy
@@ -28,72 +27,44 @@ class LiveViewModelTest {
     @get:Rule
     val main = MainDispatcherRule()
 
-    private fun TestScope.setUp(bonded: Boolean = true): Triple<FakeDeviceSession, PairingGate, LiveViewModel> {
-        val fake = FakeDeviceSession(bonded = bonded)
-        val gate = PairingGate(fake, backgroundScope)
-        return Triple(fake, gate, LiveViewModel(fake, gate))
+    private fun TestScope.setUp(): Pair<FakeDeviceSession, LiveViewModel> {
+        val fake = FakeDeviceSession()
+        return fake to LiveViewModel(fake, PairingGate(fake, backgroundScope))
     }
 
     @Test
-    fun followsTheDeviceMode() = runTest(main.dispatcher) {
-        val (fake, _, vm) = setUp()
+    fun followsTheDevicesView() = runTest(main.dispatcher) {
+        val (fake, vm) = setUp()
         assertEquals(LevelMode.WALL, vm.state.value.mode)
         assertTrue(vm.state.value.hasAngle)
-        // Changed elsewhere (device screen, settings): the tab follows the packets.
-        fake.sendCommand(Command.SetMode(LevelMode.ANGLE))
-        assertEquals(LevelMode.ANGLE, vm.state.value.mode)
-    }
-
-    @Test
-    fun modeTabSendsSetMode() = runTest(main.dispatcher) {
-        val (fake, _, vm) = setUp()
-        vm.setMode(LevelMode.FLOOR)
-        assertEquals(listOf<Command>(Command.SetMode(LevelMode.FLOOR)), fake.commands)
+        // The device picks the view from how it sits; the app only follows its packets.
+        fake.setView(LevelMode.FLOOR)
         assertEquals(LevelMode.FLOOR, vm.state.value.mode)
-        assertEquals(LevelMode.FLOOR, vm.angle.value!!.mode)
-        // Tapping the selected tab sends nothing.
-        vm.setMode(LevelMode.FLOOR)
-        assertEquals(1, fake.commands.size)
-    }
-
-    @Test
-    fun pendingModeFallsBackWhenTheDeviceRejects() = runTest(main.dispatcher) {
-        val (fake, _, vm) = setUp()
-        fake.failNext = DeviceError.Att(AttError.BUSY.code)
-        vm.setMode(LevelMode.ANGLE)
+        fake.setView(LevelMode.WALL)
         assertEquals(LevelMode.WALL, vm.state.value.mode)
-        assertEquals(AttError.BUSY.message, vm.state.value.message?.text)
-        vm.dismissMessage()
-        assertNull(vm.state.value.message)
+        assertTrue(fake.commands.isEmpty())
     }
 
     @Test
-    fun modeChangeWaitsForPairing() = runTest(main.dispatcher) {
-        val (fake, gate, vm) = setUp(bonded = false)
-        vm.setMode(LevelMode.FLOOR)
-        // Nothing sent yet; the tab shows the request while the pairing screen explains.
-        assertEquals(PairingPrompt.Stage.EXPLAIN, gate.prompt.value?.stage)
-        assertTrue(fake.commands.isEmpty())
-        assertEquals(LevelMode.FLOOR, vm.state.value.mode)
-        gate.pair()
-        assertNull(gate.prompt.value)
-        assertEquals(listOf<Command>(Command.SetMode(LevelMode.FLOOR)), fake.commands)
-        assertEquals(LevelMode.FLOOR, vm.state.value.mode)
-    }
-
-    @Test
-    fun cancelledPairingDropsTheModeChange() = runTest(main.dispatcher) {
-        val (fake, gate, vm) = setUp(bonded = false)
-        vm.setMode(LevelMode.ANGLE)
-        gate.cancel()
-        assertTrue(fake.commands.isEmpty())
-        assertEquals(LevelMode.WALL, vm.state.value.mode)
-        assertNull(vm.state.value.message)   // backing out is not an error
+    fun angleFromOldFirmwareShowsTheWallView() = runTest(main.dispatcher) {
+        val (fake, vm) = setUp()
+        // Firmware from before the one level screen still reports its angle mode.
+        fake.setView(LevelMode.ANGLE)
+        val s = vm.state.value
+        assertEquals(LevelMode.ANGLE, s.mode)
+        assertEquals("Wall", s.mode.title)
+        // Zero is enabled and works as on the wall view (LiveScreenshotTest shows the screen).
+        assertTrue(s.hasAngle)
+        assertFalse(s.busy)
+        vm.zero()
+        assertEquals(listOf<Command>(Command.Zero), fake.commands)
+        assertTrue(vm.state.value.zeroSet)
+        assertTrue(vm.state.value.yawValid)
     }
 
     @Test
     fun zeroAndClearZero() = runTest(main.dispatcher) {
-        val (fake, _, vm) = setUp()
+        val (fake, vm) = setUp()
         assertFalse(vm.state.value.zeroSet)
         fake.setOrientation(3f, yawDeg = 10f)
         vm.zero()
@@ -107,7 +78,7 @@ class LiveViewModelTest {
 
     @Test
     fun imuLossAndSettingsReachTheLayout() = runTest(main.dispatcher) {
-        val (fake, _, vm) = setUp()
+        val (fake, vm) = setUp()
         fake.setImuOk(false)
         assertFalse(vm.state.value.imuOk)
         assertNull(vm.angle.value!!.status)
@@ -117,7 +88,7 @@ class LiveViewModelTest {
 
     @Test
     fun aReadingWithoutNewPacketsGoesStale() = runTest(main.dispatcher) {
-        val (fake, _, vm) = setUp()
+        val (fake, vm) = setUp()
         assertTrue(vm.state.value.hasAngle)
         advanceTimeBy(900)
         runCurrent()
@@ -137,7 +108,7 @@ class LiveViewModelTest {
 
     @Test
     fun waitsWhileReconnecting() = runTest(main.dispatcher) {
-        val (fake, _, vm) = setUp()
+        val (fake, vm) = setUp()
         fake.dropLink(DeviceError.Link(DisconnectReason.LINK_LOSS), reconnecting = true)
         assertFalse(vm.state.value.hasAngle)
         assertNull(vm.angle.value)
@@ -147,7 +118,7 @@ class LiveViewModelTest {
 
     @Test
     fun followsTheDevicesInvertDot() = runTest(main.dispatcher) {
-        val (_, _, plain) = setUp()
+        val (_, plain) = setUp()
         assertFalse(plain.state.value.dotInvert)
         val fake = FakeDeviceSession(settings = DeviceSettings.DEFAULTS.copy(dotInvert = true))
         val vm = LiveViewModel(fake, PairingGate(fake, backgroundScope))
@@ -157,7 +128,7 @@ class LiveViewModelTest {
 
     @Test
     fun layoutStateIgnoresAngleOnlyChanges() = runTest(main.dispatcher) {
-        val (fake, _, vm) = setUp()
+        val (fake, vm) = setUp()
         val before = vm.state.value
         // 10 Hz packets with new numbers but the same flags must not rebuild the layout state.
         fake.setOrientation(5f)

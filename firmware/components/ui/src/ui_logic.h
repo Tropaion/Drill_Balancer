@@ -166,7 +166,7 @@ void ui_settings_format(const settings_t *s, ui_field_t f, char *buf, size_t len
 // settings). base is what the screen loaded, edit what it shows now; only
 // the screen's fields that differ between the two are copied (including
 // ones settings_fixup() moved while stepping), so anything changed
-// elsewhere meanwhile (BLE write, mode, calibration) is kept. Then repairs
+// elsewhere meanwhile (BLE write, calibration) is kept. Then repairs
 // the cross-field rules (settings_fixup()).
 void ui_settings_merge(settings_t *cur, const settings_t *base, const settings_t *edit);
 

@@ -155,31 +155,6 @@ static void enter_off(void)
 // The sensor picks a change up from the SETTINGS_CHANGED reload, so it never
 // runs on a value that is not stored.
 
-typedef struct {
-    int32_t arg;
-} mode_change_t;
-
-static bool apply_mode(settings_t *s, void *ctx)
-{
-    const mode_change_t *c = ctx;
-    const int32_t n = LEVEL_MODE_COUNT;
-    int32_t m = c->arg;
-    if (m < 0 || m >= n) {
-        return false;
-    }
-    s->mode = (level_mode_t)m;   // stored only if it differs
-    return true;
-}
-
-static void change_mode(int32_t arg)
-{
-    mode_change_t c = {.arg = arg};
-    esp_err_t err = settings_update(apply_mode, &c);
-    if (err != ESP_OK) {
-        ESP_LOGW(TAG, "mode not changed: %s", esp_err_to_name(err));
-    }
-}
-
 // OTA, calibration and a recording session exclude each other
 // (app_excl_acquire()). The screen and the BLE command write refuse a start
 // at once while another one has the device; one that slips past them is
@@ -320,9 +295,6 @@ static void handle_cmd(const app_cmd_t *cmd)
         break;
     case APP_CMD_CLEAR_ZERO:
         sensor_clear_zero();
-        break;
-    case APP_CMD_SET_MODE:
-        change_mode(cmd->arg);
         break;
     case APP_CMD_MOUNT_CAL_START:
         start_cal(APP_CAL_MOUNT, cmd->arg);

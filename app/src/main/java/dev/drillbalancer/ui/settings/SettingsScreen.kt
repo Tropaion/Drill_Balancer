@@ -33,13 +33,11 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import dev.drillbalancer.protocol.DeviceSettings
-import dev.drillbalancer.protocol.LevelMode
 import dev.drillbalancer.protocol.SettingsField
 import dev.drillbalancer.ui.components.ActionButton
 import dev.drillbalancer.ui.components.ButtonKind
 import dev.drillbalancer.ui.components.InfoRow
 import dev.drillbalancer.ui.components.MessageBanner
-import dev.drillbalancer.ui.components.ModeSelector
 import dev.drillbalancer.ui.components.Panel
 import dev.drillbalancer.ui.components.SectionTitle
 import dev.drillbalancer.ui.components.StepButton
@@ -55,7 +53,6 @@ import dev.drillbalancer.ui.theme.Red
 class SettingsActions(
     val step: (SettingsField, Int) -> Unit = { _, _ -> },
     val set: (SettingsField, Float) -> Unit = { _, _ -> },
-    val setMode: (LevelMode) -> Unit = {},
     val setBle: (Boolean) -> Unit = {},
     val setDotInvert: (Boolean) -> Unit = {},
     val save: () -> Unit = {},
@@ -87,7 +84,6 @@ fun SettingsScreen(state: SettingsUiState, actions: SettingsActions, modifier: M
             for (f in listOf(SettingsField.TOL, SettingsField.NEAR)) {
                 NumberRow(f, s, state, actions) { entry = f }
             }
-            ModeRow(s.mode, SettingsField.MODE in state.changed, actions.setMode)
             NumberRow(SettingsField.STALE_S, s, state, actions) { entry = SettingsField.STALE_S }
             SwitchFieldRow(SettingsField.DOT_INV, s.dotInvert, SettingsField.DOT_INV in state.changed, actions.setDotInvert)
 
@@ -203,14 +199,6 @@ private fun Label(text: String, changed: Boolean) {
     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         Text(text, style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f, fill = false))
         if (changed) Text("changed", style = MaterialTheme.typography.labelMedium, color = Amber)
-    }
-}
-
-@Composable
-private fun ModeRow(mode: LevelMode, changed: Boolean, onMode: (LevelMode) -> Unit) {
-    Panel(border = if (changed) Amber else Dark) {
-        Label(SettingsField.MODE.label, changed)
-        ModeSelector(mode, onMode, MaterialTheme.colorScheme.surface)
     }
 }
 

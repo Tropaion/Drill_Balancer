@@ -27,7 +27,6 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
-import androidx.compose.material3.LocalTextStyle
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.SegmentedButton
@@ -242,21 +241,12 @@ fun ConfirmDialog(
     )
 }
 
+/** The view's name, as the device's title (WALL, LEVEL); older firmware's ANGLE is the wall view. */
 val LevelMode.title: String
     get() = when (this) {
-        LevelMode.WALL -> "Wall"
-        LevelMode.FLOOR -> "Floor"
-        LevelMode.ANGLE -> "Angle"
+        LevelMode.WALL, LevelMode.ANGLE -> "Wall"
+        LevelMode.FLOOR -> "Level"
     }
-
-/** The level mode as one segmented row. A null [textStyle] keeps the button's own label style. */
-@Composable
-fun ModeSelector(
-    selected: LevelMode,
-    onMode: (LevelMode) -> Unit,
-    inactiveColor: Color,
-    textStyle: TextStyle? = null,
-) = SegmentedSelector(LevelMode.entries.map { it to it.title }, selected, inactiveColor, textStyle, onMode)
 
 /** One of [options] (value to label) as a segmented row of glove-sized buttons. */
 @OptIn(ExperimentalMaterial3Api::class)
@@ -264,8 +254,6 @@ fun ModeSelector(
 fun <T> SegmentedSelector(
     options: List<Pair<T, String>>,
     selected: T,
-    inactiveColor: Color = MaterialTheme.colorScheme.surface,
-    textStyle: TextStyle? = null,
     onSelect: (T) -> Unit,
 ) {
     SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
@@ -279,10 +267,10 @@ fun <T> SegmentedSelector(
                 colors = SegmentedButtonDefaults.colors(
                     activeContainerColor = MaterialTheme.colorScheme.primary,
                     activeContentColor = Color.Black,
-                    inactiveContainerColor = inactiveColor,
+                    inactiveContainerColor = MaterialTheme.colorScheme.surface,
                 ),
             ) {
-                Text(label, style = textStyle ?: LocalTextStyle.current, maxLines = 1)
+                Text(label, maxLines = 1)
             }
         }
     }

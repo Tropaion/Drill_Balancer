@@ -64,8 +64,8 @@ class DeviceTest(unittest.TestCase):
     def status(self):
         return dc.decode_status(self.dev.read_char("status"))
 
-    def cmd(self, name, arg=None, settle_ms=20):
-        att = self.dev.write_char("command", dc.encode_cmd(name, arg))
+    def cmd(self, name, settle_ms=20):
+        att = self.dev.write_char("command", dc.encode_cmd(name))
         self.dev.advance(settle_ms)
         return att
 

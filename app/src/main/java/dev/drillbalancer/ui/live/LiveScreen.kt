@@ -26,6 +26,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -38,8 +39,8 @@ import dev.drillbalancer.ui.components.ButtonKind
 import dev.drillbalancer.ui.components.DbIcons
 import dev.drillbalancer.ui.components.FitNumber
 import dev.drillbalancer.ui.components.MessageBanner
-import dev.drillbalancer.ui.components.ModeSelector
 import dev.drillbalancer.ui.components.Panel
+import dev.drillbalancer.ui.components.title
 import dev.drillbalancer.ui.dotDeg
 import dev.drillbalancer.ui.formatDeg
 import dev.drillbalancer.ui.formatYaw
@@ -61,7 +62,6 @@ import kotlin.math.hypot
 fun LiveScreen(
     state: LiveUiState,
     angle: () -> AnglePacket?,
-    onMode: (LevelMode) -> Unit,
     onZero: () -> Unit,
     onClearZero: () -> Unit,
     onDismissMessage: () -> Unit,
@@ -69,7 +69,7 @@ fun LiveScreen(
     banner: @Composable () -> Unit = {},   // an update notice
 ) {
     Column(modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        ModeTabs(state.mode, onMode)
+        ViewLabel(state.mode)
         banner()
         state.message?.let { MessageBanner(it, onDismiss = onDismissMessage) }
         Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
@@ -90,9 +90,13 @@ fun LiveScreen(
     }
 }
 
+// The device picks the view from how it sits; the app only names it.
 @Composable
-private fun ModeTabs(selected: LevelMode, onMode: (LevelMode) -> Unit) {
-    ModeSelector(selected, onMode, MaterialTheme.colorScheme.surfaceContainer, MaterialTheme.typography.titleMedium)
+private fun ViewLabel(view: LevelMode) {
+    Text(
+        view.title, Modifier.fillMaxWidth().semantics { heading() },
+        style = MaterialTheme.typography.titleLarge, textAlign = TextAlign.Center,
+    )
 }
 
 fun StatusColors.of(status: LevelStatus?): Color = when (status) {

@@ -8,7 +8,6 @@
 // ranges are the SETTINGS_*_MIN/MAX limits below:
 //   "tol"        float  deg   0.05 .. 5      tolerance (green)
 //   "near"       float  deg   tol .. 20      near band (amber)
-//   "mode"       string       "wall" | "floor" | "angle"
 //   "bright"     int    %     10 .. 100      active brightness
 //   "dim_bright" int    %     1 .. bright    dimmed brightness
 //   "dim_s"      int    s     5 .. 600       idle time before dimming
@@ -59,11 +58,12 @@ extern "C" {
 typedef struct {
     float tolerance_deg;
     float near_deg;
-    // Stored by older firmware as the angle-mode target and never used now. It stays
-    // in the struct as it was, so an OTA rollback still loads the blob and a save
-    // writes it back unchanged. Only settings.c reads it.
+    // Stored by older firmware as the angle-mode target and the start mode, and
+    // never used now: the device picks the view itself (level_update_view()). They
+    // stay in the struct as they were, so an OTA rollback still loads the blob and
+    // a save writes them back unchanged. Only settings.c reads them.
     float legacy_target_deg;
-    level_mode_t mode;
+    level_mode_t legacy_mode;
 
     uint8_t brightness_pct;
     uint8_t dim_brightness_pct;
@@ -90,8 +90,9 @@ settings_t settings_defaults(void);
 // unit drill axis within 15 deg of -Z, accel cal within accel_cal.h limits).
 bool settings_validate(const settings_t *s);
 
-// Field by field (settings_t has padding, so no memcmp). Floats compare
-// with ==, so a value that only round-trips differently is a change.
+// Field by field (settings_t has padding, so no memcmp), without the legacy
+// fields nothing reads. Floats compare with ==, so a value that only
+// round-trips differently is a change.
 bool settings_equal(const settings_t *a, const settings_t *b);
 
 // Pushes the dependent field of each cross-field rule (near up to tol,
