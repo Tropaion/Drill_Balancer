@@ -187,8 +187,9 @@ typedef struct __attribute__((packed)) {
 } rec_event_t;                // 12 bytes, then the text
 
 // LEVEL: the 10 Hz device level, the BLE angle packet's fields plus the
-// zero in effect (level_t zero_*_deg while a zero is set, else 0): with
-// DB_ANGLE_FLAG_ZERO_SET, elevation and bubble are relative to it.
+// zero in effect ({elevation, 0, 0} from level_zero_of() while a zero is set,
+// else 0; the bubble slots are always 0 now, the layout keeps them): with
+// DB_ANGLE_FLAG_ZERO_SET, the elevation is relative to it.
 typedef struct __attribute__((packed)) {
     uint64_t host_us;
     uint8_t mode;             // level_mode_t

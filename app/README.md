@@ -76,7 +76,9 @@ rate limited, nothing shows.
   An older app can't connect to the new firmware, because it requires the
   `mode` and `target` settings, which the firmware no longer sends. The new
   app still works with the old firmware until then; that firmware's angle
-  mode shows as the wall view.
+  mode shows as the wall view. Until the firmware is updated, a device left
+  in angle mode still judges (colours) against its old target: swipe to WALL
+  on the device, or update the firmware.
 - *Dismiss* hides a version until a newer one is out. Nothing starts without
   a tap, and nothing interrupts a recording session.
 

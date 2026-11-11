@@ -114,11 +114,6 @@ void ui_aim_sub(const level_reading_t *r, level_mode_t mode, bool zero_set, bool
     }
 }
 
-void ui_level_title(level_mode_t mode, char *buf, size_t len)
-{
-    snprintf(buf, len, "%s", ui_mode_title(mode));
-}
-
 level_status_t ui_dot_status(const level_reading_t *r)
 {
     if (r->mode == LEVEL_MODE_FLOOR || !r->yaw_valid || r->yaw_stale) {

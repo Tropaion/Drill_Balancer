@@ -7,6 +7,11 @@
 #include "cJSON.h"
 #include "settings.h"
 
+// The stored blob is read by size and layout (also by an OTA rollback to older
+// firmware): these hold on the host and the target alike.
+_Static_assert(sizeof(settings_t) == 72, "settings_t must keep its stored size");
+_Static_assert(offsetof(settings_t, legacy_target_deg) == 8, "legacy_target_deg must not move");
+_Static_assert(offsetof(settings_t, legacy_mode) == 12, "legacy_mode must not move");
 _Static_assert(offsetof(settings_t, dot_invert) == offsetof(settings_t, ble_enabled) + 1,
                "dot_invert must stay in the padding after ble_enabled");
 _Static_assert(offsetof(settings_t, yaw_stale_s) == offsetof(settings_t, ble_enabled) + 2,
@@ -17,8 +22,7 @@ _Static_assert(offsetof(settings_t, yaw_stale_s) == offsetof(settings_t, ble_ena
 #define MAX_MOUNT_OFFSET_DEG SETTINGS_MAX_MOUNT_OFFSET_DEG
 #define UNIT_TOLERANCE 1e-3f
 
-// The range the stored legacy target was checked against, so a blob that loaded
-// before still loads. The value is otherwise unused, as is the legacy mode.
+// Range old firmware checked the legacy target against (see settings.h).
 #define LEGACY_TARGET_MAX_DEG 90.0f
 
 settings_t settings_defaults(void)
@@ -102,7 +106,6 @@ bool settings_validate(const settings_t *s)
 
 bool settings_equal(const settings_t *a, const settings_t *b)
 {
-    // The legacy fields are left out: nothing reads them.
     return a->tolerance_deg == b->tolerance_deg && a->near_deg == b->near_deg &&
            a->brightness_pct == b->brightness_pct &&
            a->dim_brightness_pct == b->dim_brightness_pct && a->dim_after_s == b->dim_after_s &&

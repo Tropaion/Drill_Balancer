@@ -724,7 +724,12 @@ static int command_write(struct ble_gatt_access_ctxt *ctxt)
     app_state_get(&snap);
     att = ble_codec_cmd_state_err(id, snap.excl, snap.reading.mode);
     if (att != 0) {
-        ESP_LOGW(TAG, "command 0x%02x refused: %s", s_wbuf[0], app_excl_what(snap.excl));
+        if (att == DB_ATT_ERR_BUSY) {
+            ESP_LOGW(TAG, "command 0x%02x refused: 0x%02x, %s", s_wbuf[0], att,
+                     app_excl_what(snap.excl));
+        } else {
+            ESP_LOGW(TAG, "command 0x%02x refused: 0x%02x", s_wbuf[0], att);
+        }
         return att;
     }
     if (!app_post_cmd(id, arg)) {

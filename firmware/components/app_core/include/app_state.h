@@ -108,8 +108,8 @@ typedef struct {
     uint32_t reading_ms;
     bool zero_set;               // a zero is set (also with the bit vertical,
                                  // where reading.yaw_valid stays false)
-    float zero_deg[3];           // that zero (elevation, bubble x, bubble y),
-                                 // the one reading is relative to; 0 without
+    float zero_deg[3];           // that zero: {elevation, 0, 0} (the bubble
+                                 // slots stay for the record layout); 0 without
 
     app_battery_t battery;
 
@@ -187,7 +187,7 @@ static inline const char *app_excl_what(uint8_t excl)
 void app_state_init(void);
 void app_state_get(app_snapshot_t *out);
 
-// The zero (zero_deg: elevation, bubble x, bubble y; NULL without one) is
+// The zero (zero_deg: {elevation, 0, 0}, the bubble slots always 0; NULL without one) is
 // published with every motion update, so a snapshot never pairs it with
 // another reading.
 void app_state_set_motion(bool imu_ok, quat_t q, bool still, bool vibrating,

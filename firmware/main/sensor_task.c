@@ -318,7 +318,8 @@ static void sensor_task(void *arg)
         bool still = false;
         float z[3];
         const float *zero = NULL;      // read with the reading
-        int view_from = -1, view_to = -1;
+        level_mode_t view_from = LEVEL_MODE_WALL;
+        bool view_changed = false;
 
         lock();
         bool turning = process_batch_locked(smp, n, dt);
@@ -328,17 +329,15 @@ static void sensor_task(void *arg)
             still = fusion_is_still(&s_fusion);
             // The view only changes with a fresh orientation: without one
             // (IMU lost) it stays as it is.
-            view_from = (int)s_level.mode;
-            if (level_update_view(&s_level, q)) {
-                view_to = (int)s_level.mode;
-            }
+            view_from = s_level.mode;
+            view_changed = level_update_view(&s_level, q);
             reading = level_compute(&s_level, q, now);
             zero = level_zero_of(&s_level, z);
             mount_add_locked(now);
         }
         unlock();
-        if (view_to >= 0) {
-            ESP_LOGI(TAG, "view %d -> %d", view_from, view_to);
+        if (view_changed) {
+            ESP_LOGI(TAG, "view %d -> %d", (int)view_from, (int)reading.mode);
         }
 
         vib_state_t was = vib_state(&s_vib);

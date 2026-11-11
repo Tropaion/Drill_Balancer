@@ -39,13 +39,24 @@ static float clamp_unit(float v)
     return fmaxf(-1.0f, fminf(1.0f, v));
 }
 
+static vec3_t up_in_board_frame(quat_t q)
+{
+    return quat_rotate_inv(q, (vec3_t){0.0f, 0.0f, 1.0f});
+}
+
+// Elevation of the drill axis above horizontal (absolute, no zero).
+static float drill_elevation_deg(const level_config_t *cfg, vec3_t up)
+{
+    return LEVEL_RAD2DEG(asinf(clamp_unit(vec3_dot(cfg->drill_axis, up))));
+}
+
 static raw_angles_t raw_angles(const level_config_t *cfg, quat_t q)
 {
     raw_angles_t r;
     vec3_t d = cfg->drill_axis;
-    vec3_t up = quat_rotate_inv(q, (vec3_t){0.0f, 0.0f, 1.0f});
+    vec3_t up = up_in_board_frame(q);
 
-    r.elevation_deg = LEVEL_RAD2DEG(asinf(clamp_unit(vec3_dot(d, up))));
+    r.elevation_deg = drill_elevation_deg(cfg, up);
 
     vec3_t dw = quat_rotate(q, d);
     r.heading_valid = hypotf(dw.x, dw.y) >= YAW_MIN_HORIZONTAL;
@@ -65,7 +76,7 @@ static raw_angles_t raw_angles(const level_config_t *cfg, quat_t q)
 
 bool level_update_view(level_t *lv, quat_t q)
 {
-    float elev = fabsf(raw_angles(&lv->cfg, q).elevation_deg);
+    float elev = fabsf(drill_elevation_deg(&lv->cfg, up_in_board_frame(q)));
     level_mode_t want = lv->mode;
     if (!lv->view_set) {
         want = elev >= LEVEL_VIEW_FIRST_DEG ? LEVEL_MODE_FLOOR : LEVEL_MODE_WALL;
@@ -80,9 +91,14 @@ bool level_update_view(level_t *lv, quat_t q)
     return changed;
 }
 
+bool level_view_takes_zero(level_mode_t view)
+{
+    return view != LEVEL_MODE_FLOOR;
+}
+
 bool level_zero(level_t *lv, quat_t q, uint32_t now_ms)
 {
-    if (lv->mode == LEVEL_MODE_FLOOR) {
+    if (!level_view_takes_zero(lv->mode)) {
         return false;
     }
     raw_angles_t r = raw_angles(&lv->cfg, q);

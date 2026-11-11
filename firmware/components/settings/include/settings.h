@@ -90,9 +90,9 @@ settings_t settings_defaults(void);
 // unit drill axis within 15 deg of -Z, accel cal within accel_cal.h limits).
 bool settings_validate(const settings_t *s);
 
-// Field by field (settings_t has padding, so no memcmp), without the legacy
-// fields nothing reads. Floats compare with ==, so a value that only
-// round-trips differently is a change.
+// Field by field (settings_t has padding, so no memcmp), legacy fields left
+// out. Floats compare with ==, so a value that only round-trips differently
+// is a change.
 bool settings_equal(const settings_t *a, const settings_t *b);
 
 // Pushes the dependent field of each cross-field rule (near up to tol,

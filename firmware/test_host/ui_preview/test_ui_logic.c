@@ -166,17 +166,6 @@ static void test_aim_sub_line(void)
     TEST_ASSERT_EQUAL_STRING("", sub.info);
 }
 
-static void test_level_title(void)
-{
-    ui_level_title(LEVEL_MODE_FLOOR, buf, sizeof(buf));
-    TEST_ASSERT_EQUAL_STRING("LEVEL", buf);
-    ui_level_title(LEVEL_MODE_WALL, buf, sizeof(buf));
-    TEST_ASSERT_EQUAL_STRING("WALL", buf);
-    // The reserved value is never produced; it reads as the wall view.
-    ui_level_title(LEVEL_MODE_ANGLE, buf, sizeof(buf));
-    TEST_ASSERT_EQUAL_STRING("WALL", buf);
-}
-
 static void test_ring_fraction(void)
 {
     TEST_ASSERT_EQUAL_FLOAT(1.0f, ui_ring_fraction(0.0f, 2.0f));
@@ -752,7 +741,6 @@ int main(void)
     RUN_TEST(test_dot_is_bubble_on_floor_and_aim_point_otherwise);
     RUN_TEST(test_dot_status_is_the_worse_axis);
     RUN_TEST(test_aim_sub_line);
-    RUN_TEST(test_level_title);
     RUN_TEST(test_ring_fraction);
     RUN_TEST(test_bubble_scale_and_axes);
     RUN_TEST(test_bubble_clamped_inside_view_keeping_direction);

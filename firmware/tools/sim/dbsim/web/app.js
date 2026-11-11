@@ -346,8 +346,8 @@ function drawLevel(s) {
   ctx.restore();
 }
 
-// ui_level.c: one crosshair for every mode. Floor: the dot is the bubble;
-// wall and angle: the aim point (ui_dot_deg).
+// ui_level.c: one crosshair for both views. Floor: the dot is the bubble;
+// wall (and the reserved angle): the aim point (ui_dot_deg).
 function drawAim(r, cfg, ui) {
   const c = statusColor(r.status);
   const vx = CX, vy = CX - 40, R = 100, DR = 16;

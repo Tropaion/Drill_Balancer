@@ -52,9 +52,6 @@ typedef struct {
 void ui_aim_sub(const level_reading_t *r, level_mode_t mode, bool zero_set, bool invert,
                 ui_aim_sub_t *out);
 
-// The level screen's title: "WALL" for the crosshair, "LEVEL" for the bubble.
-void ui_level_title(level_mode_t mode, char *buf, size_t len);
-
 // The dot's colour status: on WALL the worse of the elevation's
 // and the yaw's (while yaw is valid and not stale); on FLOOR the bubble's.
 level_status_t ui_dot_status(const level_reading_t *r);

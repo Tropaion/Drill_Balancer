@@ -102,7 +102,7 @@ static lv_obj_t *circle_new(lv_obj_t *parent, int32_t r, uint32_t border_color, 
     return c;
 }
 
-// One view for every mode. FLOOR: the dot is a bubble and moves to the
+// One crosshair for both views. FLOOR: the dot is a bubble and moves to the
 // higher side. WALL: the dot is where the bit points, up when it
 // points too high, right when it has turned right since the zero; steer it
 // into the centre. A ring is where the dot's edge touches it at that
@@ -270,11 +270,9 @@ void ui_level_update(const app_snapshot_t *snap, uint32_t now_ms)
     const level_reading_t *r = &snap->reading;
     level_mode_t mode = r->mode < LEVEL_MODE_COUNT ? r->mode : LEVEL_MODE_WALL;
 
-    // Only the crosshair zeroes; the bubble has no zero.
-    s.can_zero = snap->imu_ok && mode == LEVEL_MODE_WALL && !ui_rec_pill_live(&snap->rec);
-    char title[32];
-    ui_level_title(mode, title, sizeof(title));
-    ui_set_text(s.title, title);
+    // Only the crosshair view zeroes; the bubble has no zero.
+    s.can_zero = snap->imu_ok && level_view_takes_zero(mode) && !ui_rec_pill_live(&snap->rec);
+    ui_set_text(s.title, ui_mode_title(mode));
     lv_obj_set_flag(s.no_sensor, LV_OBJ_FLAG_HIDDEN, snap->imu_ok);
     lv_obj_set_flag(s.aim, LV_OBJ_FLAG_HIDDEN, !snap->imu_ok);
 

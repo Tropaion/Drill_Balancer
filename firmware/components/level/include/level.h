@@ -72,20 +72,21 @@ level_config_t level_default_config(void);
 // Starts in LEVEL_MODE_WALL with no view picked yet and no zero.
 void level_init(level_t *lv, const level_config_t *cfg);
 
-// Picks the view for the pose q (see LEVEL_VIEW_*) and stores it in lv->mode.
-// Call it only with a fresh orientation: without one the view stays. Returns
-// true if lv->mode changed. The zero is kept: it belongs to the crosshair and
-// is not touched by a trip through the bubble view.
+// Picks the view for the pose q (see LEVEL_VIEW_*) into lv->mode; true if it
+// changed. Only with a fresh orientation. A set zero is kept across a bubble trip.
 bool level_update_view(level_t *lv, quat_t q);
+
+// True where the zero applies: every view but the bubble (so the reserved
+// ANGLE acts as the crosshair).
+bool level_view_takes_zero(level_mode_t view);
 
 // Replaces the config. The zero angles were measured about the old drill
 // axis, so a new axis clears the zero; the other fields keep it. Returns
 // true if a zero was cleared.
 bool level_set_config(level_t *lv, const level_config_t *cfg);
 
-// Captures the current orientation as the reference. Elevation and yaw are
-// reported relative to it until level_clear_zero(). Only the crosshair view
-// has a zero: in the bubble view nothing changes and false is returned.
+// Captures the current orientation as the reference (elevation and yaw are
+// then relative to it). Refused (false) where level_view_takes_zero() is false.
 bool level_zero(level_t *lv, quat_t q, uint32_t now_ms);
 void level_clear_zero(level_t *lv);
 

@@ -44,7 +44,7 @@ fun tenths(deg: Float): Int {
  */
 fun dotDeg(deg: Float, invert: Boolean): Float = if (invert) -deg else deg
 
-/** Wall mode arrow (ui_aim_arrow on the device): +1 bit above horizontal, -1 below, 0 none. */
+/** Wall view arrow (ui_aim_arrow on the device): +1 bit above horizontal, -1 below, 0 none. */
 fun wallArrow(elevationDeg: Float, status: LevelStatus?): Int {
     if (status == LevelStatus.ON_TARGET) return 0
     val t = tenths(elevationDeg)

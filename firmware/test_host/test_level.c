@@ -268,6 +268,13 @@ static void test_zero_refused_in_the_bubble_view(void)
     TEST_ASSERT_FALSE(lv.zero_set);
 }
 
+static void test_view_takes_zero_everywhere_but_the_bubble(void)
+{
+    TEST_ASSERT_TRUE(level_view_takes_zero(LEVEL_MODE_WALL));
+    TEST_ASSERT_FALSE(level_view_takes_zero(LEVEL_MODE_FLOOR));
+    TEST_ASSERT_TRUE(level_view_takes_zero(LEVEL_MODE_ANGLE));
+}
+
 static void test_wall_zero_survives_a_bubble_trip(void)
 {
     level_update_view(&lv, aimed(0.0f));
@@ -281,6 +288,14 @@ static void test_wall_zero_survives_a_bubble_trip(void)
     TEST_ASSERT_FLOAT_WITHIN(0.01f, 2.0f, r.elevation_deg);
     TEST_ASSERT_TRUE(r.yaw_valid);
     TEST_ASSERT_FLOAT_WITHIN(0.01f, -5.0f, r.yaw_deg);
+
+    // The bubble shows the absolute tilt while the wall zero is kept.
+    level_update_view(&lv, pose_floor());
+    TEST_ASSERT_EQUAL(LEVEL_MODE_FLOOR, lv.mode);
+    r = level_compute(&lv, rot_deg(AXIS_X, 5.0f), 0);
+    TEST_ASSERT_TRUE(lv.zero_set);
+    TEST_ASSERT_FLOAT_WITHIN(0.01f, 5.0f, r.bubble_y_deg);
+    TEST_ASSERT_FLOAT_WITHIN(0.01f, 5.0f, r.deviation_deg);
 }
 
 static void test_bubble_reads_the_board_face(void)
@@ -305,8 +320,37 @@ static void test_crosshair_reads_the_drill_axis(void)
     level_set_config(&lv, &cfg);
     // The board pitched so that this axis, not -Z, is horizontal.
     quat_t q = pose_wall_aimed(-5.0f, 0.0f);
+    level_update_view(&lv, q);
+    TEST_ASSERT_EQUAL(LEVEL_MODE_WALL, lv.mode);
     level_reading_t r = level_compute(&lv, q, 0);
     TEST_ASSERT_FLOAT_WITHIN(0.01f, 0.0f, r.elevation_deg);
+}
+
+static void test_view_ignores_the_zero(void)
+{
+    // The zero-relative elevation here is -26 (WALL); the absolute one is -56.
+    level_update_view(&lv, aimed(0.0f));
+    TEST_ASSERT_TRUE(level_zero(&lv, pose_wall_aimed(-30.0f, 0.0f), 0));
+    TEST_ASSERT_TRUE(level_update_view(&lv, pose_wall_aimed(-56.0f, 0.0f)));
+    TEST_ASSERT_EQUAL(LEVEL_MODE_FLOOR, lv.mode);
+}
+
+static void test_view_uses_the_drill_axis_not_the_board_face(void)
+{
+    // Axis 10 degrees off -Z: at a face elevation of 46 the bit is at 56.
+    cfg.drill_axis = vec3_normalize((vec3_t){0.0f, sinf(LEVEL_DEG2RAD(10.0f)),
+                                             -cosf(LEVEL_DEG2RAD(10.0f))});
+    level_set_config(&lv, &cfg);
+    level_update_view(&lv, aimed(0.0f));
+    TEST_ASSERT_TRUE(level_update_view(&lv, pose_wall_aimed(46.0f, 0.0f)));
+    TEST_ASSERT_EQUAL(LEVEL_MODE_FLOOR, lv.mode);
+
+    // Without the calibration the same pose stays in the crosshair view.
+    level_config_t plain = level_default_config();
+    level_init(&lv, &plain);
+    level_update_view(&lv, aimed(0.0f));
+    TEST_ASSERT_FALSE(level_update_view(&lv, pose_wall_aimed(46.0f, 0.0f)));
+    TEST_ASSERT_EQUAL(LEVEL_MODE_WALL, lv.mode);
 }
 
 static void test_zero_of_has_no_bubble_zero(void)
@@ -539,9 +583,12 @@ int main(void)
     RUN_TEST(test_view_counts_bit_up_as_vertical);
     RUN_TEST(test_view_ignores_jitter_inside_the_band);
     RUN_TEST(test_zero_refused_in_the_bubble_view);
+    RUN_TEST(test_view_takes_zero_everywhere_but_the_bubble);
     RUN_TEST(test_wall_zero_survives_a_bubble_trip);
     RUN_TEST(test_bubble_reads_the_board_face);
     RUN_TEST(test_crosshair_reads_the_drill_axis);
+    RUN_TEST(test_view_ignores_the_zero);
+    RUN_TEST(test_view_uses_the_drill_axis_not_the_board_face);
     RUN_TEST(test_zero_of_has_no_bubble_zero);
     RUN_TEST(test_mount_cal_finds_drill_axis);
     RUN_TEST(test_mount_cal_corrects_elevation);

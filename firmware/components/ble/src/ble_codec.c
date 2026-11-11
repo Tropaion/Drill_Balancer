@@ -254,7 +254,7 @@ uint8_t ble_codec_cmd_state_err(app_cmd_id_t id, uint8_t excl, level_mode_t view
     if (cal_start && app_excl_blocks_cal(excl)) {
         return DB_ATT_ERR_BUSY;
     }
-    return id == APP_CMD_ZERO && view == LEVEL_MODE_FLOOR ? DB_ATT_ERR_NO_ZERO : 0;
+    return id == APP_CMD_ZERO && !level_view_takes_zero(view) ? DB_ATT_ERR_NO_ZERO : 0;
 }
 
 uint8_t ble_codec_settings_att_err(settings_json_result_t r)

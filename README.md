@@ -109,8 +109,8 @@ flowchart LR
 - The sensor task reads the IMU FIFO, applies the sensor calibration and runs
   the fusion on every sample. It publishes a reading at 50 Hz.
 - The level component projects the "up" vector onto the drill axis (found by
-  the mount calibration, nominally the board's -Z) and computes elevation,
-  yaw for the wall view. The bubble reads the board's own face, without the
+  the mount calibration, nominally the board's -Z) and computes elevation
+  and yaw for the wall view. The bubble reads the board's own face, without the
   mount calibration, and the level picks the view from the bit's elevation.
 - The UI and BLE only read snapshots and post commands (BLE config writes
   and the settings screen store their changes through one mutex-guarded

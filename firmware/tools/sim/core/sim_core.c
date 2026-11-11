@@ -1429,7 +1429,11 @@ int sim_command_write(const uint8_t *data, int len, uint32_t now_ms)
     // or a zero while the bubble shows.
     att = ble_codec_cmd_state_err(id, s_state.excl, s_state.reading.mode);
     if (att != 0) {
-        LOGW("command 0x%02x refused: 0x%02x", data[0], att);
+        if (att == DB_ATT_ERR_BUSY) {
+            LOGW("command 0x%02x refused: 0x%02x, %s", data[0], att, app_excl_what(s_state.excl));
+        } else {
+            LOGW("command 0x%02x refused: 0x%02x", data[0], att);
+        }
         return att;
     }
     if (s_busy_next > 0) {   // injected: as if the queue were full
@@ -2812,7 +2816,7 @@ static void handle_cmd(const app_cmd_t *cmd)
     switch (cmd->id) {
     case APP_CMD_ZERO:
         if (!sensor_zero()) {
-            LOGW("zero ignored: no orientation");
+            LOGW("zero ignored: no orientation or the bubble shows");
         }
         break;
     case APP_CMD_CLEAR_ZERO:
@@ -3244,9 +3248,7 @@ int sim_snapshot_json(char *buf, int cap)
         (int)ui_dot_status(r), ui_aim_arrow(r, s_current.dot_invert),
         ui_battery_level(s->battery.percent), B(ui_low_battery(&s->battery)));
     put_str(&o, "mode_title", ui_mode_title(r->mode));
-    char title[32];
-    ui_level_title(r->mode, title, sizeof(title));
-    put_str(&o, "title", title);
+    put_str(&o, "title", ui_mode_title(r->mode));   // the web panel's name for it
     ui_aim_sub_t sub;
     ui_aim_sub(r, r->mode, s->zero_set, s_current.dot_invert, &sub);
     put_str(&o, "sub_yaw", sub.yaw);

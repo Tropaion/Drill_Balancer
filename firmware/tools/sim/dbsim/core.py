@@ -84,6 +84,7 @@ class Motor(ctypes.Structure):
 # level.h level_mode_t (the view in use)
 LEVEL_MODE_WALL = 0
 LEVEL_MODE_FLOOR = 1
+LEVEL_MODE_ANGLE = 2   # reserved, never produced
 
 # app_state.h app_cmd_id_t
 APP_CMD_ZERO = 0

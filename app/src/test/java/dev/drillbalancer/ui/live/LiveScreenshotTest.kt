@@ -81,14 +81,16 @@ class LiveScreenshotTest {
         fontScale = 1.6f,
     )
 
-    // No zero in the bubble view: the device refuses it, so the button is greyed out.
+    // No zero in the bubble view: the device refuses it, so Zero is greyed out. A wall zero
+    // that is kept stays set, so Clear zero is still there.
     @Test
     fun floorZeroDisabled() {
         shot(
-            LiveUiState(mode = LevelMode.FLOOR, hasAngle = true),
-            AnglePacket.of(LevelMode.FLOOR, base or AngleFlags.NEAR, bubbleXDeg = 1.1f, bubbleYDeg = 0.8f, deviationDeg = 1.36f),
+            LiveUiState(mode = LevelMode.FLOOR, hasAngle = true, zeroSet = true),
+            AnglePacket.of(LevelMode.FLOOR, base or AngleFlags.NEAR or AngleFlags.ZERO_SET, bubbleXDeg = 1.1f, bubbleYDeg = 0.8f, deviationDeg = 1.36f),
         )
         compose.onNodeWithText("Zero").assertIsNotEnabled()
+        compose.onNodeWithText("Clear zero").assertIsEnabled()
     }
 
     // Invert dot: the arrow and the yaw show the way to correct, as on the device.
@@ -104,10 +106,11 @@ class LiveScreenshotTest {
         AnglePacket.of(LevelMode.FLOOR, base or AngleFlags.NEAR, bubbleXDeg = 1.1f, bubbleYDeg = 0.8f, deviationDeg = 1.36f),
     )
 
-    // Firmware from before the one level screen still reports ANGLE: the wall view.
+    // Firmware from before the one level screen still reports ANGLE: the wall view. Its deviation
+    // is the elevation minus the old target (default 45 degrees) and the status flags judge that.
     @Test
     fun angleFromOldFirmware() {
-        shot(LiveUiState(mode = LevelMode.ANGLE, hasAngle = true), AnglePacket.of(LevelMode.ANGLE, base, elevationDeg = 3.2f, deviationDeg = 3.2f))
+        shot(LiveUiState(mode = LevelMode.ANGLE, hasAngle = true), AnglePacket.of(LevelMode.ANGLE, base, elevationDeg = 0.4f, deviationDeg = -44.6f))
         compose.onNodeWithText("Wall").assertExists()
         compose.onNodeWithText("No zero set", substring = true).assertExists()
         compose.onNodeWithText("Zero").assertIsEnabled()

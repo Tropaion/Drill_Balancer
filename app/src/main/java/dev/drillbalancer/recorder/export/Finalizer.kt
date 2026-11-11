@@ -358,7 +358,7 @@ open class Finalizer {
                     "mode",
                     if (mode in LEVEL_MODES) mode else levels.firstOrNull()?.mode?.let { LEVEL_MODES.getOrNull(it) } ?: "wall",
                 )
-                put("target_deg", number(settings?.get("target")) ?: 0.0)
+                put("target_deg", number(settings?.get("target")) ?: 0.0)   // new firmware sends none (0.0); kept for the dataset schema and old takes
                 put("tol_deg", number(settings?.get("tol")) ?: 0.5)
                 if (settings?.containsKey("near") == true) number(settings["near"])?.let { put("near_deg", it) }
             }

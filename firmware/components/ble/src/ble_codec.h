@@ -70,13 +70,11 @@ bool ble_codec_link_idle_unauth(bool trusted, bool pairing, bool any_sub, uint32
 // the ATT error to answer with (BLE_CODEC_ATT_INVALID_LEN or DB_ATT_ERR_*).
 uint8_t ble_codec_parse_cmd(const uint8_t *data, size_t len, app_cmd_id_t *id, int32_t *arg);
 
-// A parsed command against the device's state: app_snapshot_t.excl
-// (app_excl_t) and the view the level shows. A calibration start while an
-// OTA update or a recording session has the device is answered
-// DB_ATT_ERR_BUSY at once instead of being queued for a refusal nobody sees
-// (the control task's app_excl_acquire() decides one that slips past). A
-// ZERO while the bubble shows is answered DB_ATT_ERR_NO_ZERO: there is no
-// bubble zero, and the client should say so. 0 otherwise.
+// A parsed command against the device's state (app_snapshot_t.excl and the
+// view shown). A calibration start during an OTA update or a recording session
+// gets DB_ATT_ERR_BUSY at once (the control task's app_excl_acquire() catches
+// one that slips past); a ZERO in the bubble view gets DB_ATT_ERR_NO_ZERO. 0
+// otherwise.
 uint8_t ble_codec_cmd_state_err(app_cmd_id_t id, uint8_t excl, level_mode_t view);
 
 // ATT error for a settings_apply_json() result (0 for OK).

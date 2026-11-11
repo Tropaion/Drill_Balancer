@@ -87,7 +87,7 @@ extern "C" {
 
 typedef struct __attribute__((packed)) {
     uint8_t version;          // 1
-    uint8_t mode;             // level_mode_t
+    uint8_t mode;             // the view in use (level_mode_t: 0 crosshair, 1 bubble; 2 never sent)
     uint8_t flags;            // DB_ANGLE_FLAG_*
     uint8_t seq;              // increments per notification
     int16_t elevation_cdeg;

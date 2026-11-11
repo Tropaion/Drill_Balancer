@@ -45,7 +45,7 @@ ATT_NAMES = {0x05: "insufficient authentication", 0x07: "invalid offset",
              0x0D: "invalid length", 0x0E: "unlikely error", 0x80: "JSON_PARSE",
              0x81: "JSON_TYPE", 0x82: "JSON_RANGE", 0x83: "STORE", 0x84: "UNKNOWN_CMD",
              0x85: "BAD_ARG", 0x86: "BUSY", 0x87: "UNAVAILABLE", 0x88: "REC_STATE",
-             0x89: "REC_RADIO", 0x8A: "REC_BATTERY"}
+             0x89: "REC_RADIO", 0x8A: "REC_BATTERY", 0x8B: "NO_ZERO"}
 PRESETS = {"wall": 0.0, "floor": -90.0, "ceiling": 90.0, "deg45": 45.0}   # elevation
 BUTTONS = ("cal_left", "cal_right", "set_mount", "set_sensor", "set_clear_zero", "set_reset",
            "set_back", "confirm_cancel", "confirm_reset", "rec_pill")
