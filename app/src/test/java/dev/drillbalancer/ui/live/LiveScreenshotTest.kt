@@ -1,6 +1,7 @@
 package dev.drillbalancer.ui.live
 
 import androidx.compose.ui.test.assertIsEnabled
+import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.junit4.v2.createComposeRule
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.onRoot
@@ -79,6 +80,16 @@ class LiveScreenshotTest {
         AnglePacket.of(LevelMode.FLOOR, AngleFlags.IMU_OK, bubbleXDeg = -9f, bubbleYDeg = -4f, deviationDeg = 9.85f),
         fontScale = 1.6f,
     )
+
+    // No zero in the bubble view: the device refuses it, so the button is greyed out.
+    @Test
+    fun floorZeroDisabled() {
+        shot(
+            LiveUiState(mode = LevelMode.FLOOR, hasAngle = true),
+            AnglePacket.of(LevelMode.FLOOR, base or AngleFlags.NEAR, bubbleXDeg = 1.1f, bubbleYDeg = 0.8f, deviationDeg = 1.36f),
+        )
+        compose.onNodeWithText("Zero").assertIsNotEnabled()
+    }
 
     // Invert dot: the arrow and the yaw show the way to correct, as on the device.
     @Test

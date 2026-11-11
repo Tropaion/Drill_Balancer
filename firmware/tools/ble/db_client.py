@@ -127,6 +127,7 @@ ATT_ERRORS = {
     0x88: "recorder: not in this state, or OTA / calibration running",
     0x89: "recorder: Wi-Fi or the stream buffer could not be set up",
     0x8A: "recorder: battery too low for a take (plug in USB)",
+    0x8B: "command: zero refused, the level shows the bubble (zero works on the wall view only)",
 }
 
 # ---- recorder (rec_ctrl / rec_state) -----------------------------------------

@@ -3,6 +3,7 @@ package dev.drillbalancer.ui.live
 import dev.drillbalancer.device.DeviceError
 import dev.drillbalancer.device.DisconnectReason
 import dev.drillbalancer.device.FakeDeviceSession
+import dev.drillbalancer.protocol.AttError
 import dev.drillbalancer.protocol.Command
 import dev.drillbalancer.protocol.DeviceSettings
 import dev.drillbalancer.protocol.LevelMode
@@ -74,6 +75,19 @@ class LiveViewModelTest {
         vm.clearZero()
         assertFalse(vm.state.value.zeroSet)
         assertEquals(listOf(Command.Zero, Command.ClearZero), fake.commands)
+    }
+
+    @Test
+    fun zeroRefusedShowsTheMessage() = runTest(main.dispatcher) {
+        val (fake, vm) = setUp()
+        // The fake refuses a zero while its view is the bubble, as the device does.
+        fake.setView(LevelMode.FLOOR)
+        vm.zero()
+        assertEquals(AttError.NO_ZERO.message, vm.state.value.message?.text)
+        assertFalse(vm.state.value.zeroSet)
+        assertFalse(vm.state.value.busy)
+        vm.dismissMessage()
+        assertNull(vm.state.value.message)
     }
 
     @Test

@@ -260,7 +260,11 @@ class FakeDeviceSession(
         requireLink(secure = true)
         sentCommands += command
         when (command) {
-            Command.Zero -> zero = floatArrayOf(elevation + wobble, yaw)
+            Command.Zero -> {
+                // The device refuses it in the bubble view (ble_codec_cmd_state_err()).
+                if (view == LevelMode.FLOOR) throw DeviceError.Att(AttError.NO_ZERO.code)
+                zero = floatArrayOf(elevation + wobble, yaw)
+            }
             Command.ClearZero -> zero = null
             Command.MountCalStart -> startCal(CalKind.MOUNT, fromBle = true)
             Command.AccelCalStart -> startCal(CalKind.ACCEL, fromBle = true)

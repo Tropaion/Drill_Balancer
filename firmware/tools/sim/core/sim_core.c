@@ -1425,10 +1425,11 @@ int sim_command_write(const uint8_t *data, int len, uint32_t now_ms)
         LOGW("command 0x%02x rejected: 0x%02x", data[0], att);
         return att;
     }
-    // A calibration start while OTA or a recording session has the device.
-    att = ble_codec_cmd_excl_err(id, s_state.excl);
+    // A calibration start while OTA or a recording session has the device,
+    // or a zero while the bubble shows.
+    att = ble_codec_cmd_state_err(id, s_state.excl, s_state.reading.mode);
     if (att != 0) {
-        LOGW("command 0x%02x refused: %s", data[0], app_excl_what(s_state.excl));
+        LOGW("command 0x%02x refused: 0x%02x", data[0], att);
         return att;
     }
     if (s_busy_next > 0) {   // injected: as if the queue were full
@@ -2811,7 +2812,7 @@ static void handle_cmd(const app_cmd_t *cmd)
     switch (cmd->id) {
     case APP_CMD_ZERO:
         if (!sensor_zero()) {
-            LOGW("zero ignored: no orientation or the bubble shows");
+            LOGW("zero ignored: no orientation");
         }
         break;
     case APP_CMD_CLEAR_ZERO:

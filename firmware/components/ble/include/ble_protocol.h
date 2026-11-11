@@ -231,11 +231,13 @@ typedef struct __attribute__((packed)) {
 #define DB_ATT_ERR_REC_RADIO    0x89   // rec_ctrl OPEN: Wi-Fi or the stream buffer
                                        // could not be set up
 #define DB_ATT_ERR_REC_BATTERY  0x8A   // rec_ctrl TAKE_START: battery below 15 % without USB
+#define DB_ATT_ERR_NO_ZERO      0x8B   // command: ZERO while the level shows the bubble
 // rec_ctrl also answers 0x84 (unknown op), 0x85 (TAKE_START or MARK argument
 // out of range) and 0x86 (queue full).
-// Android names 0x88..0x8A too (GATT_PENDING, GATT_AUTH_FAIL, GATT_MORE): a
-// client maps them for rec_ctrl writes before any rule for its own stack
-// codes, or REC_RADIO reads as a failed pairing.
+// Android names 0x88..0x8B too (GATT_PENDING, GATT_AUTH_FAIL, GATT_MORE,
+// GATT_INVALID_CFG): a client maps them for rec_ctrl (0x8B for command)
+// writes before any rule for its own stack codes, or REC_RADIO reads as a
+// failed pairing.
 // Notes: config reads are open and consistent across a long read (the JSON
 // is captured at offset 0). A config write is applied atomically onto the
 // stored settings, so it never undoes a calibration stored at the same time.

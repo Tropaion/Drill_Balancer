@@ -718,11 +718,11 @@ static int command_write(struct ble_gatt_access_ctxt *ctxt)
         ESP_LOGW(TAG, "command 0x%02x rejected: 0x%02x", s_wbuf[0], att);
         return att;
     }
-    // A calibration start while OTA or a recording session has the device:
-    // refused here, where the client sees it.
+    // A calibration start while OTA or a recording session has the device,
+    // or a zero while the bubble shows: refused here, where the client sees it.
     app_snapshot_t snap;
     app_state_get(&snap);
-    att = ble_codec_cmd_excl_err(id, snap.excl);
+    att = ble_codec_cmd_state_err(id, snap.excl, snap.reading.mode);
     if (att != 0) {
         ESP_LOGW(TAG, "command 0x%02x refused: %s", s_wbuf[0], app_excl_what(snap.excl));
         return att;

@@ -70,7 +70,7 @@ class CommandTest(DeviceTest):
         self.dev.physics.set_drill(elevation=-90.0)     # flat: bit down
         self.settle()
         self.assertEqual(self.angle().mode, 1)
-        self.assertEqual(self.cmd("zero"), 0)           # zero is refused here
+        self.assertEqual(self.cmd("zero"), 0x8B)        # zero is refused here
         self.assertTrue(self.angle().flags & F["zero_set"])
         self.dev.physics.set_drill(elevation=0.0)       # upright again
         self.settle()
@@ -81,8 +81,20 @@ class CommandTest(DeviceTest):
         self.settle()
         self.assertEqual(self.cmd("clear-zero"), 0)
         self.assertFalse(self.angle().flags & F["zero_set"])
-        self.assertEqual(self.cmd("zero"), 0)
+        self.assertEqual(self.cmd("zero"), 0x8B)
         self.assertFalse(self.angle().flags & F["zero_set"], "no zero in the bubble view")
+
+    def test_zero_refused_while_flat(self):
+        self.dev.physics.set_drill(elevation=-90.0)
+        self.settle()
+        self.assertEqual(self.dev.write_char("command", b"\x01"), 0x8B)
+        self.dev.advance(20)
+        self.assertFalse(self.angle().flags & F["zero_set"])
+        self.dev.physics.set_drill(elevation=0.0)
+        self.settle()
+        self.assertEqual(self.dev.write_char("command", b"\x01"), 0)
+        self.dev.advance(20)
+        self.assertTrue(self.angle().flags & F["zero_set"])
 
     def test_view_kept_while_imu_lost(self):
         self.dev.physics.set_drill(elevation=-90.0)

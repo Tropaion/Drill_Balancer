@@ -69,7 +69,7 @@ fun LiveScreen(
     banner: @Composable () -> Unit = {},   // an update notice
 ) {
     Column(modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        ViewLabel(state.mode)
+        if (state.hasAngle) ViewLabel(state.mode)   // no title before a reading
         banner()
         state.message?.let { MessageBanner(it, onDismiss = onDismissMessage) }
         Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
@@ -81,7 +81,11 @@ fun LiveScreen(
             }
         }
         Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            ActionButton("Zero", onZero, Modifier.weight(1f), enabled = !state.busy && state.hasAngle)
+            // No zero in the bubble view: the device refuses it.
+            ActionButton(
+                "Zero", onZero, Modifier.weight(1f),
+                enabled = !state.busy && state.hasAngle && state.mode != LevelMode.FLOOR,
+            )
             ActionButton(
                 "Clear zero", onClearZero, Modifier.weight(1f),
                 enabled = !state.busy && state.zeroSet, kind = ButtonKind.SECONDARY,

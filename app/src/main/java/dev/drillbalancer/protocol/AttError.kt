@@ -25,7 +25,8 @@ enum class AttError(val code: Int, val message: String, val needsPairing: Boolea
     UNAVAILABLE(0x87, "Firmware update is not available on the device."),
     REC_STATE(0x88, "The recorder cannot do that now (another recording step, a firmware update or a calibration is running)."),
     REC_RADIO(0x89, "The device could not start its Wi-Fi for the recording."),
-    REC_BATTERY(0x8A, "The battery is too low for a recording. Plug in USB.");
+    REC_BATTERY(0x8A, "The battery is too low for a recording. Plug in USB."),
+    NO_ZERO(0x8B, "Zero works on the wall view only: hold the drill upright.");
 
     companion object {
         fun fromCode(code: Int): AttError? = entries.firstOrNull { it.code == code }

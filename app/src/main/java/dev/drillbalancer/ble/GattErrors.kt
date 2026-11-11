@@ -16,7 +16,7 @@ enum class GattOp(val label: String, val secure: Boolean, val deviceCodes: Set<I
     READ("read", false),
     SUBSCRIBE("subscribe", false),
     CONFIG_WRITE("settings write", true, codes(AttError.JSON_PARSE, AttError.JSON_TYPE, AttError.JSON_RANGE, AttError.STORE)),
-    COMMAND("command", true, codes(AttError.UNKNOWN_CMD, AttError.BUSY)),
+    COMMAND("command", true, codes(AttError.UNKNOWN_CMD, AttError.BUSY, AttError.NO_ZERO)),
     OTA("firmware update", true, codes(AttError.UNAVAILABLE)),
     PAIRING("pairing", true),
     REC_CTRL(
@@ -76,7 +76,8 @@ object GattErrors {
         status == FailCallback.REASON_REQUEST_FAILED -> DeviceError.PairingFailed()
         // The device's application codes the op can carry are its answer, before any rule for
         // the stack's codes: the recorder's are Android's GATT_PENDING / GATT_AUTH_FAIL /
-        // GATT_MORE too (a real auth failure on rec_ctrl then reads as REC_RADIO).
+        // GATT_MORE too (a real auth failure on rec_ctrl then reads as REC_RADIO), and the
+        // command's NO_ZERO is GATT_INVALID_CFG.
         linkUp && status in op.deviceCodes -> DeviceError.Att(status)
         // Stored keys rejected, either answered on the link or as the reason it dropped. An
         // ATT answer needs a live link; 0x08 as a drop reason is a plain connection timeout.

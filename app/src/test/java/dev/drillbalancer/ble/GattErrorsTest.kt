@@ -36,6 +36,17 @@ class GattErrorsTest {
         assertTrue(err(0x82, GattOp.COMMAND, bonded = true) is DeviceError.Link)
     }
 
+    // 0x8B is Android's GATT_INVALID_CFG: on a command it is the device's refusal of a zero in the
+    // bubble view, not a pairing problem, even with a bond.
+    @Test
+    fun zeroRefusedInTheBubbleViewIsTheDevicesAnswer() {
+        for (bonded in listOf(false, true)) {
+            val e = err(AttError.NO_ZERO.code, GattOp.COMMAND, bonded = bonded)
+            assertEquals(AttError.NO_ZERO.code, attCode(e))
+        }
+        assertTrue(err(AttError.NO_ZERO.code, GattOp.CONFIG_WRITE, bonded = true) !is DeviceError.StaleBond)
+    }
+
     @Test
     fun busyIsRetryableAtt() {
         val e = err(AttError.BUSY.code, GattOp.COMMAND, bonded = true) as DeviceError.Att

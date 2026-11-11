@@ -559,11 +559,27 @@ static void test_cmd_cal_start_refused_while_the_device_is_taken(void)
         for (uint8_t ex = APP_EXCL_NONE; ex <= APP_EXCL_REC; ex++) {
             bool refused = start && (ex == APP_EXCL_OTA || ex == APP_EXCL_REC);
             TEST_ASSERT_EQUAL_HEX8(refused ? DB_ATT_ERR_BUSY : 0,
-                                   ble_codec_cmd_excl_err((app_cmd_id_t)id, ex));
+                                   ble_codec_cmd_state_err((app_cmd_id_t)id, ex, LEVEL_MODE_WALL));
         }
     }
 }
 
+// There is no zero in the bubble view: the write itself fails, so the app
+// shows why. The wall view (and the reserved angle view) take it.
+static void test_zero_refused_in_the_bubble_view(void)
+{
+    TEST_ASSERT_EQUAL_HEX8(DB_ATT_ERR_NO_ZERO,
+                           ble_codec_cmd_state_err(APP_CMD_ZERO, APP_EXCL_NONE, LEVEL_MODE_FLOOR));
+    // Only the zero is refused; clear-zero still works in the bubble view.
+    TEST_ASSERT_EQUAL_HEX8(0, ble_codec_cmd_state_err(APP_CMD_CLEAR_ZERO, APP_EXCL_NONE,
+                                                      LEVEL_MODE_FLOOR));
+}
+
+static void test_zero_allowed_in_the_wall_view(void)
+{
+    TEST_ASSERT_EQUAL_HEX8(0, ble_codec_cmd_state_err(APP_CMD_ZERO, APP_EXCL_NONE, LEVEL_MODE_WALL));
+    TEST_ASSERT_EQUAL_HEX8(0, ble_codec_cmd_state_err(APP_CMD_ZERO, APP_EXCL_NONE, LEVEL_MODE_ANGLE));
+}
 
 // ---- recorder ------------------------------------------------------------------------
 
@@ -882,6 +898,8 @@ int main(void)
     RUN_TEST(test_cmd_unknown_and_empty);
     RUN_TEST(test_cmd_error_leaves_outputs_alone);
     RUN_TEST(test_cmd_cal_start_refused_while_the_device_is_taken);
+    RUN_TEST(test_zero_refused_in_the_bubble_view);
+    RUN_TEST(test_zero_allowed_in_the_wall_view);
     RUN_TEST(test_rec_simple_ops);
     RUN_TEST(test_rec_take_start);
     RUN_TEST(test_rec_mark);
