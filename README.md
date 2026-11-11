@@ -3,8 +3,7 @@
 [![CI](https://github.com/Tropaion/Drill_Balancer/actions/workflows/ci.yml/badge.svg)](https://github.com/Tropaion/Drill_Balancer/actions/workflows/ci.yml)
 
 A clip-on digital level for power drills. A round AMOLED board sits on the
-back of the drill, faces you, and shows whether the bit is level, plumb or at
-the angle you set. An Android app connects over Bluetooth LE for live
+back of the drill, faces you, and shows whether the bit is level or plumb. An Android app connects over Bluetooth LE for live
 readings, settings, calibration and firmware updates. It also records
 training data (raw IMU and both microphones) for a future on-device model.
 
@@ -16,23 +15,24 @@ training data (raw IMU and both microphones) for a future on-device model.
 > [bring-up checklist](firmware/README.md#bring-up-checklist-hardware).
 
 <p align="center">
-  <img src="docs/images/device-overview.png" alt="Device screen renders: wall, floor and angle mode, and the settings list" width="720">
+  <img src="docs/images/device-overview.png" alt="Device screen renders of the level screen and the settings list" width="720">
 </p>
 <p align="center"><sub>Device screens rendered on the PC from the real UI code
 (<code>firmware/test_host/ui_preview</code>), with simulated readings. Not photos of hardware.</sub></p>
 
 ## Features
 
-- **Three level modes**
-  - **Wall**: elevation of the bit (up/down) plus left/right yaw against your
-    zero, for horizontal holes.
-  - **Floor / ceiling**: a 2D bubble for vertical holes, bit down or bit up.
-  - **Angle**: elevation against a target angle (default 45°).
-  - Every mode shows a crosshair. On wall and angle the dot is where the bit
+- **One level screen** that picks its view from how the board sits:
+  - **Wall** (the crosshair): elevation of the bit (up/down) plus left/right
+    yaw against your zero, for horizontal holes. The dot is where the bit
     points; steer it into the centre.
+  - **Level** (the bubble): a 2D bubble for vertical holes, bit down or bit
+    up, and for levelling a surface with the board lying flat.
+  - The bubble shows while the bit is within 35° of vertical, the crosshair
+    when it is more than 55° from vertical; in between the view stays.
 - **Tolerance colours**: green within the tolerance (default 0.5°), amber
   within the near band (default 2.0°), white outside.
-- **Hold 1 s to zero** on the screen, or use the app. Yaw comes from the gyro and
+- **Hold 1 s to zero** on the screen in the wall view, or use the app. Yaw comes from the gyro and
   drifts, so the screen warns you to re-zero after 60 s (adjustable).
 - **Two calibrations**: a 6-position sensor (accelerometer) calibration and a
   mount calibration that finds the drill axis while you roll the drill with
@@ -41,7 +41,7 @@ training data (raw IMU and both microphones) for a future on-device model.
   optional power-off after a time in sleep; power-off at low battery. A
   running drill held still keeps the screen on, for up to 3 min after the
   last touch or movement.
-- **On-device settings** (BOOT button) for tolerance, near band, target angle,
+- **On-device settings** (BOOT button) for tolerance, near band,
   the crosshair's direction (*Invert dot*), brightness, timeouts and
   Bluetooth.
 - **Bluetooth LE**: live angle and status notifications, settings as JSON,
@@ -71,8 +71,8 @@ training data (raw IMU and both microphones) for a future on-device model.
 
 <table>
   <tr>
-    <td align="center"><img src="app/src/test/screenshots/dev.drillbalancer.ui.live.LiveScreenshotTest.wallOnTarget.png" alt="App live view, wall mode on target" width="200"><br><sub>Live, wall mode</sub></td>
-    <td align="center"><img src="app/src/test/screenshots/dev.drillbalancer.ui.live.LiveScreenshotTest.floorBubbleNear.png" alt="App live view, floor bubble" width="200"><br><sub>Live, floor mode</sub></td>
+    <td align="center"><img src="app/src/test/screenshots/dev.drillbalancer.ui.live.LiveScreenshotTest.wallOnTarget.png" alt="App live view, wall view on target" width="200"><br><sub>Live, wall view</sub></td>
+    <td align="center"><img src="app/src/test/screenshots/dev.drillbalancer.ui.live.LiveScreenshotTest.floorBubbleNear.png" alt="App live view, level view" width="200"><br><sub>Live, level view</sub></td>
     <td align="center"><img src="app/src/test/screenshots/dev.drillbalancer.ui.calibration.CalibrationScreenshotTest.overview.png" alt="App calibration overview" width="200"><br><sub>Calibrate</sub></td>
     <td align="center"><img src="app/src/test/screenshots/dev.drillbalancer.ui.firmware.FirmwareScreenshotTest.sending.png" alt="App firmware update in progress" width="200"><br><sub>Firmware update</sub></td>
   </tr>
@@ -92,12 +92,12 @@ The values in them are test fixtures, not measurements.</sub>
 flowchart LR
   IMU["QMI8658 IMU<br/>accel + gyro, 448.4 Hz FIFO"] --> CAL["Sensor calibration<br/>bias + scale"]
   CAL --> FUS["Fusion<br/>Mahony filter, gyro bias learning"]
-  FUS --> LVL["Level<br/>drill axis, mode, zero, status"]
+  FUS --> LVL["Level<br/>drill axis, view, zero, status"]
   LVL --> ST["app_state<br/>snapshot"]
   ST --> UI["LVGL UI<br/>466x466 AMOLED, about 15 Hz"]
   ST --> BLE["NimBLE GATT<br/>angle 10 Hz, status"]
   BLE <--> APP["Android app<br/>or db_client.py"]
-  UI -- "touch: zero, mode, settings" --> CTL["control task<br/>commands, power FSM, PMU"]
+  UI -- "touch: zero, settings" --> CTL["control task<br/>commands, power FSM, PMU"]
   BLE -- "commands, config, OTA" --> CTL
   CTL --> LVL
   IMU -- "raw frames" --> REC["recorder<br/>session, takes, 4 MB ring"]
@@ -110,7 +110,8 @@ flowchart LR
   the fusion on every sample. It publishes a reading at 50 Hz.
 - The level component projects the "up" vector onto the drill axis (found by
   the mount calibration, nominally the board's -Z) and computes elevation,
-  yaw and the bubble for the current mode.
+  yaw for the wall view. The bubble reads the board's own face, without the
+  mount calibration, and the level picks the view from the bit's elevation.
 - The UI and BLE only read snapshots and post commands (BLE config writes
   and the settings screen store their changes through one mutex-guarded
   `settings_update()`). One control task applies the commands, reloads the
@@ -178,8 +179,8 @@ cd app
    tap *Finish*.
 3. **Mount calibration**: put the bit in a hole, tap *Calibrate mount*,
    *Start*, roll the drill slowly at least 45° each way, then *Finish*.
-4. Hold the drill on your mark and **hold the screen for 1 s to zero**. Swipe to
-   change the mode.
+4. Hold the drill on your mark and **hold the screen for 1 s to zero**. The screen
+   switches between wall and level by itself.
 5. In the app, tap your `DrillBalancer-XXXX`. On the first change it asks
    you to pair: enter the 6-digit code shown on the device.
 
@@ -191,30 +192,34 @@ Full guide: [Getting Started](https://github.com/Tropaion/Drill_Balancer/wiki/Ge
 
 | Gesture | Level screen | Settings |
 |---|---|---|
-| Hold 1 s | Zero (shows "ZERO") | Long press on a stepper repeats |
-| Swipe left / right | Next / previous mode | Right: back |
+| Hold 1 s | Zero in the wall view (shows "ZERO"); nothing in the level view | Long press on a stepper repeats |
+| Swipe right | Nothing | Back |
 | Tap | Nothing | Press a button |
 | BOOT button | Open Settings | Back |
 | Touch or BOOT while dimmed | Only wakes the screen | Only wakes the screen |
 | Touch during a recorded take | Logged in the recording, nothing else; hold the REC pill 2 s to stop the take | Same |
 
-**Modes**
-- *Wall*: the dot is where the bit points: above the centre when it points
-  too high, right of it when it has turned right since the zero (left/right
-  needs a zero; until then the screen says "Hold to zero for left/right").
-  Below: the error with a chevron for up or down, then the yaw; "re-zero"
-  appears 60 s after the zero.
-- *Floor / ceiling*: the dot is a bubble and moves towards the higher side;
-  the number is the total tilt.
-- *Angle*: the title shows the target. The dot and the number work as on the
-  wall, against the target; below them the yaw (after a zero) and the
-  current angle.
+**Views** (the device picks one from how the board sits)
+- *Wall* (title WALL): the dot is where the bit points: above the centre when
+  it points too high, right of it when it has turned right since the zero
+  (left/right needs a zero; until then the screen says "Hold to zero for
+  left/right"). Below: the error with a chevron for up or down, then the
+  yaw; "re-zero" appears 60 s after the zero.
+- *Level* (title LEVEL): the dot is a bubble and moves towards the higher
+  side; the number is the total tilt of the board's face. There is no zero
+  here.
+- The bubble shows when the bit is within 35° of vertical, the crosshair
+  when it is more than 55° from vertical. The zero is kept while the bubble
+  shows.
 
 **Calibration** ([Calibration](https://github.com/Tropaion/Drill_Balancer/wiki/Calibration))
 - Do the sensor calibration first, then the mount calibration. A new sensor
   calibration resets the mount calibration.
 - Both are stored in flash. The zero is not: it is lost on a reboot or a
   wake from deep sleep.
+- The mount calibration corrects wall holes only. The bubble measures the
+  board's own face, so a floor hole relies on the device sitting square on
+  the drill.
 
 **Power** ([Power and Sleep](https://github.com/Tropaion/Drill_Balancer/wiki/Power-and-Sleep))
 - Defaults: dim after 30 s, sleep after 120 s, power off after 60 min in

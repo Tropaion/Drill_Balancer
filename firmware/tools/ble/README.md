@@ -19,9 +19,8 @@ pip install -r requirements.txt
 ./db_client.py stream                    # angle (10 Hz) and status notifications
 ./db_client.py stream --status-only -d 30
 ./db_client.py get-config
-./db_client.py set-config tol=0.2 near=1.5 mode=floor ble=true
+./db_client.py set-config tol=0.2 near=1.5 ble=true
 ./db_client.py cmd zero
-./db_client.py cmd set-mode angle
 ./db_client.py cmd accel-cal-start       # ... turn the device face by face ... then accel-cal-finish
 ./db_client.py cmd factory-reset --yes
 ./db_client.py ota ../../build/drillbalancer.bin

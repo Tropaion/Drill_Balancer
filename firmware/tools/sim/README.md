@@ -95,7 +95,7 @@ Open <http://127.0.0.1:8765>.
 
 **Left: the screen.** A live copy of the round 466x466 screen, drawn from
 the firmware's state the way `components/ui` draws it:
-- the wall, floor and angle views, with green, amber and white from the same
+- the wall view (title WALL) and the bubble (title LEVEL), with green, amber and white from the same
   status flags;
 - the crosshair's dot and the yaw line, the battery, charging and BLE icons;
 - the low-battery banner and the ZERO toast;
@@ -107,8 +107,7 @@ Mouse or touch input on the copy follows the firmware's rules:
 
 | Gesture | Action |
 |---|---|
-| Hold 1 s | zero |
-| Swipe left / right | next / previous mode |
+| Hold 1 s | zero (wall view only) |
 | Tap | nothing |
 
 The **BOOT button** card presses the second button: it opens the settings
@@ -130,7 +129,8 @@ the app.
 **Right: the controls.**
 - **Orientation:** sliders and number boxes for elevation (-90..90°), yaw
   and roll about the bit. Presets: wall 0°, floor (bit down), ceiling (bit
-  up), 45°.
+  up), 45°. The view on the screen follows this pose: the bubble from 55°
+  elevation, the crosshair below 35°, the current view in between.
 - **Drill:** a *drill running* vibration toggle with intensity, a
   *detected* / *quiet* pill for what the firmware's vibration detector reads,
   and the noise level. From about 0.06 g the detector reads it as running

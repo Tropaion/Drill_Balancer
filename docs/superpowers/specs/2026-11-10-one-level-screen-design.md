@@ -234,3 +234,24 @@ user doesn't have to choose.
   - a ceiling hole;
   - zero against the wall, lay the drill down, pick it up again within a
     minute.
+
+## Decisions changed or settled during the work
+
+- **The zero refusal is a new ATT error.** In the bubble view the BLE ZERO
+  command is refused with `DB_ATT_ERR_NO_ZERO` (0x8B), checked in the BLE
+  codec before the command is queued. The spec only said "refuses". The
+  control task also drops a ZERO that arrives in the bubble view, and the app
+  maps 0x8B on command writes (Android's own `GATT_INVALID_CFG` shares the
+  number, like 0x88..0x8A for rec_ctrl).
+- **The app's label is hidden until the first reading arrives.** The spec said
+  the mode picker becomes a label showing the view in use; before any angle
+  packet there is no view to show.
+- **The stored settings keep their layout with two unread legacy fields**
+  (`legacy_mode`, `legacy_target_deg`), the first of the two options under
+  "Left to the builder". They are still range-checked on load so an old blob
+  loads, and they are left out of the settings comparison.
+- **No hint on the hold in the bubble view.** The hold does nothing there and
+  shows nothing, the second "Left to the builder" item.
+- **The device-overview and device-floor/-angle images in `docs/images` are
+  renders from before this change.** `device-angle.png` is no longer
+  referenced by the wiki.

@@ -1,7 +1,7 @@
 # DrillBalancer Android app
 
 The companion app for the DrillBalancer (see [../firmware](../firmware/README.md)).
-Over BLE it shows the live level (wall, floor and angle mode), edits all
+Over BLE it shows the live level (the wall or level view, as the device picks it), edits all
 device settings, runs both calibrations, sends power commands and updates
 the firmware. It also records training data: the device streams its raw IMU
 and both microphones over its own Wi-Fi to the phone (see
@@ -71,6 +71,12 @@ rate limited, nothing shows.
   asks first. The first time, Android sends you to *Install unknown apps*.
   Debug builds never show this notice: their signature cannot update a
   release install.
+- **Order:** this app and the firmware with one level screen go together.
+  Install the new app first, then update the firmware over the air from it.
+  An older app can't connect to the new firmware, because it requires the
+  `mode` and `target` settings, which the firmware no longer sends. The new
+  app still works with the old firmware until then; that firmware's angle
+  mode shows as the wall view.
 - *Dismiss* hides a version until a newer one is out. Nothing starts without
   a tap, and nothing interrupts a recording session.
 
@@ -101,7 +107,7 @@ key means every later update needs an uninstall.
    scan for BLE).
 2. Wake the device. It shows up as `DrillBalancer-XXXX`; tap it. Reading the
    angles, status and settings works without pairing.
-3. The first action that changes something (saving settings, a mode tab, a
+3. The first action that changes something (saving settings, a
    command, a calibration, a firmware update) asks you to pair. Tap *Pair*:
    the device shows a 6-digit code on its screen, and Android's pairing
    dialog asks for it. Type the code shown on the device. The action then
@@ -609,7 +615,7 @@ These checks need a phone and the board.
 7. **Status 0x85** is the device's BAD_ARG on the command characteristic,
    but also Android's GATT_ERROR; the app always shows it as a phone
    Bluetooth error. Note when a real phone reports it on a command.
-8. **Live data**: mode tabs, zero / clear zero, colours against the device
+8. **Live data**: the Wall / Level title, zero / clear zero (Zero greyed out in the level view), colours against the device
    screen, the NO SENSOR panel, yaw drift warning.
 9. **Calibration**: sensor calibration tile progress and result, mount
    calibration sample count (shows "255+", the status byte saturates), the

@@ -2,8 +2,8 @@
 
 A clip-on drill level. The device sits on the back of the drill with its round
 screen facing you; the bit points along -Z of the board. It shows the drill's
-elevation and yaw (wall mode), a bubble (floor and ceiling mode), or the error
-against a target angle (angle mode), all on one crosshair. Over BLE it streams
+elevation and yaw (the wall view, a crosshair) or a bubble (the level view),
+and picks the view from how the board sits. Over BLE it streams
 the angles, takes settings and commands, and accepts firmware updates.
 
 Hardware: Waveshare ESP32-S3-Touch-AMOLED-1.75-B (ESP32-S3R8, 16 MB flash,
@@ -96,7 +96,7 @@ All test code builds with `-Wall -Wextra -Werror -Wdouble-promotion -Wshadow`.
 ### UI preview
 
 `test_host/ui_preview` renders every screen to a PNG with the real UI
-sources, then runs touch and flow checks: tap, swipe, the hold to zero, the
+sources, then runs touch and flow checks: tap, the hold to zero, the
 BOOT key, wake taps on a dimmed screen, the settings debounce, the calibration flows, and
 the REC pill (touches during a take, the 2 s hold that stops it).
 
@@ -175,11 +175,17 @@ reset in the middle of a read cannot hang the boot.
 - `level_math`: vectors and quaternions.
 - `fusion`: a Mahony filter. It learns the gyro bias while the device is
   still.
-- `level`: the modes, zero, tolerance bands and the mount-calibration fit. The
+- `level`: the view, zero, tolerance bands and the mount-calibration fit. The
   drill axis is the normal of a plane fitted through the "up" vectors, which
-  lie on a cone while you roll the drill. `level_t` keeps its mode and clears
-  the zero itself when it no longer applies (a FLOOR <-> WALL/ANGLE change, a
-  new drill axis). The mount collector drops the first second and the last
+  lie on a cone while you roll the drill. `level_t` keeps the view in use
+  (`mode`: 0 crosshair, 1 bubble) and picks it from the bit's absolute
+  elevation: the bubble from 55°, the crosshair below 35°, the current view
+  in between, and at boot the nearer one (45°). With no fresh IMU reading
+  the view stays. The crosshair measures the drill axis with the mount
+  calibration; the bubble measures the board's own face (-Z) without it.
+  Only the crosshair zeroes, and a zero survives a trip to the bubble view.
+  `level_t` clears the zero itself when a new drill axis makes it void. The
+  mount collector drops the first second and the last
   half second of a calibration (the Start and Finish taps).
 - `accel_cal`: a six-position ellipsoid fit for the accelerometer bias and
   gain on each axis, and the stillness window that turns raw samples into
@@ -216,15 +222,17 @@ millisecond clock. Thread-safe, never used from an ISR.
 in `settings.h`, which the UI steppers share), a JSON form for the BLE
 config characteristic (cJSON, host-tested) and NVS persistence
 (`settings_store`: a versioned blob with a CRC, guarded by a mutex). Every
-writer (BLE config writes, the UI save, the mode, the calibration results
+writer (BLE config writes, the UI save, the calibration results
 and the factory reset) uses `settings_update()`, which does the
 read-modify-write under the mutex, so two writers cannot overwrite each
 other's fields. It stores only a result that differs from the current
 settings. Every store posts `APP_CMD_SETTINGS_CHANGED`, and the control task
-then reloads the level config, the mode, the accel calibration, the power
+then reloads the level config, the accel calibration, the power
 timeouts, the brightness and the BLE on/off state. That reload is the only
-way a setting reaches the sensor task, so a mode change takes effect once it
-is stored.
+way a setting reaches the sensor task, so a setting takes effect once it is
+stored. The stored settings still have two legacy fields from the removed
+mode and target (written, never read), so an OTA rollback to older firmware
+keeps the settings and both calibrations.
 
 **board**: the AXP2101 through XPowersLib on the BSP's I2C bus. It sets up the
 charger (50 mA precharge, 400 mA, 25 mA termination, 4.2 V, TS pin off), the
@@ -286,8 +294,10 @@ when it ends.
   optional power-off timer. Power-off goes through the AXP2101.
 
 **ui**: LVGL 9.
-- The level screen has one view per mode. A 1 s hold zeroes, a swipe changes
-  the mode, and a tap does nothing, so handling the drill cannot move the zero.
+- The level screen shows the wall view (title WALL) or the bubble (title
+  LEVEL), picked by the level. A 1 s hold zeroes in the wall view and does
+  nothing in the bubble view; a tap and a swipe do nothing, so handling the
+  drill cannot move the zero.
 - The BOOT button (GPIO0) opens the settings and leaves them. It does nothing
   on the calibration guides, under an overlay or during a take, and it does
   not wake deep sleep.
@@ -299,7 +309,7 @@ when it ends.
   the fields changed on the screen are written, so a BLE config write made
   meanwhile to another field is kept.
 - Overlays show the BLE passkey, OTA progress and low battery, and the REC
-  pill of a recording session over the mode title: "REC ready" between
+  pill of a recording session over the view title: "REC ready" between
   takes, red "REC mm:ss" during one. It is not modal. During a take every
   touch is logged in the recording (EVENT TOUCH) and does nothing else; only
   the pill takes it, and a 2 s hold on it stops the take.
@@ -427,15 +437,17 @@ wrong length):
 | 0x82 | JSON_RANGE | config: a value or combination is out of range |
 | 0x83 | STORE | config: saving to flash failed, nothing changed |
 | 0x84 | UNKNOWN_CMD | command, rec_ctrl: unknown opcode |
-| 0x85 | BAD_ARG | command: bad mode, or FACTORY_RESET without 0xA5; rec_ctrl: a TAKE_START or MARK argument out of range |
+| 0x85 | BAD_ARG | command: FACTORY_RESET without 0xA5; rec_ctrl: a TAKE_START or MARK argument out of range |
 | 0x86 | BUSY | command: queue full; rec_ctrl: the recorder did not take the op within 500 ms (busy or not running); a calibration start while a recording session or OTA has the device |
 | 0x87 | UNAVAILABLE | ota_ctrl, ota_data: OTA not available |
 | 0x88 | REC_STATE | rec_ctrl: not in this recorder state, or an OTA update or a calibration runs |
 | 0x89 | REC_RADIO | rec_ctrl OPEN: the stream buffer could not be allocated (a soft-AP that fails later shows as rec_state CLOSING, reason AP_FAIL) |
 | 0x8A | REC_BATTERY | rec_ctrl TAKE_START: battery below 15 % without USB |
+| 0x8B | NO_ZERO | command: ZERO while the level shows the bubble |
 
-Android also uses 0x88-0x8A for its own codes (GATT_PENDING,
-GATT_AUTH_FAIL, GATT_MORE), so a client maps them for rec_ctrl writes first;
+Android also uses 0x88-0x8B for its own codes (GATT_PENDING,
+GATT_AUTH_FAIL, GATT_MORE, GATT_INVALID_CFG), so a client maps them for
+rec_ctrl writes (0x8B for command writes) first;
 otherwise REC_RADIO reads as a failed pairing.
 
 ## Calibration
@@ -480,6 +492,8 @@ that would mean a faulty sensor.
 
 Settings → *Calibrate mount*. It measures how the device actually sits on
 the drill, so a slightly crooked clip does not show up as an angle error.
+It corrects wall holes only: the bubble measures the board's own face, so a
+floor hole relies on the device sitting square on the drill.
 
 1. Clip the device on the drill and put the bit into a drilled hole. The hole
    can be horizontal or tilted, but not vertical.
@@ -494,11 +508,10 @@ the drill, so a slightly crooked clip does not show up as an angle error.
    - the axis is more than 15° from -Z, which means the device is not seated
      properly.
 
-Changing the drill axis or the sensor calibration clears the zero. So does
-switching between floor mode and wall/angle mode: a zero taken with the bit
-horizontal means nothing for the bubble, and one taken with the bit vertical
-nothing for the elevation. Wall and angle mode share their zero. After an
-IMU re-initialisation, the yaw reads invalid until you zero again.
+Changing the drill axis or the sensor calibration clears the zero. Going to
+the bubble view does not: the zero is kept and applies again when the
+crosshair returns (the stale rule is unchanged, and deep sleep ends it).
+After an IMU re-initialisation, the yaw reads invalid until you zero again.
 
 ## Power states
 
@@ -606,7 +619,7 @@ Every `TODO(hw)` in the tree is covered below (36 steps), with its file. Grep fo
       Z = -chip Z).
     - Gyro: turning the device counterclockwise (seen from the front) gives
       a positive gyro Z.
-    - UI: in floor mode, lowering the right edge must move the bubble to the
+    - UI: in the level view, lowering the right edge must move the bubble to the
       left. The calibration tiles must name the edge that is really up.
 12. **FIFO loss** (`imu.c`). Done on the board: TIMESTAMP reads 0, so no gap
     is filled and no rate is measured. Samples arrive at about 444 Hz and about
@@ -778,7 +791,7 @@ Use `tools/ble/db_client.py rec open`, `rec start`, `rec stop`, `rec pull`
     - The STATS imu_period_ns of a RAW897 take is half that of a RAW448
       take within 0.1 % (`imu_frame.h` imu_rate_restart() scales a measured
       period to the new ODR on that assumption).
-    - In WALL mode with a zero set, a RAW take must leave the yaw valid and
+    - In the wall view with a zero set, a RAW take must leave the yaw valid and
       where it was (fusion goes through the switch).
 31. **LPF stand-in** (`components/level/include/lpf.h`). With the drill held
     still, record the same pose in a LEVEL take and in a RAW448 take, motor
