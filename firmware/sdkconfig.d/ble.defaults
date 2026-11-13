@@ -5,8 +5,13 @@
 CONFIG_BT_ENABLED=y
 # NimBLE host instead of Bluedroid
 CONFIG_BT_NIMBLE_ENABLED=y
-# Peripheral only: no central role (also drops the GATT client)
-CONFIG_BT_NIMBLE_ROLE_CENTRAL=n
+# The central role is unused, but NimBLE's GATT client depends on it, and
+# only the GATT client handles a phone's confirmation of an indication (and
+# its 30 s timeout, which drops the link). The OTA replies are indications:
+# without it the first one never completes, every later reply waits behind
+# it and an update stalls after START. components/ble/CMakeLists.txt checks.
+CONFIG_BT_NIMBLE_ROLE_CENTRAL=y
+CONFIG_BT_NIMBLE_GATT_CLIENT=y
 # No scanning
 CONFIG_BT_NIMBLE_ROLE_OBSERVER=n
 # Peripheral role (GATT server)

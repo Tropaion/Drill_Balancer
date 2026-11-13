@@ -798,10 +798,10 @@ static int gatt_write(chr_id_t id, struct ble_gatt_access_ctxt *ctxt)
         if (len < 0) {
             return BLE_ATT_ERR_INVALID_ATTR_VALUE_LEN;
         }
-        // TODO(hw): check on a real link that NimBLE's ACL/msys buffers absorb
-        // the 2 * ack_every chunks in flight while esp_ota_write() erases a
-        // 4 KB sector in this task (tens of ms); lost chunks only cost a
-        // NACK and resend, but many would slow the transfer down.
+        // esp_ota_write() erases a 4 KB sector in this task (tens of ms) while
+        // up to 2 * ack_every chunks are in flight; NimBLE's ACL buffers absorb
+        // them (on the board: 1.6 MB in 18 s, no chunk lost). A lost one would
+        // only cost a NACK and a resend.
         if (id == CHR_OTA_CTRL) {
             ota_update_on_ctrl(s_wbuf, (size_t)len);
             check_reboot();
@@ -1169,9 +1169,12 @@ static int gap_event(struct ble_gap_event *event, void *arg)
         return 0;
 
     case BLE_GAP_EVENT_NOTIFY_TX:
+        // Only the client's confirmation completes a reply. One not confirmed
+        // in 30 s (BLE_HS_ETIMEOUT) stays busy, so nothing more goes out:
+        // NimBLE drops the link next, and the disconnect clears the queue
+        // and starts an armed reboot.
         if (event->notify_tx.indication && event->notify_tx.attr_handle == s_h_ota_ctrl &&
-            (event->notify_tx.status == BLE_HS_EDONE ||
-             event->notify_tx.status == BLE_HS_ETIMEOUT)) {
+            event->notify_tx.status == BLE_HS_EDONE) {
             ind_complete();
             if (s_reboot_armed && ind_idle()) {
                 reboot_after(REBOOT_DELAY_US);

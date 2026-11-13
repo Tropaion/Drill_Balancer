@@ -732,9 +732,13 @@ Every `TODO(hw)` in the tree is covered below (36 steps), with its file. Grep fo
       new pairing has succeeded).
 24. **OTA throughput** (`components/ble/src/ble_service.c`, ACL/msys
     buffers). Do a full OTA and watch for NACKs or resends while flash
-    sectors are erased.
+    sectors are erased. Done on the board: 1.6 MB in 18 s (about 90 KB/s),
+    no NACK and no resend with 32 chunks in flight. The first try stalled
+    after START, until NimBLE's GATT client was built in (the reason is in
+    `sdkconfig.d/ble.defaults`).
 25. **Rollback.** OTA a good image: it must confirm itself (`image
-    confirmed`) and survive a reboot. Then OTA an image whose self-test fails
+    confirmed`) and survive a reboot (on the board so far: `image
+    confirmed` after the OTA above). Then OTA an image whose self-test fails
     on purpose: it must roll back (after about 5 s: the IMU and PMU checks
     are retried that long, `main/app_main.c`, so a single I2C error at boot
     does not roll back a good image).
