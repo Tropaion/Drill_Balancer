@@ -73,6 +73,24 @@ after a self-test (display up, IMU self-test, PMU readable; the IMU and PMU
 checks are retried for up to 5 s, so a transient I2C error at boot does not
 count). Otherwise the bootloader goes back to the previous image.
 
+## Install a release over USB
+
+Each release on GitHub has the firmware image `drillbalancer-<version>.bin`.
+To install it without building, use esptool. It comes with ESP-IDF (after
+`export.sh`), or install it with `pip install esptool`:
+
+```sh
+esptool.py --chip esp32s3 -p /dev/ttyACM0 erase_region 0xf000 0x2000
+esptool.py --chip esp32s3 -p /dev/ttyACM0 write_flash 0x20000 drillbalancer-0.2.1.bin
+```
+
+The first command clears otadata, so the device starts the image in the
+first slot (0x20000), even if an update over Bluetooth had moved it to the
+second. The settings and calibrations stay. This works only on a device that
+already runs DrillBalancer firmware. A new board needs the full
+`idf.py flash` above, because the release image has no bootloader or
+partition table.
+
 ## Host tests
 
 The hardware-independent code (level math, fusion, mount and sensor
