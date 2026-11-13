@@ -25,6 +25,7 @@ jobs:
       actions: read
     outputs:
       version: ${{ steps.tag.outputs.version }}
+      notes: ${{ steps.tag.outputs.notes }}
       ci_run: ${{ steps.ci.outputs.run }}
     steps:
       - uses: actions/checkout@v7
@@ -95,6 +96,10 @@ jobs:
       contents: write
       actions: read
     steps:
+      - uses: actions/checkout@v7
+        with:
+          sparse-checkout: docs/releases    # the notes the check job found
+          persist-credentials: false        # read only: no write token left in .git/config
       - uses: actions/download-artifact@v8
         with:
           name: apk
@@ -104,16 +109,18 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ needs.check.outputs.version }}
           CI_RUN: ${{ needs.check.outputs.ci_run }}
+          NOTES: ${{ needs.check.outputs.notes }}
         run: |
+          notes="$GITHUB_WORKSPACE/$NOTES"
           cd "$RUNNER_TEMP/release"
           gh run download "$CI_RUN" --repo "$GITHUB_REPOSITORY" --name firmware --dir ci
           # The artifact's root is firmware/ (the common folder of its files).
           mv ci/build-ci/drillbalancer.bin "drillbalancer-$VERSION.bin"
           assets=("drillbalancer-$VERSION.bin" "drillbalancer-$VERSION.apk")
-          # A re-run after a failed upload finishes the release it left.
-          if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
-            gh release upload "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --clobber "${assets[@]}"
-          else
-            gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --title "$GITHUB_REF_NAME" \
-              --generate-notes "${assets[@]}"
-          fi
+          # The same steps on a re-run, which finishes what a failed run left: a draft first,
+          # so the release is only published once both files are there, with this tag's notes.
+          repo=(--repo "$GITHUB_REPOSITORY")
+          gh release view "$GITHUB_REF_NAME" "${repo[@]}" > /dev/null 2>&1 ||
+            gh release create "$GITHUB_REF_NAME" "${repo[@]}" --draft --title "$GITHUB_REF_NAME" --notes-file "$notes"
+          gh release upload "$GITHUB_REF_NAME" "${repo[@]}" --clobber "${assets[@]}"
+          gh release edit "$GITHUB_REF_NAME" "${repo[@]}" --draft=false --notes-file "$notes"

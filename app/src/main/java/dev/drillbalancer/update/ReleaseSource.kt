@@ -13,7 +13,12 @@ import java.net.URL
 data class ReleaseAsset(val name: String, val url: String, val size: Long)
 
 /** The latest release; an asset is null when the release does not have it. */
-data class ReleaseInfo(val version: ReleaseVersion, val firmware: ReleaseAsset?, val apk: ReleaseAsset?)
+data class ReleaseInfo(
+    val version: ReleaseVersion,
+    val firmware: ReleaseAsset?,
+    val apk: ReleaseAsset?,
+    val notes: List<NoteBlock> = emptyList(),
+)
 
 sealed interface ReleaseResult {
     data class Found(val info: ReleaseInfo) : ReleaseResult
@@ -66,11 +71,17 @@ class HttpReleaseSource(
         val release = JSON.decodeFromString<ReleaseDto>(text)
         val version = ReleaseVersion.parse(release.tag) ?: return ReleaseResult.None
         fun asset(name: String) = release.assets.firstOrNull { it.name == name }?.let { ReleaseAsset(it.name, it.url, it.size) }
-        return ReleaseResult.Found(ReleaseInfo(version, asset("drillbalancer-$version.bin"), asset("drillbalancer-$version.apk")))
+        return ReleaseResult.Found(
+            ReleaseInfo(version, asset("drillbalancer-$version.bin"), asset("drillbalancer-$version.apk"), releaseNotes(release.body.orEmpty())),
+        )
     }
 
     @Serializable
-    private data class ReleaseDto(@SerialName("tag_name") val tag: String, val assets: List<AssetDto> = emptyList())
+    private data class ReleaseDto(
+        @SerialName("tag_name") val tag: String,
+        val assets: List<AssetDto> = emptyList(),
+        val body: String? = null,       // the notes; GitHub sends null for none
+    )
 
     @Serializable
     private data class AssetDto(val name: String, val size: Long, @SerialName("browser_download_url") val url: String)

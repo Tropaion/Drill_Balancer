@@ -12,6 +12,7 @@ import dev.drillbalancer.ui.MainDispatcherRule
 import dev.drillbalancer.ui.firmwareBytes
 import dev.drillbalancer.update.ApkInstaller
 import dev.drillbalancer.update.AppUpdates
+import dev.drillbalancer.update.NoteBlock
 import dev.drillbalancer.update.ReleaseAsset
 import dev.drillbalancer.update.ReleaseDownloader
 import dev.drillbalancer.update.ReleaseInfo
@@ -284,6 +285,16 @@ class UpdatesViewModelTest {
         session.dropLink(DeviceError.Link(DisconnectReason.LINK_LOSS), reconnecting = true)
         vm.awaitReady()
         assertNotNull(vm.pendingFirmware.value)
+    }
+
+    @Test
+    fun bothNoticesCarryTheReleaseNotes() = runTest(main.dispatcher) {
+        val withApk = (appRelease() as ReleaseResult.Found).info
+        val firmware = (release("0.2.0") as ReleaseResult.Found).info.firmware
+        val notes = listOf(NoteBlock.Heading("Firmware"), NoteBlock.Bullet("One level screen"))
+        result = ReleaseResult.Found(withApk.copy(firmware = firmware, notes = notes))
+        assertEquals(notes, vm().state.value.firmware?.notes)
+        assertEquals(notes, appVm().state.value.app?.notes)
     }
 
     @Test

@@ -79,6 +79,10 @@ rate limited, nothing shows.
   mode shows as the wall view. Until the firmware is updated, a device left
   in angle mode still judges (colours) against its old target: swipe to WALL
   on the device, or update the firmware.
+- **What's new:** both notices have *What's new*, which shows the release's
+  notes from `docs/releases/vX.Y.Z.md`. One release carries the firmware and
+  the app, so both show the same notes. The app shows headings, bullets and
+  paragraphs as plain text, without links.
 - *Dismiss* hides a version until a newer one is out. Nothing starts without
   a tap, and nothing interrupts a recording session.
 
@@ -86,13 +90,17 @@ rate limited, nothing shows.
 
 Versions live in `../VERSION`, for the firmware and the app. To release:
 
-1. Change `VERSION`, push to `main` and wait for CI.
-2. Tag that commit: `git tag vMAJOR.MINOR.PATCH && git push origin vMAJOR.MINOR.PATCH`.
+1. Change `VERSION` and write the notes in
+   `../docs/releases/vMAJOR.MINOR.PATCH.md`, with a Firmware and an App
+   section. Use headings, bullets and paragraphs; the app shows nothing else.
+2. Push to `main` and wait for CI.
+3. Tag that commit: `git tag vMAJOR.MINOR.PATCH && git push origin vMAJOR.MINOR.PATCH`.
 
 `.github/workflows/release.yml` then publishes `drillbalancer-<version>.bin`,
 the image CI built and tested for that commit, and a signed
-`drillbalancer-<version>.apk`. It refuses a tag that differs from `VERSION`, a
-commit that is not on `main`, and a commit without green CI. MINOR and PATCH
+`drillbalancer-<version>.apk`, with the notes as the release text. It refuses
+a tag that differs from `VERSION`, a tag without notes, a commit that is not
+on `main`, and a commit without green CI. MINOR and PATCH
 stay below 100, because `versionCode` is `MAJOR * 10000 + MINOR * 100 + PATCH`.
 
 The signing key is four Actions secrets: `DB_RELEASE_KEYSTORE_B64`,

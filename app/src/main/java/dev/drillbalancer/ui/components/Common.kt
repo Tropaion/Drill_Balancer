@@ -6,6 +6,7 @@ import android.content.Intent
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
@@ -314,7 +315,7 @@ fun UiMessage.Kind.color(): Color = when (this) {
     UiMessage.Kind.SUCCESS -> Green
 }
 
-/** A message with an accent colour, an optional action and an optional dismiss. */
+/** A message with an accent colour, an optional action, an optional dismiss and an optional [leading] button on the left. */
 @Composable
 fun MessageBanner(
     message: UiMessage,
@@ -322,6 +323,7 @@ fun MessageBanner(
     onDismiss: (() -> Unit)? = null,
     actionLabel: String? = null,
     onAction: (() -> Unit)? = null,
+    leading: (@Composable () -> Unit)? = null,
 ) {
     val accent = message.kind.color()
     Panel(modifier, border = accent) {
@@ -335,8 +337,10 @@ fun MessageBanner(
             )
             Text(message.text, Modifier.weight(1f), style = MaterialTheme.typography.bodyLarge)
         }
-        if (onAction != null || onDismiss != null) {
+        if (onAction != null || onDismiss != null || leading != null) {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                // Measured last, with the room the others leave: a narrow screen squeezes it, not the action.
+                if (leading != null) Box(Modifier.weight(1f)) { leading() }
                 if (onDismiss != null) {
                     TextButton(onDismiss, Modifier.heightIn(min = TouchHeight)) { Text("Dismiss") }
                 }

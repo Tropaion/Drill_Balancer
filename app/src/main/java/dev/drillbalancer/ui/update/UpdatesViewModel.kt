@@ -8,6 +8,7 @@ import dev.drillbalancer.protocol.FirmwareImage
 import dev.drillbalancer.protocol.FirmwareParseResult
 import dev.drillbalancer.update.DownloadException
 import dev.drillbalancer.update.MAX_APK_BYTES
+import dev.drillbalancer.update.NoteBlock
 import dev.drillbalancer.update.ReleaseAsset
 import dev.drillbalancer.update.ReleaseVersion
 import dev.drillbalancer.update.UpdateDeps
@@ -44,7 +45,8 @@ sealed interface UpdateStage {
     data class Failed(val message: String) : UpdateStage
 }
 
-data class UpdateNotice(val kind: UpdateKind, val version: String, val stage: UpdateStage)
+/** [notes]: the release's, the same for both kinds (one release carries both). */
+data class UpdateNotice(val kind: UpdateKind, val version: String, val stage: UpdateStage, val notes: List<NoteBlock> = emptyList())
 
 data class UpdatesUiState(val firmware: UpdateNotice? = null, val app: UpdateNotice? = null)
 
@@ -87,17 +89,17 @@ class UpdatesViewModel(private val deps: UpdateDeps, session: DeviceSession, bus
         latest?.takeIf {
             it.firmware != null && connection is ConnectionState.Connected && !isBusy &&
                 offered(it.version, ReleaseVersion.parse(info?.firmwareRevision), dismissed)
-        }?.version
+        }
     }
 
     private val appOffer = combine(deps.checker.latest, deps.store.dismissedApp, recording) { latest, dismissed, isBusy ->
-        latest?.takeIf { deps.app != null && it.apk != null && !isBusy && offered(it.version, deps.app.version, dismissed) }?.version
+        latest?.takeIf { deps.app != null && it.apk != null && !isBusy && offered(it.version, deps.app.version, dismissed) }
     }
 
     val state: StateFlow<UpdatesUiState> = combine(firmwareOffer, firmwareStage, appOffer, appStage) { firmware, firmwareAt, app, appAt ->
         UpdatesUiState(
-            firmware = firmware?.let { UpdateNotice(UpdateKind.FIRMWARE, it.toString(), firmwareAt) },
-            app = app?.let { UpdateNotice(UpdateKind.APP, it.toString(), appAt) },
+            firmware = firmware?.let { UpdateNotice(UpdateKind.FIRMWARE, it.version.toString(), firmwareAt, it.notes) },
+            app = app?.let { UpdateNotice(UpdateKind.APP, it.version.toString(), appAt, it.notes) },
         )
     }.stateIn(viewModelScope, SharingStarted.Eagerly, UpdatesUiState())
 

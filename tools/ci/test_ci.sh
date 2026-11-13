@@ -208,11 +208,25 @@ expect_rc "sim_image_tests.py fails when it finds no image test" 1
 
 # --- release_check.sh -------------------------------------------------------
 echo 0.2.0 > "$R/VERSION"
+mkdir -p "$R/docs/releases"
+capture "$R/tools/ci/release_check.sh" v0.2.0
+expect_rc "release_check.sh fails without release notes" 1
+expect_grep "... and names the notes file" 'docs/releases/v0\.2\.0\.md' "$out"
+: > "$R/docs/releases/v0.2.0.md"
+capture "$R/tools/ci/release_check.sh" v0.2.0
+expect_rc "release_check.sh fails on empty release notes" 1
+printf ' \n\n' > "$R/docs/releases/v0.2.0.md"
+capture "$R/tools/ci/release_check.sh" v0.2.0
+expect_rc "release_check.sh fails on blank release notes" 1
+printf '<!-- Firmware:\n     App: -->\n<!-- more -->\n' > "$R/docs/releases/v0.2.0.md"
+capture "$R/tools/ci/release_check.sh" v0.2.0
+expect_rc "release_check.sh fails on notes that are only comments" 1
+printf '## Firmware\n\n- One level screen\n' > "$R/docs/releases/v0.2.0.md"
 capture "$R/tools/ci/release_check.sh" v0.2.0
 expect_rc "release_check.sh passes when the tag is VERSION" 0
 expect_eq "... and prints the version" 0.2.0 "$out"
 GITHUB_ACTIONS=true GITHUB_OUTPUT="$sb/step_output" capture "$R/tools/ci/release_check.sh" v0.2.0
-expect_eq "... and in CI as the step output" version=0.2.0 "$(cat "$sb/step_output")"
+expect_eq "... and in CI as the step outputs, with the notes file" $'version=0.2.0\nnotes=docs/releases/v0.2.0.md' "$(cat "$sb/step_output")"
 capture "$R/tools/ci/release_check.sh" v0.2.1
 expect_rc "release_check.sh fails on another tag" 1
 expect_grep "... and names both" 'v0.2.1.*0\.2\.0' "$out"

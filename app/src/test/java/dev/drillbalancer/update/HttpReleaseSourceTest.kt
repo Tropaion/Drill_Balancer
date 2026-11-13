@@ -17,8 +17,8 @@ class HttpReleaseSourceTest {
 
     private fun reply(code: Int, body: String) = server.enqueue(MockResponse.Builder().code(code).body(body).build())
 
-    private fun release(tag: String = "v0.2.0", vararg assets: String) =
-        """{"tag_name":"$tag","draft":false,"assets":[${assets.joinToString(",") { asset(it) }}]}"""
+    private fun release(tag: String = "v0.2.0", vararg assets: String, body: String = "null") =
+        """{"tag_name":"$tag","draft":false,"body":$body,"assets":[${assets.joinToString(",") { asset(it) }}]}"""
 
     private fun asset(name: String) =
         """{"name":"$name","size":1234,"browser_download_url":"https://github.com/x/$name","extra":1}"""
@@ -30,6 +30,23 @@ class HttpReleaseSourceTest {
         assertEquals(ReleaseVersion(0, 2, 0), info.version)
         assertEquals(ReleaseAsset("drillbalancer-0.2.0.bin", "https://github.com/x/drillbalancer-0.2.0.bin", 1234), info.firmware)
         assertEquals("drillbalancer-0.2.0.apk", info.apk?.name)
+    }
+
+    @Test
+    fun readsTheNotes() = runTest {
+        reply(200, release(body = """"## Firmware\n- One level screen""""))
+        assertEquals(
+            listOf(NoteBlock.Heading("Firmware"), NoteBlock.Bullet("One level screen")),
+            (source.latest() as ReleaseResult.Found).info.notes,
+        )
+    }
+
+    @Test
+    fun noNotesAreEmpty() = runTest {
+        reply(200, release())
+        assertEquals(emptyList<NoteBlock>(), (source.latest() as ReleaseResult.Found).info.notes)
+        reply(200, """{"tag_name":"v0.2.0","assets":[]}""")
+        assertEquals(emptyList<NoteBlock>(), (source.latest() as ReleaseResult.Found).info.notes)
     }
 
     @Test
