@@ -66,19 +66,23 @@ rate limited, nothing shows.
 - **Firmware:** after connecting, a notice on Live and Device says when the
   release is newer than the board. *Download* fetches the image and opens the
   Firmware screen with it loaded; the update starts from there as usual.
+  Firmware 0.1.0 and 0.2.0 can't take an update over the air (the transfer
+  stops right after the start): install 0.2.1 or later over USB once
+  (*Install a release over USB* in `../firmware/README.md`).
 - **App:** a notice on Connect and Device says when the release is newer than
   the app. *Download* fetches the APK and opens Android's installer, which
   asks first. The first time, Android sends you to *Install unknown apps*.
   Debug builds never show this notice: their signature cannot update a
   release install.
 - **Order:** this app and the firmware with one level screen go together.
-  Install the new app first, then update the firmware over the air from it.
-  An older app can't connect to the new firmware, because it requires the
-  `mode` and `target` settings, which the firmware no longer sends. The new
-  app still works with the old firmware until then; that firmware's angle
-  mode shows as the wall view. Until the firmware is updated, a device left
-  in angle mode still judges (colours) against its old target: swipe to WALL
-  on the device, or update the firmware.
+  Install the new app first, then the new firmware (over USB from 0.1.0,
+  see *Firmware* above). An older app can't connect to the new firmware,
+  because it requires the `mode` and `target` settings, which the firmware
+  no longer sends. The new app still works with the old firmware until
+  then; that firmware's angle mode shows as the wall view. Until the
+  firmware is updated, a device left in angle mode still judges (colours)
+  against its old target: swipe to WALL on the device, or update the
+  firmware.
 - **What's new:** both notices have *What's new*, which shows the release's
   notes from `docs/releases/vX.Y.Z.md`. One release carries the firmware and
   the app, so both show the same notes. The app shows headings, bullets and

@@ -76,6 +76,11 @@ The device refuses OTA (FLASH_ERROR on START) until the running image has been
 confirmed after an update, and an image built for a different project fails
 the descriptor check.
 
+Firmware 0.1.0 and 0.2.0 hold back every reply after START, because they
+never notice the confirmation of their first indication, so the transfer
+fails. Install 0.2.1 or later over USB once (*Install a release over USB* in
+`firmware/README.md`).
+
 ## Recorder
 
 `rec pull` opens a session if none is open, waits for `rec_state`

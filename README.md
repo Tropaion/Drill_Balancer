@@ -9,9 +9,9 @@ training data (raw IMU and both microphones) for a future on-device model.
 
 > [!NOTE]
 > **Status: hardware bring-up.** The firmware runs on the board with the app
-> on a real phone, recording sessions included. Accuracy, battery life, OTA
-> on the board and the microphone gain are not measured yet. See the
-> [roadmap](#roadmap) and the
+> on a real phone, recording sessions included, and takes firmware updates
+> over BLE. Accuracy, battery life and the microphone gain are not measured
+> yet. See the [roadmap](#roadmap) and the
 > [bring-up checklist](firmware/README.md#bring-up-checklist-hardware).
 
 <p align="center">
@@ -157,6 +157,10 @@ bash -c 'cd firmware && . ~/esp/v5.5.1/esp-idf/export.sh >/dev/null 2>&1 && idf.
 Flashing and the console use the native USB-C port (`/dev/ttyACM0`). If the
 port does not show up, hold BOOT and press RESET. On the first boot, look
 for `DrillBalancer v...`, `QMI8658 6DOF 448.4 Hz` and `boot done` in the log.
+
+A board that already runs DrillBalancer firmware can take a release image
+without a build:
+[Install a release over USB](firmware/README.md#install-a-release-over-usb).
 
 ### 2. Build and install the app
 
@@ -349,6 +353,10 @@ More: [Development and Testing](https://github.com/Tropaion/Drill_Balancer/wiki/
       the BOOT key, pairing, live values, settings and the battery readout
 - [x] Recorder on the real board with a real phone: BLE control, the soft-AP
       join, takes streamed at about 72 kB/s with no lost records
+- [x] Firmware update over BLE on the real board: 1.6 MB in 18 s with no
+      resend, and the new image confirms itself
+- [x] Releases: a version tag publishes the firmware image and a signed APK
+      with notes, and the app offers both updates
 - [ ] The rest of the hardware bring-up
       ([checklist](firmware/README.md#bring-up-checklist-hardware)):
       microphone order and gain, recorder throughput at a distance,
@@ -357,7 +365,7 @@ More: [Development and Testing](https://github.com/Tropaion/Drill_Balancer/wiki/
       this board, so takes carry no chip time)
 - [ ] Measure: current per state and battery life, accuracy against a spirit
       level (target ≤ 0.2° after mount calibration), steadiness with the
-      motor running (target ±0.3°), OTA throughput
+      motor running (target ±0.3°)
 - [ ] Record real takes and check the auto-detector on them (its numbers
       come from the simulator so far)
 - [ ] An on-device model for the drilling phases, trained on the recorded
